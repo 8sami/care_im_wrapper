@@ -16,7 +16,6 @@ git clone git@github.com:ohcnetwork/care_im_wrapper.git
 2. Add the plugin config in plug_config.py
 
 ```python
-...
 
 care_im_wrapper_plugin = Plug(
     name=care_im_wrapper, # name of the django app in the plugin
@@ -26,19 +25,16 @@ care_im_wrapper_plugin = Plug(
 )
 plugs = [care_im_wrapper_plugin]
 
-...
 ```
 
 3. Tweak the code in plugs/manager.py, install the plugin in editable mode
 
 ```python
-...
 
 subprocess.check_call(
     [sys.executable, "-m", "pip", "install", "-e", *packages] # add -e flag to install in editable mode
 )
 
-...
 ```
 
 4. Rebuild the docker image and run the server
@@ -56,7 +52,6 @@ make up
 To install care care_im_wrapper, you can add the plugin config in [care/plug_config.py](https://github.com/ohcnetwork/care/blob/develop/plug_config.py) as follows:
 
 ```python
-...
 
 care_im_wrapper_plug = Plug(
     name=care_im_wrapper,
@@ -65,13 +60,12 @@ care_im_wrapper_plug = Plug(
     configs={},
 )
 plugs = [care_im_wrapper_plug]
-...
+
 ```
 
 or for development:
 
 ```python
-...
 
 care_im_wrapper_plug = Plug(
     name="care_im_wrapper",
@@ -80,7 +74,7 @@ care_im_wrapper_plug = Plug(
     configs={},
 )
 plugs = [care_im_wrapper_plug]
-...
+
 ```
 
 [Extended Docs on Plug Installation](https://care-be-docs.ohc.network/pluggable-apps/configuration.html)
