@@ -68,6 +68,21 @@ plugs = [care_im_wrapper_plug]
 ...
 ```
 
+or for development:
+
+```python
+...
+
+care_im_wrapper_plug = Plug(
+    name="care_im_wrapper",
+    package_name="./care_im_wrapper",
+    version="",  # Empty for local development
+    configs={},
+)
+plugs = [care_im_wrapper_plug]
+...
+```
+
 [Extended Docs on Plug Installation](https://care-be-docs.ohc.network/pluggable-apps/configuration.html)
 
 
