@@ -1,0 +1,48 @@
+[project]
+name = "care_im_wrapper"
+version = "0.1.0"
+description = "BE pl Care IM Wrapper"
+readme = "README.md"
+authors = [
+  {name = "care_im_wrapper", email = "samiullahjavedd@gmail.com"}
+]
+maintainers = [
+  {name = "care_im_wrapper", email = "samiullahjavedd@gmail.com"}
+]
+classifiers = [
+    # TODO
+]
+license = {text = "MIT"}
+dependencies = [
+    "django",
+    "celery",
+    "djangorestframework",
+]
+requires-python = ">= 3.10"
+
+[project.optional-dependencies]
+test = [
+    "ruff",  # linting
+]
+
+[project.urls]
+bugs = "https://github.com/8sami/care_im_wrapper/issues"
+changelog = "https://github.com/8sami/care_im_wrapper/blob/master/changelog.md"
+homepage = "https://github.com/8sami/care_im_wrapper"
+
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+]
+
+[tool.uv]
+package = true
