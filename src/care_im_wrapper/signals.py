@@ -1,11 +1,9 @@
-from django.db.models.signals import post_save
-from django.dispatch import receiver
+from django.dispatch import Signal
 
-from care.emr.models.patient import Patient
+# kwargs: sender=class, payload=dict, channel=str
+meta_message_received = Signal()
 
+# kwargs: sender=class, payload=dict, channel=str
+meta_status_updated = Signal()
 
-@receiver(post_save, sender=Patient)
-def hook_patient_created(sender, instance, created, **kwargs):
-    if created:
-        # do something when a Patient is created
-        pass
+# TODO: Week 5 — auth_succeeded, auth_failed for audit logging
