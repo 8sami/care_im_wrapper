@@ -4,7 +4,6 @@ from celery import current_app, shared_task
 
 from care_im_wrapper.auth.resolver import resolve_phone_number
 from care_im_wrapper.auth.states import ConversationState
-from care_im_wrapper.auth.validator import validate_year_of_birth
 from care_im_wrapper.messaging.whatsapp import send_interactive_menu, send_text
 from care_im_wrapper.models import ConversationSession
 
@@ -70,54 +69,84 @@ def _handle_new(session, phone_number: str, text: str) -> None:
     if not result.found:
         send_text(phone_number, _msg("not_found"))
         return
-    if result.ambiguous:
-        session.state = ConversationState.AMBIGUOUS
-        session.save(update_fields=["state"])
-        send_interactive_menu(phone_number, _msg("ambiguous"), ["Patient", "Staff"])
-        return
+
+    # Serialise all candidates to JSON for storage between turns
+    session.candidates = [
+        {
+            "user_type": i.user_type,
+            "user_id": i.user_id,
+            "year_of_birth": i.year_of_birth,
+            "full_name": i.full_name,
+            "phone_number": i.phone_number,
+        }
+        for i in result.identities
+    ]
     session.state = ConversationState.AWAITING_YOB
-    session.save(update_fields=["state"])
+    session.save(update_fields=["state", "candidates"])
     send_text(phone_number, _msg("yob_prompt"))
 
 
 def _handle_awaiting_yob(session, phone_number: str, text: str) -> None:
-    result = resolve_phone_number(phone_number)
-    if not result.found or not result.identities:
-        session.state = ConversationState.NEW
-        session.save(update_fields=["state"])
+    stripped = text.strip()
+    if not stripped.isdigit() or len(stripped) != 4:
+        send_text(phone_number, _msg("yob_invalid"))
         return
-    identity = next(
-        (i for i in result.identities if i.user_type == session.user_type or session.user_type == "unknown"),
-        result.identities[0],
-    )
-    if validate_year_of_birth(text, identity):
-        session.authenticate(
-            user_type=identity.user_type,
-            user_id=identity.user_id,
-            name=identity.full_name,
-            phone=identity.phone_number,
-        )
-        _send_main_menu(phone_number, identity.user_type)
-    else:
+
+    year = int(stripped)
+    shortlist = [c for c in session.candidates if c["year_of_birth"] == year]
+
+    if not shortlist:
         session.increment_failed_attempt()
         if session.state == ConversationState.COOLDOWN:
             send_text(phone_number, _msg("locked"))
         else:
             remaining = 5 - session.failed_attempts
             send_text(phone_number, _msg("yob_wrong", remaining=remaining))
+        return
+
+    if len(shortlist) == 1:
+        # Exactly one match — authenticate immediately
+        match = shortlist[0]
+        session.authenticate(
+            user_type=match["user_type"],
+            user_id=match["user_id"],
+            name=match["full_name"],
+            phone=match["phone_number"],
+        )
+        _send_main_menu(phone_number, match["user_type"])
+        return
+
+    # Multiple matches after YOB — store shortlist and ask user to pick
+    session.candidates = shortlist
+    session.state = ConversationState.AMBIGUOUS
+    session.save(update_fields=["state", "candidates"])
+    _send_candidate_menu(phone_number, shortlist)
 
 
 def _handle_ambiguous(session, phone_number: str, text: str) -> None:
     choice = text.strip()
-    role_map = {"1": "patient", "2": "staff"}
-    role = role_map.get(choice)
-    if not role:
+    if not choice.isdigit():
         send_text(phone_number, _msg("invalid_choice"))
         return
-    session.user_type = role
-    session.state = ConversationState.AWAITING_YOB
-    session.save(update_fields=["state", "user_type"])
-    send_text(phone_number, _msg("yob_prompt"))
+
+    index = int(choice) - 1
+    if index < 0 or index >= len(session.candidates):
+        send_text(phone_number, _msg("invalid_choice"))
+        return
+
+    match = session.candidates[index]
+    session.authenticate(
+        user_type=match["user_type"],
+        user_id=match["user_id"],
+        name=match["full_name"],
+        phone=match["phone_number"],
+    )
+    _send_main_menu(phone_number, match["user_type"])
+
+
+def _send_candidate_menu(phone_number: str, candidates: list[dict]) -> None:
+    options = [f"{c['full_name']} — {c['user_type'].capitalize()}" for c in candidates]
+    send_interactive_menu(phone_number, _msg("select_account"), options)
 
 
 def _handle_authenticated(session, phone_number: str, text: str) -> None:

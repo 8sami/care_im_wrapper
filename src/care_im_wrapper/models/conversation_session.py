@@ -12,7 +12,7 @@ class ConversationSession(models.Model):
 
     class State(models.TextChoices):
         NEW = "new", "New"
-        AWAITING_YOB = "awaitint_yob", "Awaiting Year of Birth"
+        AWAITING_YOB = "awaiting_yob", "Awaiting Year of Birth"
         AMBIGUOUS = "ambiguous", "Ambiguous"
         AUTHENTICATED = "authenticated", "Authenticated"
         COOLDOWN = "cooldown", "Cooldown"

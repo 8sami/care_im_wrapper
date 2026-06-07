@@ -1,19 +1,20 @@
 from django.http import HttpResponse
 
 from care_im_wrapper.signals import meta_message_received, meta_status_updated
+from care_im_wrapper.webhooks.exceptions import SignatureVerificationError
 from care_im_wrapper.webhooks.mixins import ChallengeMixin, HmacVerificationMixin
 from care_im_wrapper.webhooks.views import WebhookView
 
 
 class MetaWebhookView(ChallengeMixin, HmacVerificationMixin, WebhookView):
-    verify_token_setting = "CARE_IM_WRAPPER_META_VERIFY_TOKEN"
+    verify_token_setting = "WHATSAPP_WEBHOOK_VERIFY_TOKEN"
     challenge_param = "hub.challenge"
     token_param = "hub.verify_token"
     mode_param = "hub.mode"
     required_mode = "subscribe"
     hmac_header = "X-Hub-Signature-256"
     hmac_algorithm = "sha256"
-    secret_setting = "CARE_IM_WRAPPER_META_APP_SECRET"
+    secret_settings = "WHATSAPP_APP_SECRET"
     signature_prefix = "sha256="
 
     _CHANNEL_MAP = {
@@ -24,8 +25,6 @@ class MetaWebhookView(ChallengeMixin, HmacVerificationMixin, WebhookView):
 
     def handle_event(self, request, payload: dict) -> HttpResponse:
         if not self.verify_signature(request):
-            from care_im_wrapper.webhooks.exceptions import SignatureVerificationError
-
             raise SignatureVerificationError("Invalid signature")
 
         for entry in payload.get("entry", []):

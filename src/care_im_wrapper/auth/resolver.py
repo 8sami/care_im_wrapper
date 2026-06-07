@@ -24,27 +24,28 @@ class ResolvedIdentity:
 @dataclass
 class ResolutionResult:
     found: bool
-    ambiguous: bool
     identities: list[ResolvedIdentity]
 
 
 def resolve_phone_number(phone_number: str) -> ResolutionResult:
     if not Patient or not User:
-        return ResolutionResult(found=False, ambiguous=False, identities=[])
+        return ResolutionResult(found=False, identities=[])
 
     identities = []
 
     try:
         # Check Patients
-        patients = Patient.objects.filter(phone_number=phone_number).order_by("id")[:2]
+        patients = Patient.objects.filter(phone_number=phone_number).order_by("id")
         for p in patients:
+            dob = getattr(p, "date_of_birth", None) or getattr(p, "dob", None)
+            if not dob:
+                logger.warning("Patient %s has no date_of_birth, skipping", p.id)
+                continue
             identities.append(
                 ResolvedIdentity(
                     user_type="patient",
                     user_id=p.id,
-                    year_of_birth=int(p.dob.year)
-                    if hasattr(p, "dob") and p.dob
-                    else 0,  # Note: implementation detail depends on CARE
+                    year_of_birth=dob.year,
                     full_name=f"{p.first_name} {p.last_name}".strip(),
                     phone_number=p.phone_number,
                 )
@@ -54,13 +55,17 @@ def resolve_phone_number(phone_number: str) -> ResolutionResult:
 
     try:
         # Check Users (Staff)
-        users = User.objects.filter(phone_number=phone_number, is_active=True).order_by("id")[:2]
+        users = User.objects.filter(phone_number=phone_number, is_active=True).order_by("id")
         for u in users:
+            dob = getattr(u, "date_of_birth", None) or getattr(u, "dob", None)
+            if not dob:
+                logger.warning("User %s has no date_of_birth, skipping", u.id)
+                continue
             identities.append(
                 ResolvedIdentity(
                     user_type="staff",
                     user_id=u.id,
-                    year_of_birth=0,  # Staff YOB not easily available from User model without extra fields
+                    year_of_birth=dob.year,
                     full_name=u.get_full_name(),
                     phone_number=u.phone_number,
                 )
@@ -69,6 +74,5 @@ def resolve_phone_number(phone_number: str) -> ResolutionResult:
         logger.error("Error querying users for phone %s: %s", phone_number, e)
 
     found = len(identities) > 0
-    ambiguous = len(identities) > 1
 
-    return ResolutionResult(found=found, ambiguous=ambiguous, identities=identities)
+    return ResolutionResult(found=found, identities=identities)
