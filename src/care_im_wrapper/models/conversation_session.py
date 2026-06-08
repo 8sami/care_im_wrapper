@@ -24,6 +24,7 @@ class ConversationSession(models.Model):
     user_id = models.IntegerField(null=True, blank=True)
     snapshot_name = models.CharField(max_length=255, blank=True, default="")
     snapshot_phone = models.CharField(max_length=20, blank=True, default="")
+    candidates = models.JSONField(default=list, blank=True)
     state = models.CharField(max_length=20, choices=State.choices, default=State.NEW)
     failed_attempts = models.PositiveSmallIntegerField(default=0)
     cooldown_until = models.DateTimeField(null=True, blank=True)
