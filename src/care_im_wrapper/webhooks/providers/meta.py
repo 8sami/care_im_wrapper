@@ -14,7 +14,7 @@ class MetaWebhookView(ChallengeMixin, HmacVerificationMixin, WebhookView):
     required_mode = "subscribe"
     hmac_header = "X-Hub-Signature-256"
     hmac_algorithm = "sha256"
-    secret_settings = "WHATSAPP_APP_SECRET"
+    secret_setting = "WHATSAPP_APP_SECRET"
     signature_prefix = "sha256="
 
     _CHANNEL_MAP = {

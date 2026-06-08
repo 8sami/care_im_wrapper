@@ -17,8 +17,8 @@ class WebhookView(View):
     def dispatch(self, *args, **kwargs):
         return super().dispatch(*args, **kwargs)
 
-    def handle_challenge(self, request) -> HttpResponse:
-        return HttpResponse(status=400)
+    def get(self, request, *args, **kwargs) -> HttpResponse:
+        return self.handle_challenge(request)
 
     def post(self, request, *args, **kwargs) -> HttpResponse:
         try:
