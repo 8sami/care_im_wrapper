@@ -31,6 +31,11 @@ def resolve_phone_number(phone_number: str) -> ResolutionResult:
     if not Patient or not User:
         return ResolutionResult(found=False, identities=[])
 
+    # WhatsApp omits the leading "+" from the "from" field;
+    # care stores numbers in E.164 format with it.
+    if not phone_number.startswith("+"):
+        phone_number = f"+{phone_number}"
+
     identities = []
 
     try:

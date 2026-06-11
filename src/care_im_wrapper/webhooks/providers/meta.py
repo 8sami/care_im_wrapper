@@ -31,15 +31,16 @@ class MetaWebhookView(ChallengeMixin, HmacVerificationMixin, WebhookView):
         if not self.verify_signature(request):
             raise SignatureVerificationError("Invalid signature")
 
+        obj = str(payload.get("object", ""))
+        channel = self._CHANNEL_MAP.get(obj, obj)
+
         for entry in payload.get("entry", []):
             for change in entry.get("changes", []):
-                self._dispatch_change(change)
+                self._dispatch_change(change, channel)
 
         return HttpResponse(status=200)
 
-    def _dispatch_change(self, change: dict[str, Any]) -> None:
-        field = change.get("field", "")
-        channel = self._CHANNEL_MAP.get(field, field)
+    def _dispatch_change(self, change: dict[str, Any], channel: str) -> None:
         value = change.get("value", {})
 
         for message in value.get("messages", []):
