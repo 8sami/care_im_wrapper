@@ -1,24 +1,31 @@
+from __future__ import annotations
+
 from datetime import timedelta
 
 from django.db import models
 from django.utils import timezone
 
+from care_im_wrapper.settings import plugin_settings
+
 
 class ConversationSession(models.Model):
     class UserType(models.TextChoices):
-        UNKNOWN = "unknown", "Unknown"
-        PATIENT = "patient", "Patient"
-        STAFF = "staff", "Staff"
+        UNKNOWN = "unknown", "Unknown"  # pyright: ignore[reportAssignmentType]
+        PATIENT = "patient", "Patient"  # pyright: ignore[reportAssignmentType]
+        STAFF = "staff", "Staff"  # pyright: ignore[reportAssignmentType]
+
+    class Provider(models.TextChoices):
+        WHATSAPP = "whatsapp", "WhatsApp"  # pyright: ignore[reportAssignmentType]
 
     class State(models.TextChoices):
-        NEW = "new", "New"
-        AWAITING_YOB = "awaiting_yob", "Awaiting Year of Birth"
-        AMBIGUOUS = "ambiguous", "Ambiguous"
-        AUTHENTICATED = "authenticated", "Authenticated"
-        COOLDOWN = "cooldown", "Cooldown"
+        NEW = "new", "New"  # pyright: ignore[reportAssignmentType]
+        AWAITING_YOB = "awaiting_yob", "Awaiting Year of Birth"  # pyright: ignore[reportAssignmentType]
+        AMBIGUOUS = "ambiguous", "Ambiguous"  # pyright: ignore[reportAssignmentType]
+        AUTHENTICATED = "authenticated", "Authenticated"  # pyright: ignore[reportAssignmentType]
+        COOLDOWN = "cooldown", "Cooldown"  # pyright: ignore[reportAssignmentType]
 
     phone_number = models.CharField(max_length=20)
-    provider = models.CharField(max_length=20, default="whatsapp")
+    provider = models.CharField(max_length=20, choices=Provider.choices, default=Provider.WHATSAPP)
     user_type = models.CharField(max_length=10, choices=UserType.choices, default=UserType.UNKNOWN)
     # IntegerField not FK — cross-package FK causes migration dependency issues
     user_id = models.IntegerField(null=True, blank=True)
@@ -26,11 +33,10 @@ class ConversationSession(models.Model):
     snapshot_phone = models.CharField(max_length=20, blank=True, default="")
     candidates = models.JSONField(default=list, blank=True)
     state = models.CharField(max_length=20, choices=State.choices, default=State.NEW)
-    failed_attempts = models.PositiveSmallIntegerField(default=0)
+    failed_attempts = models.PositiveSmallIntegerField(default=0)  # pyright: ignore[reportArgumentType]
     cooldown_until = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    last_seen_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         app_label = "care_im_wrapper"
@@ -59,8 +65,8 @@ class ConversationSession(models.Model):
         return False
 
     def increment_failed_attempt(self) -> None:
-        self.failed_attempts += 1
-        if self.failed_attempts >= 5:
+        self.failed_attempts += 1  # pyright: ignore[reportOperatorIssue]
+        if self.failed_attempts >= plugin_settings.MAX_FAILED_ATTEMPTS:
             self.state = self.State.COOLDOWN
             self.cooldown_until = timezone.now() + timedelta(minutes=30)
         self.save(update_fields=["state", "failed_attempts", "cooldown_until"])
