@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import json
 import logging
+from typing import Any
 
-from django.http import HttpResponse
+from django.http import HttpRequest, HttpResponse
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
@@ -32,11 +35,14 @@ class WebhookView(View):
             logging.getLogger(__name__).exception("Unhandled error in %s", self.__class__.__name__)
             return HttpResponse(status=500)
 
-    def _parse_payload(self, request) -> dict:
+    def _parse_payload(self, request) -> dict[str, Any]:
         try:
             return json.loads(request.body)
         except json.JSONDecodeError:
             raise PayloadParseError("Invalid JSON") from None
 
-    def handle_event(self, request, payload: dict) -> HttpResponse:
+    def handle_event(self, request, payload: dict[str, Any]) -> HttpResponse:
+        raise NotImplementedError
+
+    def handle_challenge(self, request: HttpRequest) -> HttpResponse:
         raise NotImplementedError

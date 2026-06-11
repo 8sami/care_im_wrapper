@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any
 
 import environ
@@ -7,7 +9,7 @@ from django.core.signals import setting_changed
 from django.dispatch import receiver
 from rest_framework.settings import perform_import
 
-from care_im_wrapper.apps import PLUGIN_NAME
+PLUGIN_NAME = "care_im_wrapper"  # was causing circular import
 
 env = environ.Env()
 
@@ -27,10 +29,10 @@ class PluginSettings:  # pragma: no cover
 
     def __init__(
         self,
-        plugin_name: str = None,
-        defaults: dict | None = None,
-        import_strings: set | None = None,
-        required_settings: set | None = None,
+        plugin_name: str | None = None,
+        defaults: dict[str, Any] | None = None,
+        import_strings: set[str] | None = None,
+        required_settings: set[str] | None = None,
     ) -> None:
         if not plugin_name:
             raise ValueError("Plugin name must be provided")
@@ -39,11 +41,12 @@ class PluginSettings:  # pragma: no cover
         self.import_strings = import_strings or set()
         self.required_settings = required_settings or set()
         self._cached_attrs = set()
+        self._user_settings: dict[str, Any] | None = None
         self.validate()
 
-    def __getattr__(self, attr) -> Any:
+    def __getattr__(self, attr: str) -> Any:
         if attr not in self.defaults:
-            raise AttributeError("Invalid setting: '%s'" % attr)
+            raise AttributeError(f"Invalid setting: '{attr}'")
 
         # Try to find the setting from user settings, then from environment variables
         val = self.defaults[attr]
@@ -65,9 +68,11 @@ class PluginSettings:  # pragma: no cover
         return val
 
     @property
-    def user_settings(self) -> dict:
-        if not hasattr(self, "_user_settings"):
-            self._user_settings = getattr(settings, "PLUGIN_CONFIGS", {}).get(self.plugin_name, {})
+    def user_settings(self) -> dict[str, Any]:
+        if self._user_settings is None:
+            result: dict[str, Any] = getattr(settings, "PLUGIN_CONFIGS", {}).get(self.plugin_name, {})
+            self._user_settings = result
+            return result
         return self._user_settings
 
     def validate(self) -> None:
@@ -91,8 +96,7 @@ class PluginSettings:  # pragma: no cover
         for attr in self._cached_attrs:
             delattr(self, attr)
         self._cached_attrs.clear()
-        if hasattr(self, "_user_settings"):
-            delattr(self, "_user_settings")
+        self._user_settings = None
 
 
 REQUIRED_SETTINGS = set()
@@ -104,6 +108,7 @@ DEFAULTS = {
     "WHATSAPP_ACCESS_TOKEN": "",
     "WHATSAPP_BUSINESS_ACCOUNT_ID": "",
     "WHATSAPP_APP_SECRET": "",  # Meta app secret for HMAC webhook verification
+    "MAX_FAILED_ATTEMPTS": 5,  # failed YOB attempts before the session is locked
 }
 
 

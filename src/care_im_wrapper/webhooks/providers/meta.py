@@ -1,4 +1,8 @@
-from django.http import HttpResponse
+from __future__ import annotations
+
+from typing import Any, ClassVar
+
+from django.http import HttpRequest, HttpResponse
 
 from care_im_wrapper.signals import meta_message_received, meta_status_updated
 from care_im_wrapper.webhooks.exceptions import SignatureVerificationError
@@ -7,23 +11,23 @@ from care_im_wrapper.webhooks.views import WebhookView
 
 
 class MetaWebhookView(ChallengeMixin, HmacVerificationMixin, WebhookView):
-    verify_token_setting = "WHATSAPP_WEBHOOK_VERIFY_TOKEN"
-    challenge_param = "hub.challenge"
-    token_param = "hub.verify_token"
-    mode_param = "hub.mode"
-    required_mode = "subscribe"
-    hmac_header = "X-Hub-Signature-256"
-    hmac_algorithm = "sha256"
-    secret_setting = "WHATSAPP_APP_SECRET"
-    signature_prefix = "sha256="
+    verify_token_setting: ClassVar[str] = "WHATSAPP_WEBHOOK_VERIFY_TOKEN"
+    challenge_param: ClassVar[str] = "hub.challenge"
+    token_param: ClassVar[str] = "hub.verify_token"
+    mode_param: ClassVar[str] = "hub.mode"
+    required_mode: ClassVar[str] = "subscribe"
+    hmac_header: ClassVar[str] = "X-Hub-Signature-256"
+    hmac_algorithm: ClassVar[str] = "sha256"
+    secret_setting: ClassVar[str] = "WHATSAPP_APP_SECRET"
+    signature_prefix: ClassVar[str] = "sha256="
 
-    _CHANNEL_MAP = {
+    _CHANNEL_MAP: ClassVar[dict[str, str]] = {
         "whatsapp_business_account": "whatsapp",
-        "instagram": "instagram",
-        "page": "messenger",
+        # "instagram": "instagram",
+        # "page": "messenger",
     }
 
-    def handle_event(self, request, payload: dict) -> HttpResponse:
+    def handle_event(self, request: HttpRequest, payload: dict[str, Any]) -> HttpResponse:
         if not self.verify_signature(request):
             raise SignatureVerificationError("Invalid signature")
 
@@ -33,7 +37,7 @@ class MetaWebhookView(ChallengeMixin, HmacVerificationMixin, WebhookView):
 
         return HttpResponse(status=200)
 
-    def _dispatch_change(self, change: dict) -> None:
+    def _dispatch_change(self, change: dict[str, Any]) -> None:
         field = change.get("field", "")
         channel = self._CHANNEL_MAP.get(field, field)
         value = change.get("value", {})

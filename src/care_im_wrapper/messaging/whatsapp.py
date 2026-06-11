@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import logging
+from typing import Any
 
 import httpx
 
@@ -19,18 +22,18 @@ class WhatsAppClient:
             }
         )
 
-    def send_interactive_menu(self, to: str, header: str, options: list[str]) -> None:
-        body = f"{header}\n\n" + "\n".join(f"{i + 1}. {opt}" for i, opt in enumerate(options))
-        self.send_text(to, body)
+    def send_interactive_menu(self, to: str, payload: dict[str, Any]) -> None:
+        self._send(payload)
 
-    def _send(self, payload: dict) -> None:
+    def _send(self, payload: dict[str, Any]) -> None:
         token = plugin_settings.WHATSAPP_ACCESS_TOKEN
         phone_id = plugin_settings.WHATSAPP_PHONE_NUMBER_ID
         api_url = plugin_settings.WHATSAPP_API_URL
 
         if not token or not phone_id:
-            logger.error("WhatsApp credentials not configured")
-            return
+            raise RuntimeError(
+                "WhatsApp credentials (WHATSAPP_ACCESS_TOKEN / WHATSAPP_PHONE_NUMBER_ID) are not configured"
+            )
 
         url = f"{api_url}/{phone_id}/messages"
         headers = {
@@ -50,5 +53,5 @@ def send_text(to: str, body: str) -> None:
     WhatsAppClient().send_text(to, body)
 
 
-def send_interactive_menu(to: str, header: str, options: list[str]) -> None:
-    WhatsAppClient().send_interactive_menu(to, header, options)
+def send_interactive_menu(to: str, payload: dict[str, Any]) -> None:
+    WhatsAppClient().send_interactive_menu(to, payload)
