@@ -109,6 +109,7 @@ DEFAULTS = {
     "WHATSAPP_BUSINESS_ACCOUNT_ID": "",
     "WHATSAPP_APP_SECRET": "",  # Meta app secret for HMAC webhook verification
     "MAX_FAILED_ATTEMPTS": 5,  # failed YOB attempts before the session is locked
+    "COOLDOWN_MINUTES": 30,  # duration of the cooldown period
 }
 
 

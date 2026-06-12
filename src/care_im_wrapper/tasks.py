@@ -46,7 +46,7 @@ def _run_state_machine(payload: dict[str, Any], channel: str) -> None:
     session = _get_or_create_session(phone_number, channel)
 
     if session.is_in_cooldown():
-        send_text(phone_number, _msg("cooldown", until=session.cooldown_until))
+        send_text(phone_number, _msg("cooldown", minutes=session.get_cooldown_remaining_minutes()))
         return
 
     dispatch = {
@@ -96,7 +96,7 @@ def _handle_awaiting_yob(session: ConversationSession, phone_number: str, text: 
     if not shortlist:
         session.increment_failed_attempt()
         if session.state == ConversationState.COOLDOWN:
-            send_text(phone_number, _msg("locked"))
+            send_text(phone_number, _msg("cooldown", minutes=session.get_cooldown_remaining_minutes()))
         else:
             remaining = plugin_settings.MAX_FAILED_ATTEMPTS - session.failed_attempts
             send_text(phone_number, _msg("yob_wrong", remaining=remaining))
@@ -151,10 +151,30 @@ def _send_candidate_menu(phone_number: str, candidates: list[dict[str, Any]]) ->
 
 def _handle_authenticated(session: ConversationSession, phone_number: str, text: str) -> None:
     # TODO: Week 3 — route menu selection to data handlers
-    send_text(phone_number, _msg("menu_coming_soon"))
+    choice = text.strip()
+
+    if not choice.isdigit():
+        send_text(phone_number, _msg("invalid_choice"))
+        return
+
+    index = int(choice) - 1
+    options = _get_main_menu_options(str(session.user_type))
+
+    if index < 0 or index >= len(options):
+        send_text(phone_number, _msg("invalid_choice"))
+        return
+
+    selected_option = options[index]
+
+    if selected_option == "Logout":
+        session.logout()
+        send_text(phone_number, "You have been logged out.")
+        return
+
+    send_text(phone_number, _msg("coming_soon"))
 
 
-def _send_main_menu(phone_number: str, user_format: str) -> None:
+def _get_main_menu_options(user_format: str) -> list[str]:
     options = [
         "Encounters",
         "Medications",
@@ -165,6 +185,12 @@ def _send_main_menu(phone_number: str, user_format: str) -> None:
     ]
     if user_format == "staff":
         options.append("Patient lookup")
+    options.append("Logout")
+    return options
+
+
+def _send_main_menu(phone_number: str, user_format: str) -> None:
+    options = _get_main_menu_options(user_format)
     lines = [f"{i + 1}. {opt}" for i, opt in enumerate(options)]
     body = _msg("auth_success") + "\n\n" + "\n".join(lines)
     send_text(phone_number, body)
@@ -199,11 +225,11 @@ _MESSAGES: dict[str, str] = {
     "yob_invalid": "Please enter a valid 4-digit year (e.g. 1990).",
     "yob_wrong": "That doesn't match. You have {remaining} attempt(s) remaining.",
     "locked": "Too many incorrect attempts. Please try again in 30 minutes.",
-    "cooldown": "Your account is locked until {until}. Please try again later.",
+    "cooldown": "Your account is locked. Please try again in {minutes} minutes.",
     "select_account": "Multiple accounts found. Please select one by replying with its number:",
     "invalid_choice": "Please reply with a valid number from the list.",
     "auth_success": "Identity verified. How can we help you today?",
-    "menu_coming_soon": "Menu options coming soon.",
+    "coming_soon": "Option coming soon.",
 }
 
 

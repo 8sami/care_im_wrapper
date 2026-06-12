@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.db import models
 from django.utils import timezone
@@ -64,11 +64,21 @@ class ConversationSession(models.Model):
         self.save(update_fields=["state", "failed_attempts", "cooldown_until"])
         return False
 
+    def get_cooldown_remaining_minutes(self) -> int | None:
+        if self.state == self.State.COOLDOWN and self.cooldown_until:
+            remaining_dt = self.cooldown_until
+
+            if isinstance(remaining_dt, datetime):
+                diff = remaining_dt - timezone.now()
+                if diff.total_seconds() > 0:
+                    return max(1, int(diff.total_seconds() // 60))
+        return None
+
     def increment_failed_attempt(self) -> None:
         self.failed_attempts += 1  # pyright: ignore[reportOperatorIssue]
         if self.failed_attempts >= plugin_settings.MAX_FAILED_ATTEMPTS:
             self.state = self.State.COOLDOWN
-            self.cooldown_until = timezone.now() + timedelta(minutes=30)
+            self.cooldown_until = timezone.now() + timedelta(minutes=plugin_settings.COOLDOWN_MINUTES)
         self.save(update_fields=["state", "failed_attempts", "cooldown_until"])
 
     def authenticate(self, user_type: str, user_id: int, name: str, phone: str) -> None:
@@ -88,5 +98,27 @@ class ConversationSession(models.Model):
                 "snapshot_phone",
                 "failed_attempts",
                 "cooldown_until",
+            ]
+        )
+
+    def logout(self) -> None:
+        self.state = self.State.NEW
+        self.user_type = self.UserType.UNKNOWN
+        self.user_id = None
+        self.snapshot_name = ""
+        self.snapshot_phone = ""
+        self.failed_attempts = 0
+        self.cooldown_until = None
+        self.candidates = []
+        self.save(
+            update_fields=[
+                "state",
+                "user_type",
+                "user_id",
+                "snapshot_name",
+                "snapshot_phone",
+                "failed_attempts",
+                "cooldown_until",
+                "candidates",
             ]
         )
