@@ -79,9 +79,9 @@ class ConversationSession(models.Model):
 
     def increment_failed_attempt(self) -> None:
         self.failed_attempts += 1  # pyright: ignore[reportOperatorIssue]
-        if self.failed_attempts >= plugin_settings.MAX_FAILED_ATTEMPTS:
+        if self.failed_attempts >= int(plugin_settings.MAX_FAILED_ATTEMPTS):
             self.state = self.State.COOLDOWN
-            self.cooldown_until = timezone.now() + timedelta(minutes=plugin_settings.COOLDOWN_MINUTES)
+            self.cooldown_until = timezone.now() + timedelta(minutes=int(plugin_settings.COOLDOWN_MINUTES))
         self.save(update_fields=["state", "failed_attempts", "cooldown_until"])
 
     def authenticate(self, user_type: str, user_id: int, name: str, phone: str) -> None:
