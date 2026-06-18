@@ -4,7 +4,9 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-    dependencies = []
+    dependencies = [
+        ("care_im_wrapper", "0003_alter_conversationsession_state"),
+    ]
 
     operations = [
         migrations.AddField(
