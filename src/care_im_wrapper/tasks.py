@@ -5,8 +5,24 @@ from typing import Any
 
 from celery import shared_task
 
+from care_im_wrapper.auth.actor import resolve_actor
 from care_im_wrapper.auth.resolver import resolve_phone_number
 from care_im_wrapper.auth.states import ConversationState
+from care_im_wrapper.data import (
+    appointments,
+    encounters,
+    lab_reports,
+    medications,
+    patient_lookup,
+    patient_summary,
+    procedures,
+)
+from care_im_wrapper.data.exceptions import (
+    DataFetchError,
+    MissingContextError,
+    NoDataError,
+    PermissionDeniedError,
+)
 from care_im_wrapper.messaging.whatsapp import send_text
 from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.settings import plugin_settings
@@ -27,7 +43,7 @@ def process_meta_message(self, payload: dict[str, Any], channel: str) -> None:
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_meta_status_update(self, payload: dict[str, Any], channel: str) -> None:
     # TODO: Week 6 -> notification status tracking
-    logger.info("process_meta_status_update: channel=%s", channel)
+    # logger.info("process_meta_status_update: channel=%s", channel)
     try:
         pass
     except Exception as exc:
@@ -54,6 +70,8 @@ def _run_state_machine(payload: dict[str, Any], channel: str) -> None:
         ConversationState.AWAITING_YOB: _handle_awaiting_yob,
         ConversationState.AMBIGUOUS: _handle_ambiguous,
         ConversationState.AUTHENTICATED: _handle_authenticated,
+        ConversationState.AWAITING_PATIENT_SEARCH: _handle_awaiting_patient_search,
+        ConversationState.SELECTING_PATIENT: _handle_selecting_patient,
     }
     handler = dispatch.get(session.state)  # pyright: ignore[reportArgumentType]
     if handler:
@@ -69,7 +87,7 @@ def _handle_new(session: ConversationSession, phone_number: str, text: str) -> N
         return
 
     # Serialise all candidates to JSON-safe dicts for storage between turns
-    session.candidates = [  # pyright: ignore[reportAttributeAccessIssue]
+    candidates_list: list[dict[str, Any]] = [
         {
             "user_type": i.user_type,
             "user_id": i.user_id,
@@ -79,6 +97,7 @@ def _handle_new(session: ConversationSession, phone_number: str, text: str) -> N
         }
         for i in result.identities
     ]
+    session.candidates = candidates_list
     session.state = ConversationState.AWAITING_YOB  # pyright: ignore[reportAttributeAccessIssue]
     session.save(update_fields=["state", "candidates"])
     send_text(phone_number, _msg("yob_prompt"))
@@ -111,13 +130,12 @@ def _handle_awaiting_yob(session: ConversationSession, phone_number: str, text: 
             name=match["full_name"],
             phone=match["phone_number"],
         )
-        _send_main_menu(phone_number, match["user_type"])
+        _send_main_menu(phone_number, match["user_type"], name=match["full_name"])
         return
 
     # Multiple candidates share the same YOB —> persist the narrowed shortlist
-    # and ask the user to pick one by number.
-    session.candidates = shortlist  # pyright: ignore[reportAttributeAccessIssue]
-    session.state = ConversationState.AMBIGUOUS  # pyright: ignore[reportAttributeAccessIssue]
+    session.candidates = shortlist
+    session.state = ConversationState.AMBIGUOUS  # pyright: ignore [reportAttributeAccessIssue]
     session.save(update_fields=["state", "candidates"])
     _send_candidate_menu(phone_number, shortlist)
 
@@ -129,18 +147,28 @@ def _handle_ambiguous(session: ConversationSession, phone_number: str, text: str
         return
 
     index = int(choice) - 1
-    if index < 0 or index >= len(session.candidates):  # pyright: ignore[reportArgumentType]
+    candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore [reportAssignmentType]
+    if index < 0 or index >= len(candidates):
         send_text(phone_number, _msg("invalid_choice"))
         return
 
-    match = session.candidates[index]  # pyright: ignore[reportIndexIssue]
+    match = candidates[index]
     session.authenticate(
         user_type=match["user_type"],
         user_id=match["user_id"],
         name=match["full_name"],
         phone=match["phone_number"],
     )
-    _send_main_menu(phone_number, match["user_type"])
+    _send_main_menu(phone_number, str(match["user_type"]), name=match["full_name"])
+
+
+def _send_main_menu(phone_number: str, user_type: str, name: str | None = None) -> None:
+    menu = _STAFF_MENU if user_type == "staff" else _PATIENT_MENU
+    lines = [f"{k}. {v[0]}" for k, v in menu.items()]
+    lines.append("0. Logout")
+    greeting = _msg("greeting", name=name) if name else _msg("choose_option")
+    body = greeting + "\n\n" + "\n".join(lines)
+    send_text(phone_number, body)
 
 
 def _send_candidate_menu(phone_number: str, candidates: list[dict[str, Any]]) -> None:
@@ -149,51 +177,126 @@ def _send_candidate_menu(phone_number: str, candidates: list[dict[str, Any]]) ->
     send_text(phone_number, body)
 
 
+_PATIENT_MENU = {
+    "1": ("Encounter details", encounters.fetch_encounters),
+    "2": ("Current medications", medications.fetch_medications),
+    "3": ("Procedures", procedures.fetch_procedures),
+    "4": ("Appointments", appointments.fetch_appointments),
+    "5": ("Lab reports", lab_reports.fetch_lab_reports),
+    "6": ("Patient summary", patient_summary.fetch_summary),
+}
+
+_STAFF_MENU = {
+    **_PATIENT_MENU,
+    "7": ("Patient lookup", None),
+}
+
+
 def _handle_authenticated(session: ConversationSession, phone_number: str, text: str) -> None:
-    # TODO: Week 3 — route menu selection to data handlers
     choice = text.strip()
 
+    if choice == "0":
+        session.logout()
+        send_text(phone_number, _msg("logout_confirm"))
+        return
+
+    actor = resolve_actor(session)
+    if actor is None:
+        session.logout()
+        send_text(phone_number, _msg("session_expired"))
+        return
+
+    user_type_str = str(session.user_type)
+    menu = _STAFF_MENU if user_type_str == "staff" else _PATIENT_MENU
+    entry = menu.get(choice)
+
+    if not entry:
+        _send_main_menu(phone_number, user_type_str)
+        return
+
+    label, fetcher = entry
+
+    if fetcher is None:
+        # Patient lookup -> transition to search state
+        session.state = ConversationState.AWAITING_PATIENT_SEARCH  # pyright: ignore [reportAttributeAccessIssue]
+        session.save(update_fields=["state"])
+        send_text(phone_number, _msg("patient_search_prompt"))
+        return
+
+    try:
+        result = fetcher(actor, session)
+        send_text(phone_number, result)
+    except PermissionDeniedError:
+        logger.warning(
+            "PermissionDenied: %s id=%s action=%s",
+            actor.user_type,
+            actor.instance.id,
+            label,
+        )
+        send_text(phone_number, _msg("permission_denied"))
+    except MissingContextError as exc:
+        send_text(phone_number, str(exc))
+    except NoDataError:
+        send_text(phone_number, _msg("no_data", label=label.lower()))
+    except DataFetchError as exc:
+        logger.error("DataFetchError %s: %s", label, exc)
+        send_text(phone_number, _msg("fetch_error"))
+
+    _send_main_menu(phone_number, user_type_str)
+
+
+def _handle_awaiting_patient_search(session: ConversationSession, phone_number: str, text: str) -> None:
+    actor = resolve_actor(session)
+    if actor is None:
+        session.logout()
+        send_text(phone_number, _msg("session_expired"))
+        return
+
+    try:
+        results = patient_lookup.search_patients(actor, text)
+    except PermissionDeniedError:
+        send_text(phone_number, _msg("permission_denied"))
+        session.state = ConversationState.AUTHENTICATED  # pyright: ignore [reportAttributeAccessIssue]
+        session.save(update_fields=["state"])
+        return
+    except NoDataError:
+        send_text(phone_number, _msg("no_patients_found"))
+        return
+
+    session.candidates = results
+    session.state = ConversationState.SELECTING_PATIENT  # pyright: ignore [reportAttributeAccessIssue]
+    session.save(update_fields=["state", "candidates"])
+
+    options = [f"{r['name']} — {r['phone_number']}" for r in results]
+    send_text(
+        phone_number,
+        _msg("patient_search_results") + "\n\n" + "\n".join(f"{i + 1}. {opt}" for i, opt in enumerate(options)),
+    )
+
+
+def _handle_selecting_patient(session: ConversationSession, phone_number: str, text: str) -> None:
+    choice = text.strip()
     if not choice.isdigit():
         send_text(phone_number, _msg("invalid_choice"))
         return
 
     index = int(choice) - 1
-    options = _get_main_menu_options(str(session.user_type))
-
-    if index < 0 or index >= len(options):
+    candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore [reportAssignmentType]
+    if index < 0 or index >= len(candidates):
         send_text(phone_number, _msg("invalid_choice"))
         return
 
-    selected_option = options[index]
+    selected = candidates[index]
+    session.active_patient_external_id = selected["external_id"]
+    session.state = ConversationState.AUTHENTICATED  # pyright: ignore [reportAttributeAccessIssue]
+    session.candidates = []
+    session.save(update_fields=["state", "active_patient_external_id", "candidates"])
 
-    if selected_option == "Logout":
-        session.logout()
-        send_text(phone_number, "You have been logged out.")
-        return
-
-    send_text(phone_number, _msg("coming_soon"))
-
-
-def _get_main_menu_options(user_format: str) -> list[str]:
-    options = [
-        "Encounters",
-        "Medications",
-        "Procedures",
-        "Appointments",
-        "Lab reports",
-        "Patient summary",
-    ]
-    if user_format == "staff":
-        options.append("Patient lookup")
-    options.append("Logout")
-    return options
-
-
-def _send_main_menu(phone_number: str, user_format: str) -> None:
-    options = _get_main_menu_options(user_format)
-    lines = [f"{i + 1}. {opt}" for i, opt in enumerate(options)]
-    body = _msg("auth_success") + "\n\n" + "\n".join(lines)
-    send_text(phone_number, body)
+    send_text(
+        phone_number,
+        _msg("patient_selected", name=selected["name"]),
+    )
+    _send_main_menu(phone_number, str(session.user_type))
 
 
 def _get_or_create_session(phone_number: str, provider: str) -> ConversationSession:
@@ -205,9 +308,10 @@ def _get_or_create_session(phone_number: str, provider: str) -> ConversationSess
 
 
 def _extract_phone(payload: dict[str, Any]) -> str | None:
-    # "from" is the WhatsApp Cloud API field for the sender's phone number.
-    # A provider-agnostic abstraction layer should be added when more providers are supported.
-    return payload.get("from")
+    raw = payload.get("from")
+    if not raw:
+        return None
+    return raw if raw.startswith("+") else f"+{raw}"
 
 
 def _extract_text(payload: dict[str, Any]) -> str | None:
@@ -228,8 +332,17 @@ _MESSAGES: dict[str, str] = {
     "cooldown": "Your account is locked. Please try again in {minutes} minutes.",
     "select_account": "Multiple accounts found. Please select one by replying with its number:",
     "invalid_choice": "Please reply with a valid number from the list.",
-    "auth_success": "Identity verified. How can we help you today?",
-    "coming_soon": "Option coming soon.",
+    "choose_option": "Please choose an option:",
+    "logout_confirm": "You have been logged out. Send any message to start again.",
+    "session_expired": "Your session has expired. Please send any message to re-authenticate.",
+    "permission_denied": "You don't have permission to view this information.",
+    "no_data": "No {label} found on record.",
+    "fetch_error": "Could not retrieve that information. Please try again.",
+    "patient_search_prompt": "Enter the patient's phone number or name to search.",
+    "patient_search_results": "Search results. Reply with the number to select:",
+    "no_patients_found": "No patients found matching that search.",
+    "patient_selected": "Viewing records for {name}. What would you like to see?",
+    "greeting": "Hello, {name}! How can I help you today?",
 }
 
 

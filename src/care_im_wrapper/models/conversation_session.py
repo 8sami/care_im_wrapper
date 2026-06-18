@@ -23,16 +23,19 @@ class ConversationSession(models.Model):
         AMBIGUOUS = "ambiguous", "Ambiguous"  # pyright: ignore[reportAssignmentType]
         AUTHENTICATED = "authenticated", "Authenticated"  # pyright: ignore[reportAssignmentType]
         COOLDOWN = "cooldown", "Cooldown"  # pyright: ignore[reportAssignmentType]
+        AWAITING_PATIENT_SEARCH = "awaiting_patient_search", "Awaiting Patient Search"  # pyright: ignore[reportAssignmentType]
+        SELECTING_PATIENT = "selecting_patient", "Selecting Patient"  # pyright: ignore[reportAssignmentType]
 
     phone_number = models.CharField(max_length=20)
     provider = models.CharField(max_length=20, choices=Provider.choices, default=Provider.WHATSAPP)
     user_type = models.CharField(max_length=10, choices=UserType.choices, default=UserType.UNKNOWN)
     # IntegerField not FK — cross-package FK causes migration dependency issues
     user_id = models.IntegerField(null=True, blank=True)
+    active_patient_external_id = models.CharField(max_length=255, blank=True, null=True)
     snapshot_name = models.CharField(max_length=255, blank=True, default="")
     snapshot_phone = models.CharField(max_length=20, blank=True, default="")
     candidates = models.JSONField(default=list, blank=True)
-    state = models.CharField(max_length=20, choices=State.choices, default=State.NEW)
+    state = models.CharField(max_length=30, choices=State.choices, default=State.NEW)
     failed_attempts = models.PositiveSmallIntegerField(default=0)  # pyright: ignore[reportArgumentType]
     cooldown_until = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -76,9 +79,9 @@ class ConversationSession(models.Model):
 
     def increment_failed_attempt(self) -> None:
         self.failed_attempts += 1  # pyright: ignore[reportOperatorIssue]
-        if self.failed_attempts >= plugin_settings.MAX_FAILED_ATTEMPTS:
+        if self.failed_attempts >= int(plugin_settings.MAX_FAILED_ATTEMPTS):
             self.state = self.State.COOLDOWN
-            self.cooldown_until = timezone.now() + timedelta(minutes=plugin_settings.COOLDOWN_MINUTES)
+            self.cooldown_until = timezone.now() + timedelta(minutes=int(plugin_settings.COOLDOWN_MINUTES))
         self.save(update_fields=["state", "failed_attempts", "cooldown_until"])
 
     def authenticate(self, user_type: str, user_id: int, name: str, phone: str) -> None:
@@ -105,6 +108,7 @@ class ConversationSession(models.Model):
         self.state = self.State.NEW
         self.user_type = self.UserType.UNKNOWN
         self.user_id = None
+        self.active_patient_external_id = None
         self.snapshot_name = ""
         self.snapshot_phone = ""
         self.failed_attempts = 0
@@ -115,10 +119,11 @@ class ConversationSession(models.Model):
                 "state",
                 "user_type",
                 "user_id",
+                "active_patient_external_id",
                 "snapshot_name",
                 "snapshot_phone",
                 "failed_attempts",
                 "cooldown_until",
                 "candidates",
-            ]
+            ],
         )

@@ -7,3 +7,5 @@ class ConversationState:
     AMBIGUOUS: ClassVar[str] = "ambiguous"
     AUTHENTICATED: ClassVar[str] = "authenticated"
     COOLDOWN: ClassVar[str] = "cooldown"
+    AWAITING_PATIENT_SEARCH: ClassVar[str] = "awaiting_patient_search"
+    SELECTING_PATIENT: ClassVar[str] = "selecting_patient"

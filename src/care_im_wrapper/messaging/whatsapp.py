@@ -22,8 +22,28 @@ class WhatsAppClient:
             }
         )
 
-    def send_interactive_menu(self, to: str, payload: dict[str, Any]) -> None:
-        self._send(payload)
+    def send_interactive_menu(self, to: str, header: str, options: list[str]) -> None:
+        body = f"{header}\n\n" + "\n".join(f"{i + 1}. {opt}" for i, opt in enumerate(options))
+        # i think this payload's structure is wrong
+        self._send(
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to,
+                "type": "interactive",
+                "interactive": {
+                    "type": "list",
+                    "body": {"text": body},
+                    "action": {
+                        "button": "Select Option",
+                        "section": {
+                            "title": "",
+                            "rows": [{"id": str(i + 1), "title": opt[:24]} for i, opt in enumerate(options)],
+                        },
+                    },
+                },
+            }
+        )
 
     def _send(self, payload: dict[str, Any]) -> None:
         token = plugin_settings.WHATSAPP_ACCESS_TOKEN
@@ -53,5 +73,5 @@ def send_text(to: str, body: str) -> None:
     WhatsAppClient().send_text(to, body)
 
 
-def send_interactive_menu(to: str, payload: dict[str, Any]) -> None:
-    WhatsAppClient().send_interactive_menu(to, payload)
+def send_interactive_menu(to: str, header: str, options: list[str]) -> None:
+    WhatsAppClient().send_interactive_menu(to, header, options)
