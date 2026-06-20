@@ -23,17 +23,44 @@ def fetch_appointments(actor: Actor, session: ConversationSession) -> str:
 
     items = []
     for booking in records:
-        status = humanize_choice(getattr(booking, "status", None))
-        date = humanize_date(getattr(booking, "booked_on", None))
         info = _extract_booking_info(booking)
-        items.append(f"{date} — {info} ({status})")
+        items.append(info)
 
     return numbered_list("Your recent appointments:", items)
 
 
 def _extract_booking_info(booking) -> str:
-    token = getattr(booking, "token", None)
     slot = getattr(booking, "token_slot", None)
-    if token and slot:
-        return f"Token {token} (Slot: {slot})"
-    return str(token or slot or "Unknown appointment")
+    status = humanize_choice(getattr(booking, "status", None))
+
+    practitioner = "Unknown"
+    resource = getattr(slot, "resource", None) if slot else None
+    if resource:
+        user = getattr(resource, "user", None)
+        if user:
+            first_name = getattr(user, "first_name", "")
+            last_name = getattr(user, "last_name", "")
+            practitioner = f"{first_name} {last_name}".strip() or "Unknown"
+
+    location = "Unknown"
+    facility = getattr(resource, "facility", None) if resource else None
+    if facility:
+        location = getattr(facility, "name", "Unknown")
+
+    date_str = ""
+    time_str = ""
+    if slot and hasattr(slot, "start_datetime"):
+        date_str = humanize_date(slot.start_datetime)
+        time_str = (
+            f"{slot.start_datetime.strftime('%I:%M %p').lower()} - {slot.end_datetime.strftime('%I:%M %p').lower()}"
+        )
+
+    lines = [
+        f"Practitioner: {practitioner}",
+        f"      Location: {location}",
+        f"      Status: {status.capitalize() if status else ''}",
+        f"      Date: {date_str}",
+        f"      Time Slot: {time_str}",
+    ]
+
+    return "\n".join(line for line in lines if line.split(": ", 1)[1].strip())
