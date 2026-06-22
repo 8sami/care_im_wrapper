@@ -17,17 +17,18 @@ def _get_whatsapp_client() -> MessageSender:
     return WhatsAppClient()
 
 
+# add more providers here
+
 _PROVIDERS: dict[str, Callable[[], MessageSender]] = {
     "whatsapp": _get_whatsapp_client,
+    # add then here
 }
 
 
 def send(channel: str, to: str, body: str) -> None:
     """
     Sends a text message via whichever provider `channel` identifies.
-    Unknown channels are logged and dropped rather than raising —
-    a malformed or future-unsupported channel value must never crash
-    the Celery task that's trying to reply to a user.
+    Unknown channels are logged and dropped rather than raising errors.
     """
     factory = _PROVIDERS.get(channel)
     if factory is None:

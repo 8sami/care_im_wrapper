@@ -35,7 +35,6 @@ def resolve_phone_number(phone_number: str) -> ResolutionResult:
     identities = []
 
     try:
-        # Check Patients
         patients = Patient.objects.filter(phone_number=phone_number).order_by("id")
         for p in patients:
             yob = getattr(p, "year_of_birth", None)
@@ -58,7 +57,6 @@ def resolve_phone_number(phone_number: str) -> ResolutionResult:
         raise
 
     try:
-        # Check Users (Staff)
         users = User.objects.filter(phone_number=phone_number, is_active=True).order_by("id")
         for u in users:
             dob = getattr(u, "date_of_birth", None)

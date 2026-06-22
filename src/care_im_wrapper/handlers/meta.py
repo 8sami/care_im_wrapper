@@ -33,10 +33,7 @@ def on_meta_status(*, payload: dict[str, Any], channel: str, **kwargs: Any) -> N
 
 def _normalize_meta_message(payload: dict[str, Any], channel: str) -> InboundMessage | None:
     """
-    Translates a raw WhatsApp Cloud API message object into the
-    provider-agnostic InboundMessage shape. This is the ONLY place in
-    the codebase that should know WhatsApp's payload structure for
-    inbound messages — tasks.py must never parse this shape again.
+    Translates a raw WhatsApp Cloud API message object into the provider-agnostic InboundMessage shape.
     """
     raw_phone = payload.get("from")
     if not raw_phone:

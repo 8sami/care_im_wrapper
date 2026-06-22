@@ -7,7 +7,6 @@ _MESSAGES: dict[str, str] = {
     "yob_prompt": "Please reply with your year of birth (e.g. 1990).",
     "yob_invalid": "Please enter a valid 4-digit year (e.g. 1990).",
     "yob_wrong": "That doesn't match. You have {remaining} attempt(s) remaining.",
-    "locked": "Too many incorrect attempts. Please try again in 30 minutes.",
     "cooldown": "Your account is locked. Please try again in {minutes} minutes.",
     "select_account": "Multiple accounts found. Please select one by replying with its number:",
     "invalid_choice": "Please reply with a valid number from the list.",

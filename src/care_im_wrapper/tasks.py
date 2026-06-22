@@ -18,7 +18,7 @@ def process_inbound_message(
     channel: str,
     raw_id: str | None = None,
 ) -> None:
-    logger.info("process_inbound_message: channel=%s", channel)
+    # logger.info("process_inbound_message: channel=%s", channel)
     try:
         run_state_machine(phone_number, text, channel)
     except Exception as exc:

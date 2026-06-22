@@ -5,8 +5,8 @@ from typing import Any
 
 from care_im_wrapper.auth.actor import resolve_actor
 from care_im_wrapper.auth.resolver import resolve_phone_number
-from care_im_wrapper.auth.states import ConversationState
 from care_im_wrapper.conversation.menus import _PATIENT_MENU, _STAFF_MENU
+from care_im_wrapper.conversation.states import ConversationState
 from care_im_wrapper.conversation.templates import _msg
 from care_im_wrapper.data import (
     patient_lookup,
@@ -256,7 +256,3 @@ def _send_candidate_menu(phone_number: str, candidates: list[dict[str, Any]], ch
     lines = [f"{i + 1}. {c['full_name']} ({c['user_type'].capitalize()})" for i, c in enumerate(candidates)]
     body = _msg("select_account") + "\n\n" + "\n".join(lines)
     messaging_send(channel, phone_number, body)
-
-
-def format_as_str(val: Any) -> str:
-    return str(val)
