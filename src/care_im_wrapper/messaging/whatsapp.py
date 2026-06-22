@@ -67,11 +67,3 @@ class WhatsAppClient:
             logger.error("WhatsApp API %s: %s", exc.response.status_code, exc.response.text)
         except httpx.RequestError as exc:
             logger.error("WhatsApp network error: %s", exc)
-
-
-def send_text(to: str, body: str) -> None:
-    WhatsAppClient().send_text(to, body)
-
-
-def send_interactive_menu(to: str, header: str, options: list[str]) -> None:
-    WhatsAppClient().send_interactive_menu(to, header, options)

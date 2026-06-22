@@ -38,7 +38,10 @@ def resolve_phone_number(phone_number: str) -> ResolutionResult:
         # Check Patients
         patients = Patient.objects.filter(phone_number=phone_number).order_by("id")
         for p in patients:
-            yob = p.year_of_birth
+            yob = getattr(p, "year_of_birth", None)
+            if not yob and getattr(p, "date_of_birth", None):
+                yob = p.date_of_birth.year
+
             if not yob:
                 logger.warning("Patient %s has no year_of_birth, skipping", p.id)
                 continue
