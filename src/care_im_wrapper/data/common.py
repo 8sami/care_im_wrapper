@@ -5,6 +5,7 @@ import logging
 from care.security.authorization.base import AuthorizationController  # type: ignore[import-untyped]
 
 from care_im_wrapper.data.exceptions import MissingContextError, PermissionDeniedError
+from care_im_wrapper.models import ConversationSession
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ def resolve_target_patient(actor, session):
     Raises MissingContextError if staff has no patient selected.
     Raises PermissionDeniedError if staff lacks permission on the resolved patient.
     """
-    if actor.user_type == "patient":
+    if actor.user_type == ConversationSession.UserType.PATIENT:
         return actor.instance
 
     from care.emr.models.patient import Patient  # type: ignore[import-untyped]

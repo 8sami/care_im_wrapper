@@ -6,7 +6,6 @@ from typing import Any
 from care_im_wrapper.auth.actor import resolve_actor
 from care_im_wrapper.auth.resolver import resolve_phone_number
 from care_im_wrapper.conversation.menus import _PATIENT_MENU, _STAFF_MENU
-from care_im_wrapper.conversation.states import ConversationState
 from care_im_wrapper.conversation.templates import _msg
 from care_im_wrapper.data import (
     patient_lookup,
@@ -39,14 +38,14 @@ def run_state_machine(phone_number: str, text: str, channel: str) -> None:
         return
 
     dispatch = {
-        ConversationState.NEW: _handle_new,
-        ConversationState.AWAITING_YOB: _handle_awaiting_yob,
-        ConversationState.AMBIGUOUS: _handle_ambiguous,
-        ConversationState.AUTHENTICATED: _handle_authenticated,
-        ConversationState.AWAITING_PATIENT_SEARCH: _handle_awaiting_patient_search,
-        ConversationState.SELECTING_PATIENT: _handle_selecting_patient,
+        ConversationSession.State.NEW: _handle_new,
+        ConversationSession.State.AWAITING_YOB: _handle_awaiting_yob,
+        ConversationSession.State.AMBIGUOUS: _handle_ambiguous,
+        ConversationSession.State.AUTHENTICATED: _handle_authenticated,
+        ConversationSession.State.AWAITING_PATIENT_SEARCH: _handle_awaiting_patient_search,
+        ConversationSession.State.SELECTING_PATIENT: _handle_selecting_patient,
     }
-    handler = dispatch.get(session.state)  # pyright: ignore [reportArgumentType]
+    handler = dispatch.get(session.state)
     if handler:
         handler(session, phone_number, text, channel)
     else:
@@ -71,7 +70,7 @@ def _handle_new(session: ConversationSession, phone_number: str, text: str, chan
         for i in result.identities
     ]
     session.candidates = candidates_list
-    session.state = ConversationState.AWAITING_YOB  # pyright: ignore[reportAttributeAccessIssue]
+    session.state = ConversationSession.State.AWAITING_YOB
     session.save(update_fields=["state", "candidates"])
     messaging_send(channel, phone_number, _msg("yob_prompt"))
 
@@ -83,14 +82,14 @@ def _handle_awaiting_yob(session: ConversationSession, phone_number: str, text: 
         return
 
     year = int(stripped)
-    shortlist = [c for c in session.candidates if c["year_of_birth"] == year]  # pyright: ignore [reportGeneralTypeIssues]
+    shortlist = [c for c in session.candidates if c["year_of_birth"] == year]
 
     if not shortlist:
         session.increment_failed_attempt()
-        if session.state == ConversationState.COOLDOWN:
+        if session.state == ConversationSession.State.COOLDOWN:
             messaging_send(channel, phone_number, _msg("cooldown", minutes=session.get_cooldown_remaining_minutes()))
         else:
-            remaining = int(plugin_settings.MAX_FAILED_ATTEMPTS) - session.failed_attempts  # pyright: ignore[reportOperatorIssue]
+            remaining = int(plugin_settings.MAX_FAILED_ATTEMPTS) - session.failed_attempts
             messaging_send(channel, phone_number, _msg("yob_wrong", remaining=remaining))
         return
 
@@ -107,7 +106,7 @@ def _handle_awaiting_yob(session: ConversationSession, phone_number: str, text: 
         return
 
     session.candidates = shortlist
-    session.state = ConversationState.AMBIGUOUS  # pyright: ignore [reportAttributeAccessIssue]
+    session.state = ConversationSession.State.AMBIGUOUS
     session.save(update_fields=["state", "candidates"])
     _send_candidate_menu(phone_number, shortlist, channel)
 
@@ -119,7 +118,7 @@ def _handle_ambiguous(session: ConversationSession, phone_number: str, text: str
         return
 
     index = int(choice) - 1
-    candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore [reportAssignmentType]
+    candidates: list[dict[str, Any]] = session.candidates
     if index < 0 or index >= len(candidates):
         messaging_send(channel, phone_number, _msg("invalid_choice"))
         return
@@ -149,7 +148,7 @@ def _handle_authenticated(session: ConversationSession, phone_number: str, text:
         return
 
     user_type_str = str(session.user_type)
-    menu = _STAFF_MENU if user_type_str == "staff" else _PATIENT_MENU
+    menu = _STAFF_MENU if session.user_type == ConversationSession.UserType.STAFF else _PATIENT_MENU
     entry = menu.get(choice)
 
     if not entry:
@@ -159,7 +158,7 @@ def _handle_authenticated(session: ConversationSession, phone_number: str, text:
     label, fetcher = entry
 
     if fetcher is None:
-        session.state = ConversationState.AWAITING_PATIENT_SEARCH  # pyright: ignore [reportAttributeAccessIssue]
+        session.state = ConversationSession.State.AWAITING_PATIENT_SEARCH
         session.save(update_fields=["state"])
         messaging_send(channel, phone_number, _msg("patient_search_prompt"))
         return
@@ -197,7 +196,7 @@ def _handle_awaiting_patient_search(session: ConversationSession, phone_number: 
         results = patient_lookup.search_patients(actor, text)
     except PermissionDeniedError:
         messaging_send(channel, phone_number, _msg("permission_denied"))
-        session.state = ConversationState.AUTHENTICATED  # pyright: ignore [reportAttributeAccessIssue]
+        session.state = ConversationSession.State.AUTHENTICATED
         session.save(update_fields=["state"])
         return
     except NoDataError:
@@ -205,7 +204,7 @@ def _handle_awaiting_patient_search(session: ConversationSession, phone_number: 
         return
 
     session.candidates = results
-    session.state = ConversationState.SELECTING_PATIENT  # pyright: ignore [reportAttributeAccessIssue]
+    session.state = ConversationSession.State.SELECTING_PATIENT
     session.save(update_fields=["state", "candidates"])
 
     options = [f"{r['name']} — {r['phone_number']}" for r in results]
@@ -220,14 +219,14 @@ def _handle_selecting_patient(session: ConversationSession, phone_number: str, t
         return
 
     index = int(choice) - 1
-    candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore [reportAssignmentType]
+    candidates: list[dict[str, Any]] = session.candidates
     if index < 0 or index >= len(candidates):
         messaging_send(channel, phone_number, _msg("invalid_choice"))
         return
 
     selected = candidates[index]
     session.active_patient_external_id = selected["external_id"]
-    session.state = ConversationState.AUTHENTICATED  # pyright: ignore [reportAttributeAccessIssue]
+    session.state = ConversationSession.State.AUTHENTICATED
     session.candidates = []
     session.save(update_fields=["state", "active_patient_external_id", "candidates"])
 
@@ -240,7 +239,7 @@ def _handle_selecting_patient(session: ConversationSession, phone_number: str, t
 
 
 def _get_or_create_session(phone_number: str, provider: str) -> ConversationSession:
-    session, _ = ConversationSession.objects.get_or_create(  # pyright: ignore[reportAttributeAccessIssue]
+    session, _ = ConversationSession.objects.get_or_create(
         phone_number=phone_number,
         provider=provider,
     )
@@ -248,7 +247,7 @@ def _get_or_create_session(phone_number: str, provider: str) -> ConversationSess
 
 
 def _send_main_menu(phone_number: str, user_type: str, channel: str, name: str | None = None) -> None:
-    menu = _STAFF_MENU if user_type == "staff" else _PATIENT_MENU
+    menu = _STAFF_MENU if user_type == ConversationSession.UserType.STAFF.value else _PATIENT_MENU
     lines = [f"{k}. {v[0]}" for k, v in menu.items()]
     lines.append("0. Logout")
     greeting = _msg("greeting", name=name) if name else _msg("choose_option")

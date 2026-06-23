@@ -7,6 +7,7 @@ from celery import shared_task
 from django.core.cache import cache
 
 from care_im_wrapper.conversation.handlers import run_state_machine
+from care_im_wrapper.core.sanitize import mask_phone_number
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,11 @@ def process_inbound_message(
     # Handle same user/session
     lock_key = f"session_lock:{phone_number}:{channel}"
     if not cache.add(lock_key, True, timeout=30):
-        logger.info("Concurrency detected for %s:%s. Dropping message to prevent task storm.", phone_number, channel)
+        logger.info(
+            "Concurrency detected for %s:%s. Dropping message to prevent task storm.",
+            mask_phone_number(phone_number),
+            channel,
+        )
         return
 
     try:

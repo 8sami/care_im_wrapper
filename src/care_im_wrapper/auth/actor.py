@@ -4,6 +4,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from care_im_wrapper.models import ConversationSession
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,24 +28,20 @@ def resolve_actor(session) -> "Actor | None":
     from care.emr.models.patient import Patient  # pyright: ignore[reportMissingImports]
     from care.users.models import User  # pyright: ignore[reportMissingImports]
 
-    try:
-        if session.user_type == "patient":
-            return Actor(
-                user_type="patient",
-                instance=Patient.objects.get(id=session.user_id),
-            )
-        if session.user_type == "staff":
-            return Actor(
-                user_type="staff",
-                instance=User.objects.get(id=session.user_id),
-            )
-        logger.error("resolve_actor: unknown user_type %s", session.user_type)
-        return None
-    except Exception as exc:
-        logger.warning(
-            "resolve_actor: %s id=%s not found: %s",
-            session.user_type,
-            session.user_id,
-            exc,
+    if session.user_type == ConversationSession.UserType.PATIENT:
+        return Actor(
+            user_type=ConversationSession.UserType.PATIENT,
+            instance=Patient.objects.get(id=session.user_id),
         )
-        return None
+    if session.user_type == ConversationSession.UserType.STAFF:
+        return Actor(
+            user_type=ConversationSession.UserType.STAFF,
+            instance=User.objects.get(id=session.user_id),
+        )
+
+    logger.warning(
+        "resolve_actor: %s id=%s not found",
+        session.user_type,
+        session.user_id,
+    )
+    return None

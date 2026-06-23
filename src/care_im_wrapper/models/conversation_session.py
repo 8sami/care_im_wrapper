@@ -84,7 +84,7 @@ class ConversationSession(models.Model):
             self.cooldown_until = timezone.now() + timedelta(minutes=int(plugin_settings.COOLDOWN_MINUTES))
         self.save(update_fields=["state", "failed_attempts", "cooldown_until"])
 
-    def authenticate(self, user_type: str, user_id: int, name: str, phone: str) -> None:
+    def authenticate(self, user_type: ConversationSession.UserType, user_id: int, name: str, phone: str) -> None:
         self.state = self.State.AUTHENTICATED
         self.user_type = user_type
         self.user_id = user_id

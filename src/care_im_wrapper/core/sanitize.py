@@ -1,18 +1,22 @@
-def mask_phone_number(phone: str) -> str:
-    """Returns e.g. +9232****475 — keeps country code prefix and last 3 digits."""
+from care_im_wrapper.settings import plugin_settings
+
+
+def normalize_phone_number(phone: str) -> str:
+    """Removes any non-digit characters except the leading +."""
     if not phone:
         return ""
-    # Remove any non-digit characters except the leading +
-    sanitized = "".join(c for c in phone if c.isdigit() or c == "+")
+    return "".join(c for c in phone if c.isdigit() or c == "+")
+
+
+def mask_phone_number(phone: str) -> str:
+    """Returns a masked phone number, e.g. '+1234567890' -> '+1*******90'."""
+    sanitized = normalize_phone_number(phone)
 
     if len(sanitized) < 5:
         return sanitized
 
-    # We want to keep a prefix and a suffix.
-    # For international numbers, the length varies.
-    # Let's assume we keep the first 4 (including + if present) and last 3.
-    prefix_len = 4
-    suffix_len = 3
+    prefix_len = int(plugin_settings.PHONE_NUMBER_MASK_PREFIX_LEN)
+    suffix_len = int(plugin_settings.PHONE_NUMBER_MASK_SUFFIX_LEN)
 
     if len(sanitized) <= prefix_len + suffix_len:
         return sanitized

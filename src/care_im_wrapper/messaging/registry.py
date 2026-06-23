@@ -4,6 +4,8 @@ import logging
 from collections.abc import Callable
 from typing import Protocol
 
+from care_im_wrapper.models import ConversationSession
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,8 +22,7 @@ def _get_whatsapp_client() -> MessageSender:
 # add more providers here
 
 _PROVIDERS: dict[str, Callable[[], MessageSender]] = {
-    "whatsapp": _get_whatsapp_client,
-    # add then here
+    ConversationSession.Provider.WHATSAPP.value: _get_whatsapp_client,
 }
 
 
