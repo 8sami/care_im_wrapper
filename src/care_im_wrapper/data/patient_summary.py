@@ -2,11 +2,13 @@
 
 from care_im_wrapper.auth.actor import Actor
 from care_im_wrapper.conversation.templates import _msg
-from care_im_wrapper.data.base import field, humanize_choice
+from care_im_wrapper.data.base import cached_fetch, field, humanize_choice
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.models import ConversationSession
+from care_im_wrapper.settings import plugin_settings
 
 
+@cached_fetch(timeout_seconds=int(plugin_settings.DATA_CACHE_TIMEOUT_SECONDS))
 def fetch_summary(actor: Actor, session: ConversationSession) -> str:
     """
     patient: returns their own summary.
