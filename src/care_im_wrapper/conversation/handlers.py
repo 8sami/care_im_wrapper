@@ -11,6 +11,7 @@ from care_im_wrapper.conversation.templates import _msg
 from care_im_wrapper.data import (
     patient_lookup,
 )
+from care_im_wrapper.data.base import numbered_list
 from care_im_wrapper.data.exceptions import (
     DataFetchError,
     MissingContextError,
@@ -25,7 +26,13 @@ logger = logging.getLogger(__name__)
 
 
 def run_state_machine(phone_number: str, text: str, channel: str) -> None:
+    from care_im_wrapper.core.rate_limit import is_rate_limited
+
     session = _get_or_create_session(phone_number, channel)
+
+    if is_rate_limited(phone_number):
+        messaging_send(channel, phone_number, _msg("rate_limit_exceeded"))
+        return
 
     if session.is_in_cooldown():
         messaging_send(channel, phone_number, _msg("cooldown", minutes=session.get_cooldown_remaining_minutes()))
@@ -202,11 +209,8 @@ def _handle_awaiting_patient_search(session: ConversationSession, phone_number: 
     session.save(update_fields=["state", "candidates"])
 
     options = [f"{r['name']} — {r['phone_number']}" for r in results]
-    messaging_send(
-        channel,
-        phone_number,
-        _msg("patient_search_results") + "\n\n" + "\n".join(f"{i + 1}. {opt}" for i, opt in enumerate(options)),
-    )
+    msg_body = numbered_list(_msg("patient_search_results"), options)
+    messaging_send(channel, phone_number, msg_body)
 
 
 def _handle_selecting_patient(session: ConversationSession, phone_number: str, text: str, channel: str) -> None:

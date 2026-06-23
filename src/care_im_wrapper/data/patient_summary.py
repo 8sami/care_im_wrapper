@@ -1,6 +1,7 @@
 """Fetch patient summary for the authenticated actor."""
 
 from care_im_wrapper.auth.actor import Actor
+from care_im_wrapper.conversation.templates import _msg
 from care_im_wrapper.data.base import field, humanize_choice
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.models import ConversationSession
@@ -24,7 +25,7 @@ def fetch_summary(actor: Actor, session: ConversationSession) -> str:
         field("Phone", getattr(patient, "phone_number", None)),
     ]
 
-    return "Patient Summary\n\n" + "\n".join(lines)
+    return _msg("summary_header") + "\n\n" + "\n".join(lines)
 
 
 def _format_dob_or_yob(patient) -> str | None:

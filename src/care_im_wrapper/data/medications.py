@@ -1,12 +1,15 @@
 """Fetch medication requests for the authenticated actor."""
 
 from care_im_wrapper.auth.actor import Actor
-from care_im_wrapper.data.base import humanize_choice, numbered_list
+from care_im_wrapper.conversation.templates import _msg
+from care_im_wrapper.data.base import cached_fetch, humanize_choice, numbered_list
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.data.exceptions import NoDataError
 from care_im_wrapper.models import ConversationSession
+from care_im_wrapper.settings import plugin_settings
 
 
+@cached_fetch(timeout_seconds=int(plugin_settings.DATA_CACHE_TIMEOUT_SECONDS))
 def fetch_medications(actor: Actor, session: ConversationSession) -> str:
     """
     patient: returns their own last 10 medications.
@@ -32,7 +35,7 @@ def fetch_medications(actor: Actor, session: ConversationSession) -> str:
         if isinstance(dosage_instructions, list):
             for instr in dosage_instructions:
                 if isinstance(instr, dict):
-                    display = instr.get("display") or instr.get("text")  # find the exact attribute
+                    display = instr.get("display") or instr.get("text")
                     if display:
                         dosage_parts.append(str(display))
                     else:
@@ -63,7 +66,7 @@ def fetch_medications(actor: Actor, session: ConversationSession) -> str:
 
         items.append(" | ".join(item_details))
 
-    return numbered_list("Your recent medications:", items)
+    return numbered_list(_msg("medications_header"), items)
 
 
 def _extract_medication_name(med) -> str:
@@ -74,7 +77,7 @@ def _extract_medication_name(med) -> str:
     """
     medication = getattr(med, "medication", None)
     if isinstance(medication, dict):
-        name = medication.get("display") or medication.get("text")  # find the exact attribute
+        name = medication.get("display") or medication.get("text")
         if name:
             return name
 

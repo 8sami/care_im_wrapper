@@ -1,6 +1,10 @@
-"""Shared formatting helpers for WhatsApp message construction."""
+from __future__ import annotations
 
 from datetime import datetime
+from functools import wraps
+from typing import Any
+
+from django.core.cache import cache as django_cache
 
 _WHATSAPP_MESSAGE_LIMIT = 4096
 
@@ -45,3 +49,29 @@ def humanize_date(value: datetime | str | None) -> str:
         return value.strftime("%d %b %Y")
     except (AttributeError, ValueError):
         return str(value)
+
+
+def cached_fetch(timeout_seconds: int):
+    def decorator(fetch_fn):
+        @wraps(fetch_fn)
+        def wrapper(actor: Any, session: Any) -> Any:
+            key = _build_cache_key(fetch_fn.__name__, actor, session)
+            hit = django_cache.get(key)
+            if hit is not None:
+                return hit
+            result = fetch_fn(actor, session)
+            django_cache.set(key, result, timeout_seconds)
+            return result
+
+        return wrapper
+
+    return decorator
+
+
+def _build_cache_key(fn_name: str, actor: Any, session: Any) -> str:
+    """
+    Key must be unique per (function, actor type, actor id, active patient).
+    A collision between two patients' data is a privacy bug.
+    """
+    patient_ctx = session.active_patient_external_id or "self"
+    return f"care_im:fetch:{fn_name}:{actor.user_type}:{actor.instance.id}:{patient_ctx}"

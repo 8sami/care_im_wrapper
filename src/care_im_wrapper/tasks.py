@@ -18,7 +18,9 @@ def process_inbound_message(
     channel: str,
     raw_id: str | None = None,
 ) -> None:
-    # logger.info("process_inbound_message: channel=%s", channel)
+    # DEBOUNCE NOTE: Content-based debouncing is not implemented in Week 4.
+    # WhatsApp redelivery is mitigated by the fast-200 webhook design from Week 1;
+    # the Celery task is idempotent enough for rare duplicates.
     try:
         run_state_machine(phone_number, text, channel)
     except Exception as exc:
@@ -29,7 +31,6 @@ def process_inbound_message(
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_status_update(self, payload: dict[str, Any], channel: str) -> None:
     # TODO: Week 6 -> notification status tracking
-    # logger.info("process_status_update: channel=%s", channel)
     try:
         pass
     except Exception as exc:

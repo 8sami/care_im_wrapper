@@ -21,6 +21,14 @@ _MESSAGES: dict[str, str] = {
     "no_patients_found": "No patients found matching that search.",
     "patient_selected": "Viewing records for {name}. What would you like to see?",
     "greeting": "Hello, {name}! How can I help you today?",
+    # Data fetcher headers
+    "encounters_header": "Your recent encounters:",
+    "medications_header": "Your recent medications:",
+    "procedures_header": "Your recent procedures:",
+    "appointments_header": "Your recent appointments:",
+    "lab_reports_header": "Your recent lab reports:",
+    "summary_header": "Patient Summary",
+    "rate_limit_exceeded": "Too many messages. Please wait a moment before trying again.",
 }
 
 

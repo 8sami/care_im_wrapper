@@ -1,12 +1,15 @@
 """Fetch encounter details for the authenticated actor."""
 
 from care_im_wrapper.auth.actor import Actor
-from care_im_wrapper.data.base import humanize_choice, humanize_date, numbered_list
+from care_im_wrapper.conversation.templates import _msg
+from care_im_wrapper.data.base import cached_fetch, humanize_choice, humanize_date, numbered_list
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.data.exceptions import NoDataError
 from care_im_wrapper.models import ConversationSession
+from care_im_wrapper.settings import plugin_settings
 
 
+@cached_fetch(timeout_seconds=int(plugin_settings.DATA_CACHE_TIMEOUT_SECONDS))
 def fetch_encounters(actor: Actor, session: ConversationSession) -> str:
     """
     patient: returns their own last 10 encounters.
@@ -27,7 +30,7 @@ def fetch_encounters(actor: Actor, session: ConversationSession) -> str:
         date = humanize_date(getattr(enc, "created_date", None))
         items.append(f"{date} — {fmt_facility_name(enc)} ({status})")
 
-    return numbered_list("Your recent encounters:", items)
+    return numbered_list(_msg("encounters_header"), items)
 
 
 def fmt_facility_name(enc) -> str:

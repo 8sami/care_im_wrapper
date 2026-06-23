@@ -110,6 +110,9 @@ DEFAULTS = {
     "WHATSAPP_APP_SECRET": "",  # Meta app secret for HMAC webhook verification
     "MAX_FAILED_ATTEMPTS": 5,  # failed YOB attempts before the session is locked
     "COOLDOWN_MINUTES": 30,  # duration of the cooldown period
+    "RATE_LIMIT_WINDOW_SECONDS": 60,  # rolling window
+    "RATE_LIMIT_MAX_MESSAGES": 10,  # max messages per window per phone number
+    "DATA_CACHE_TIMEOUT_SECONDS": 90,  # see Task 3
 }
 
 

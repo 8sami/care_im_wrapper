@@ -1,12 +1,15 @@
 """Fetch procedure/service request details for the authenticated actor."""
 
 from care_im_wrapper.auth.actor import Actor
-from care_im_wrapper.data.base import humanize_choice, humanize_date, numbered_list
+from care_im_wrapper.conversation.templates import _msg
+from care_im_wrapper.data.base import cached_fetch, humanize_choice, humanize_date, numbered_list
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.data.exceptions import NoDataError
 from care_im_wrapper.models import ConversationSession
+from care_im_wrapper.settings import plugin_settings
 
 
+@cached_fetch(timeout_seconds=int(plugin_settings.DATA_CACHE_TIMEOUT_SECONDS))
 def fetch_procedures(actor: Actor, session: ConversationSession) -> str:
     """
     patient: returns their own last 10 procedures.
@@ -28,7 +31,7 @@ def fetch_procedures(actor: Actor, session: ConversationSession) -> str:
         name = _extract_service_name(sr)
         items.append(f"{name} — {date} ({status})")
 
-    return numbered_list("Your recent procedures:", items)
+    return numbered_list(_msg("procedures_header"), items)
 
 
 def _extract_service_name(sr) -> str:
@@ -37,5 +40,5 @@ def _extract_service_name(sr) -> str:
     """
     code = getattr(sr, "code", None)
     if isinstance(code, dict):
-        return code.get("display") or code.get("text") or "Unspecified procedure"  # find the exact attribute
+        return code.get("display") or code.get("text") or "Unspecified procedure"
     return str(code) if code else "Unspecified procedure"
