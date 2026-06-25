@@ -3,10 +3,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from django.db import transaction
+
 from care_im_wrapper.auth.actor import resolve_actor
 from care_im_wrapper.auth.resolver import resolve_phone_number
 from care_im_wrapper.conversation.menus import _PATIENT_MENU, _STAFF_MENU
 from care_im_wrapper.conversation.templates import _msg
+from care_im_wrapper.core.rate_limit import is_rate_limited
 from care_im_wrapper.data import (
     patient_lookup,
 )
@@ -25,31 +28,33 @@ logger = logging.getLogger(__name__)
 
 
 def run_state_machine(phone_number: str, text: str, channel: str) -> None:
-    from care_im_wrapper.core.rate_limit import is_rate_limited
+    with transaction.atomic():  # pyright: ignore[reportGeneralTypeIssues]
+        session, created = ConversationSession.objects.select_for_update().get_or_create(  # pyright: ignore[reportAttributeAccessIssue]
+            phone_number=phone_number,
+            provider=channel,
+        )
 
-    session = _get_or_create_session(phone_number, channel)
+        if is_rate_limited(phone_number):
+            messaging_send(channel, phone_number, _msg("rate_limit_exceeded"))
+            return
 
-    if is_rate_limited(phone_number):
-        messaging_send(channel, phone_number, _msg("rate_limit_exceeded"))
-        return
+        if session.is_in_cooldown():
+            messaging_send(channel, phone_number, _msg("cooldown", minutes=session.get_cooldown_remaining_minutes()))
+            return
 
-    if session.is_in_cooldown():
-        messaging_send(channel, phone_number, _msg("cooldown", minutes=session.get_cooldown_remaining_minutes()))
-        return
-
-    dispatch = {
-        ConversationSession.State.NEW: _handle_new,
-        ConversationSession.State.AWAITING_YOB: _handle_awaiting_yob,
-        ConversationSession.State.AMBIGUOUS: _handle_ambiguous,
-        ConversationSession.State.AUTHENTICATED: _handle_authenticated,
-        ConversationSession.State.AWAITING_PATIENT_SEARCH: _handle_awaiting_patient_search,
-        ConversationSession.State.SELECTING_PATIENT: _handle_selecting_patient,
-    }
-    handler = dispatch.get(session.state)
-    if handler:
-        handler(session, phone_number, text, channel)
-    else:
-        logger.error("run_state_machine: unhandled state %s", session.state)
+        dispatch = {
+            ConversationSession.State.NEW: _handle_new,
+            ConversationSession.State.AWAITING_YOB: _handle_awaiting_yob,
+            ConversationSession.State.AMBIGUOUS: _handle_ambiguous,
+            ConversationSession.State.AUTHENTICATED: _handle_authenticated,
+            ConversationSession.State.AWAITING_PATIENT_SEARCH: _handle_awaiting_patient_search,
+            ConversationSession.State.SELECTING_PATIENT: _handle_selecting_patient,
+        }
+        handler = dispatch.get(session.state)  # pyright: ignore[reportArgumentType]
+        if handler:
+            handler(session, phone_number, text, channel)
+        else:
+            logger.error("run_state_machine: unhandled state %s", session.state)
 
 
 def _handle_new(session: ConversationSession, phone_number: str, text: str, channel: str) -> None:
@@ -82,14 +87,14 @@ def _handle_awaiting_yob(session: ConversationSession, phone_number: str, text: 
         return
 
     year = int(stripped)
-    shortlist = [c for c in session.candidates if c["year_of_birth"] == year]
+    shortlist = [c for c in session.candidates if c["year_of_birth"] == year]  # pyright: ignore[reportGeneralTypeIssues]
 
     if not shortlist:
         session.increment_failed_attempt()
         if session.state == ConversationSession.State.COOLDOWN:
             messaging_send(channel, phone_number, _msg("cooldown", minutes=session.get_cooldown_remaining_minutes()))
         else:
-            remaining = int(plugin_settings.MAX_FAILED_ATTEMPTS) - session.failed_attempts
+            remaining = int(plugin_settings.MAX_FAILED_ATTEMPTS) - session.failed_attempts  # pyright: ignore[reportOperatorIssue]
             messaging_send(channel, phone_number, _msg("yob_wrong", remaining=remaining))
         return
 
@@ -118,7 +123,7 @@ def _handle_ambiguous(session: ConversationSession, phone_number: str, text: str
         return
 
     index = int(choice) - 1
-    candidates: list[dict[str, Any]] = session.candidates
+    candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore[reportAssignmentType]
     if index < 0 or index >= len(candidates):
         messaging_send(channel, phone_number, _msg("invalid_choice"))
         return
@@ -219,7 +224,7 @@ def _handle_selecting_patient(session: ConversationSession, phone_number: str, t
         return
 
     index = int(choice) - 1
-    candidates: list[dict[str, Any]] = session.candidates
+    candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore[reportAssignmentType]
     if index < 0 or index >= len(candidates):
         messaging_send(channel, phone_number, _msg("invalid_choice"))
         return
@@ -239,7 +244,7 @@ def _handle_selecting_patient(session: ConversationSession, phone_number: str, t
 
 
 def _get_or_create_session(phone_number: str, provider: str) -> ConversationSession:
-    session, _ = ConversationSession.objects.get_or_create(
+    session, created = ConversationSession.objects.get_or_create(  # pyright: ignore[reportAttributeAccessIssue]
         phone_number=phone_number,
         provider=provider,
     )

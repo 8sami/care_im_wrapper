@@ -29,7 +29,6 @@ _PROVIDERS: dict[str, Callable[[], MessageSender]] = {
 def send(channel: str, to: str, body: str) -> None:
     """
     Sends a text message via whichever provider `channel` identifies.
-    Unknown channels are logged and dropped rather than raising errors.
     """
     factory = _PROVIDERS.get(channel)
     if factory is None:

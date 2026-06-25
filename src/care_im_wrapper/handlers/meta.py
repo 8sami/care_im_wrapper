@@ -3,9 +3,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from django.core.cache import cache
 from django.dispatch import receiver
 
 from care_im_wrapper.conversation.messages import InboundMessage
+from care_im_wrapper.core.sanitize import mask_phone_number
 from care_im_wrapper.signals import meta_message_received, meta_status_updated
 from care_im_wrapper.tasks import process_inbound_message, process_status_update
 
@@ -18,11 +20,19 @@ def on_meta_message(*, payload: dict[str, Any], channel: str, **kwargs: Any) -> 
     if message is None:
         logger.warning("on_meta_message: could not normalize payload, dropping")
         return
+
+    # Deduplicate: only enqueue if no task is already pending/running for this phone+channel
+    dedup_key = f"task_active:{message.phone_number}:{channel}"
+    if not cache.add(dedup_key, 1, timeout=30):  # 30s safety-net TTL
+        logger.info("Dedup: dropping redundant task for %s", mask_phone_number(message.phone_number))
+        return
+
     process_inbound_message.delay(
         phone_number=message.phone_number,
         text=message.text,
         channel=message.channel,
         raw_id=message.raw_id,
+        dedup_key=dedup_key,  # Pass it so the task can release it when done
     )  # type: ignore[reportOptionalMemberAccess]
 
 

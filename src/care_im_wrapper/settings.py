@@ -111,7 +111,9 @@ DEFAULTS = {
     "MAX_FAILED_ATTEMPTS": 5,  # failed YOB attempts before the session is locked
     "COOLDOWN_MINUTES": 30,  # duration of the cooldown period
     "RATE_LIMIT_WINDOW_SECONDS": 60,  # rolling window
-    "RATE_LIMIT_MAX_MESSAGES": 10,  # max messages per window per phone number
+    "RATE_LIMIT_MAX_MESSAGES": 5,  # max messages per window per phone number
+    "DEBOUNCE_SECONDS": 5,  # time between allowed messages
+    "TASK_EXECUTION_BUFFER_SECONDS": 10,  # margin to allow network timeout before task kill
     "DATA_CACHE_TIMEOUT_SECONDS": 90,
     "PHONE_NUMBER_MASK_PREFIX_LEN": 4,
     "PHONE_NUMBER_MASK_SUFFIX_LEN": 3,
