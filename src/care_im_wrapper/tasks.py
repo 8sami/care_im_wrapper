@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 @shared_task(
     bind=True,
-    max_retries=3,
-    default_retry_delay=60,
+    max_retries=plugin_settings.TASK_MAX_RETRIES,
+    default_retry_delay=plugin_settings.TASK_RETRY_DELAY_SECONDS,
     time_limit=int(plugin_settings.DEBOUNCE_SECONDS + plugin_settings.TASK_EXECUTION_BUFFER_SECONDS),
 )
 def process_inbound_message(
@@ -25,18 +25,14 @@ def process_inbound_message(
     text: str,
     channel: str,
     raw_id: str | None = None,
-    dedup_key: str | None = None,
 ) -> None:
-    # Handle same raw_id
     if raw_id:
         dup_key = f"msg_seen:{raw_id}"
-        if not cache.add(dup_key, True, timeout=300):
+        if not cache.add(dup_key, True, timeout=plugin_settings.MESSAGE_DEDUP_TIMEOUT_SECONDS):
             logger.info("Duplicate message detected (ID: %s). Dropping.", raw_id)
             return
 
-    # Clean up pending task key if this is the executing task
-    pending_task_key = f"pending_task:{phone_number}"
-    cache.delete(pending_task_key)
+    cache.delete(f"pending_task:{phone_number}")
 
     try:
         run_state_machine(phone_number, text, channel)
@@ -45,12 +41,13 @@ def process_inbound_message(
     except Exception as exc:
         logger.error("process_inbound_message failed: %s", exc)
         raise self.retry(exc=exc) from exc
-    finally:
-        if dedup_key:
-            cache.delete(dedup_key)  # release so next message can enqueue
 
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+@shared_task(
+    bind=True,
+    max_retries=plugin_settings.TASK_MAX_RETRIES,
+    default_retry_delay=plugin_settings.TASK_RETRY_DELAY_SECONDS,
+)
 def process_status_update(self, payload: dict[str, Any], channel: str) -> None:
     # TODO: Week 6 -> notification status tracking
     try:

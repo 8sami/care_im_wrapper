@@ -9,7 +9,6 @@ from care_im_wrapper.auth.actor import resolve_actor
 from care_im_wrapper.auth.resolver import resolve_phone_number
 from care_im_wrapper.conversation.menus import _PATIENT_MENU, _STAFF_MENU
 from care_im_wrapper.conversation.templates import _msg
-from care_im_wrapper.core.rate_limit import is_rate_limited
 from care_im_wrapper.data import (
     patient_lookup,
 )
@@ -33,10 +32,6 @@ def run_state_machine(phone_number: str, text: str, channel: str) -> None:
             phone_number=phone_number,
             provider=channel,
         )
-
-        if is_rate_limited(phone_number):
-            logger.warning("Rate limit exceeded for %s. Dropping message.", phone_number)
-            return
 
         if session.is_in_cooldown():
             messaging_send(channel, phone_number, _msg("cooldown", minutes=session.get_cooldown_remaining_minutes()))

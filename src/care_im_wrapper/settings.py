@@ -110,10 +110,13 @@ DEFAULTS = {
     "WHATSAPP_APP_SECRET": "",  # Meta app secret for HMAC webhook verification
     "MAX_FAILED_ATTEMPTS": 5,  # failed YOB attempts before the session is locked
     "COOLDOWN_MINUTES": 30,  # duration of the cooldown period
-    "RATE_LIMIT_WINDOW_SECONDS": 30,  # rolling window
-    "RATE_LIMIT_MAX_MESSAGES": 5,  # max messages per window per phone number
-    "DEBOUNCE_SECONDS": 3,  # time between allowed messages
+    "RATE_LIMIT_WINDOW_SECONDS": 60,  # rolling window for inbound rate limiting
+    "RATE_LIMIT_MAX_MESSAGES": 10,  # max inbound messages per window per phone number
+    "DEBOUNCE_SECONDS": 2,  # delay before processing; resets on each new message in the burst
     "TASK_EXECUTION_BUFFER_SECONDS": 10,  # margin to allow network timeout before task kill
+    "TASK_MAX_RETRIES": 3,  # max celery retry attempts for transient failures
+    "TASK_RETRY_DELAY_SECONDS": 60,  # seconds between celery retries
+    "MESSAGE_DEDUP_TIMEOUT_SECONDS": 300,  # how long to remember a seen raw message ID (Meta replays up to ~5 min)
     "DATA_CACHE_TIMEOUT_SECONDS": 90,
     "PHONE_NUMBER_MASK_PREFIX_LEN": 4,
     "PHONE_NUMBER_MASK_SUFFIX_LEN": 3,

@@ -3,10 +3,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from celery.result import AsyncResult
 from django.core.cache import cache
 from django.dispatch import receiver
 
 from care_im_wrapper.conversation.messages import InboundMessage
+from care_im_wrapper.core.rate_limit import is_rate_limited
+from care_im_wrapper.core.sanitize import mask_phone_number
 from care_im_wrapper.settings import plugin_settings
 from care_im_wrapper.signals import meta_message_received, meta_status_updated
 from care_im_wrapper.tasks import process_inbound_message, process_status_update
@@ -21,12 +24,16 @@ def on_meta_message(*, payload: dict[str, Any], channel: str, **kwargs: Any) -> 
         logger.warning("on_meta_message: could not normalize payload, dropping")
         return
 
-    # True Debounce: revoke any pending task for this number and schedule a fresh one
+    if is_rate_limited(message.phone_number):
+        logger.info(
+            "Rate limit exceeded at handler for %s. Skipping task creation.",
+            mask_phone_number(message.phone_number),
+        )
+        return
+
     pending_task_key = f"pending_task:{message.phone_number}"
     existing_task_id = cache.get(pending_task_key)
     if existing_task_id:
-        from celery.result import AsyncResult
-
         AsyncResult(str(existing_task_id)).revoke(terminate=False)
 
     result = process_inbound_message.apply_async(  # pyright: ignore[reportCallIssue]
@@ -35,12 +42,10 @@ def on_meta_message(*, payload: dict[str, Any], channel: str, **kwargs: Any) -> 
             message.text,
             message.channel,
             message.raw_id,
-            None,
         ],
         countdown=plugin_settings.DEBOUNCE_SECONDS,
     )
 
-    # Store the new task ID in cache to allow revocation of subsequent messages in the burst
     cache.set(pending_task_key, result.id, timeout=plugin_settings.DEBOUNCE_SECONDS + 2)
 
 
