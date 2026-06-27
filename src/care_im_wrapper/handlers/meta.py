@@ -7,7 +7,7 @@ from django.core.cache import cache
 from django.dispatch import receiver
 
 from care_im_wrapper.conversation.messages import InboundMessage
-from care_im_wrapper.core.sanitize import mask_phone_number
+from care_im_wrapper.settings import plugin_settings
 from care_im_wrapper.signals import meta_message_received, meta_status_updated
 from care_im_wrapper.tasks import process_inbound_message, process_status_update
 
@@ -21,19 +21,27 @@ def on_meta_message(*, payload: dict[str, Any], channel: str, **kwargs: Any) -> 
         logger.warning("on_meta_message: could not normalize payload, dropping")
         return
 
-    # Deduplicate: only enqueue if no task is already pending/running for this phone+channel
-    dedup_key = f"task_active:{message.phone_number}:{channel}"
-    if not cache.add(dedup_key, 1, timeout=30):  # 30s safety-net TTL
-        logger.info("Dedup: dropping redundant task for %s", mask_phone_number(message.phone_number))
-        return
+    # True Debounce: revoke any pending task for this number and schedule a fresh one
+    pending_task_key = f"pending_task:{message.phone_number}"
+    existing_task_id = cache.get(pending_task_key)
+    if existing_task_id:
+        from celery.result import AsyncResult
 
-    process_inbound_message.delay(
-        phone_number=message.phone_number,
-        text=message.text,
-        channel=message.channel,
-        raw_id=message.raw_id,
-        dedup_key=dedup_key,  # Pass it so the task can release it when done
-    )  # type: ignore[reportOptionalMemberAccess]
+        AsyncResult(str(existing_task_id)).revoke(terminate=False)
+
+    result = process_inbound_message.apply_async(  # pyright: ignore[reportCallIssue]
+        args=[
+            message.phone_number,
+            message.text,
+            message.channel,
+            message.raw_id,
+            None,
+        ],
+        countdown=plugin_settings.DEBOUNCE_SECONDS,
+    )
+
+    # Store the new task ID in cache to allow revocation of subsequent messages in the burst
+    cache.set(pending_task_key, result.id, timeout=plugin_settings.DEBOUNCE_SECONDS + 2)
 
 
 @receiver(meta_status_updated)

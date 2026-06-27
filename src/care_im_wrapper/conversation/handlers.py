@@ -35,7 +35,7 @@ def run_state_machine(phone_number: str, text: str, channel: str) -> None:
         )
 
         if is_rate_limited(phone_number):
-            messaging_send(channel, phone_number, _msg("rate_limit_exceeded"))
+            logger.warning("Rate limit exceeded for %s. Dropping message.", phone_number)
             return
 
         if session.is_in_cooldown():

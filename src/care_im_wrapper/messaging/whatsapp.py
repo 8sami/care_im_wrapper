@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 
+from care_im_wrapper.messaging.exceptions import WhatsAppPairRateLimitError
 from care_im_wrapper.settings import plugin_settings
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,13 @@ class WhatsAppClient:
             response = httpx.post(url, json=payload, headers=headers, timeout=10.0)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 400:
+                try:
+                    error_data = exc.response.json()
+                    if error_data.get("error", {}).get("code") == 131056:
+                        raise WhatsAppPairRateLimitError("WhatsApp pair rate limit hit (131056)") from exc
+                except (ValueError, KeyError):
+                    pass
             logger.error("WhatsApp API %s: %s", exc.response.status_code, exc.response.text)
         except httpx.RequestError as exc:
             logger.error("WhatsApp network error: %s", exc)
