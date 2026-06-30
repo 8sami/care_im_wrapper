@@ -82,8 +82,11 @@ def _handle_awaiting_yob(session: ConversationSession, phone_number: str, text: 
         return
 
     year = int(stripped)
-    shortlist = [c for c in session.candidates if c["year_of_birth"] == year]  # pyright: ignore[reportGeneralTypeIssues]
-
+    shortlist = [
+        c
+        for c in session.candidates  # pyright: ignore[reportGeneralTypeIssues]
+        if c.get("year_of_birth") is not None and int(c["year_of_birth"]) == year
+    ]
     if not shortlist:
         session.increment_failed_attempt()
         if session.state == ConversationSession.State.COOLDOWN:
