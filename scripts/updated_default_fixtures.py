@@ -55,6 +55,11 @@ FIXED_PATIENTS = [
         "date_of_birth": "1998-11-30",
         "phone_number": "+923263672475",
     },
+    {
+        "name": "Test User",
+        "date_of_birth": "1995-11-30",
+        "phone_number": "+918547673209",
+    },
 ]
 
 DIAGNOSTIC_CATEGORIES = [
@@ -574,7 +579,7 @@ def load_clinical_data(base, facility_id, patients, encounters, created_users):
             patient_id=patient_id,
             encounter_id=encounter_id,
             medication=sample_medications[idx % len(sample_medications)],
-            request_id=first_med_request.id,
+            request_id=first_med_request.id,  # pyright: ignore[reportOptionalMemberAccess]
             dosage_text="1 tablet administered orally",
             dose_value=1,
         )
