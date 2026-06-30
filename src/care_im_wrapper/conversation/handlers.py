@@ -8,6 +8,7 @@ from django.db import transaction
 from care_im_wrapper.auth.actor import resolve_actor
 from care_im_wrapper.auth.resolver import resolve_phone_number
 from care_im_wrapper.conversation.menus import _PATIENT_MENU, _STAFF_MENU
+from care_im_wrapper.conversation.messages import InteractivePayload, InteractiveType, OutboundMessage
 from care_im_wrapper.conversation.templates import _msg
 from care_im_wrapper.data import (
     patient_lookup,
@@ -20,6 +21,7 @@ from care_im_wrapper.data.exceptions import (
     PermissionDeniedError,
 )
 from care_im_wrapper.messaging.registry import send as messaging_send
+from care_im_wrapper.messaging.registry import send_message
 from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.settings import plugin_settings
 
@@ -92,7 +94,7 @@ def _handle_awaiting_yob(session: ConversationSession, phone_number: str, text: 
         if session.state == ConversationSession.State.COOLDOWN:
             messaging_send(channel, phone_number, _msg("cooldown", minutes=session.get_cooldown_remaining_minutes()))
         else:
-            remaining = int(plugin_settings.MAX_FAILED_ATTEMPTS) - session.failed_attempts  # pyright: ignore[reportOperatorIssue]
+            remaining = int(plugin_settings.MAX_FAILED_ATTEMPTS) - int(session.failed_attempts)  # pyright: ignore[reportOperatorIssue, reportArgumentType]
             messaging_send(channel, phone_number, _msg("yob_wrong", remaining=remaining))
         return
 
@@ -116,11 +118,20 @@ def _handle_awaiting_yob(session: ConversationSession, phone_number: str, text: 
 
 def _handle_ambiguous(session: ConversationSession, phone_number: str, text: str, channel: str) -> None:
     choice = text.strip()
-    if not choice.isdigit():
+
+    if choice.startswith("candidate_"):
+        try:
+            index = int(choice.removeprefix("candidate_")) - 1
+        except ValueError:
+            messaging_send(channel, phone_number, _msg("invalid_choice"))
+            return
+    elif choice.isdigit():
+        # plain-text fallback path (non-interactive provider or typed digit)
+        index = int(choice) - 1
+    else:
         messaging_send(channel, phone_number, _msg("invalid_choice"))
         return
 
-    index = int(choice) - 1
     candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore[reportAssignmentType]
     if index < 0 or index >= len(candidates):
         messaging_send(channel, phone_number, _msg("invalid_choice"))
@@ -210,18 +221,47 @@ def _handle_awaiting_patient_search(session: ConversationSession, phone_number: 
     session.state = ConversationSession.State.SELECTING_PATIENT
     session.save(update_fields=["state", "candidates"])
 
-    options = [f"{r['name']} — {r['phone_number']}" for r in results]
-    msg_body = numbered_list(_msg("patient_search_results"), options)
-    messaging_send(channel, phone_number, msg_body)
+    prompt = _msg("patient_search_results")
+    plain_options = [f"{r['name']} — {r['phone_number']}" for r in results]
+    plain_text = numbered_list(prompt, plain_options)  # keep using numbered_list for the fallback
+
+    if len(results) <= 3:
+        buttons = [{"id": f"patient_{i}", "title": r["name"]} for i, r in enumerate(results)]
+        interactive = InteractivePayload(
+            type=InteractiveType.REPLY_BUTTONS,
+            body=prompt,
+            action_data=buttons,
+        )
+    else:
+        rows = [
+            {"id": f"patient_{i}", "title": r["name"], "description": r["phone_number"]} for i, r in enumerate(results)
+        ]
+        interactive = InteractivePayload(
+            type=InteractiveType.LIST,
+            body=prompt,
+            button_label="Select Patient",
+            action_data=[{"title": "Patients", "rows": rows}],
+        )
+
+    send_message(channel, phone_number, OutboundMessage(text=plain_text, interactive=interactive))
 
 
 def _handle_selecting_patient(session: ConversationSession, phone_number: str, text: str, channel: str) -> None:
     choice = text.strip()
-    if not choice.isdigit():
+
+    if choice.startswith("patient_"):
+        try:
+            index = int(choice.removeprefix("patient_"))
+        except ValueError:
+            messaging_send(channel, phone_number, _msg("invalid_choice"))
+            return
+    elif choice.isdigit():
+        # plain-text fallback path — numbered_list() uses 1-based display
+        index = int(choice) - 1
+    else:
         messaging_send(channel, phone_number, _msg("invalid_choice"))
         return
 
-    index = int(choice) - 1
     candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore[reportAssignmentType]
     if index < 0 or index >= len(candidates):
         messaging_send(channel, phone_number, _msg("invalid_choice"))
@@ -251,14 +291,55 @@ def _get_or_create_session(phone_number: str, provider: str) -> ConversationSess
 
 def _send_main_menu(phone_number: str, user_type: str, channel: str, name: str | None = None) -> None:
     menu = _STAFF_MENU if user_type == ConversationSession.UserType.STAFF.value else _PATIENT_MENU
-    lines = [f"{k}. {v[0]}" for k, v in menu.items()]
-    lines.append("0. Logout")
+
+    # ids match the existing menu keys so _handle_authenticated's menu.get(choice) works unchanged
+    rows = [{"id": key, "title": entry[0]} for key, entry in menu.items()]
+    rows.append({"id": "0", "title": "Logout"})
+
     greeting = _msg("greeting", name=name) if name else _msg("choose_option")
-    body = greeting + "\n\n" + "\n".join(lines)
-    messaging_send(channel, phone_number, body)
+
+    # Plain-text body — complete standalone fallback
+    plain_lines = [f"{r['id']}. {r['title']}" for r in rows]
+    plain_text = greeting + "\n\n" + "\n".join(plain_lines)
+
+    msg = OutboundMessage(
+        text=plain_text,
+        interactive=InteractivePayload(
+            type=InteractiveType.LIST,
+            body=greeting,
+            button_label="View Menu",
+            action_data=[{"title": "Menu", "rows": rows}],
+        ),
+    )
+    send_message(channel, phone_number, msg)
 
 
 def _send_candidate_menu(phone_number: str, candidates: list[dict[str, Any]], channel: str) -> None:
-    lines = [f"{i + 1}. {c['full_name']} ({c['user_type'].capitalize()})" for i, c in enumerate(candidates)]
-    body = _msg("select_account") + "\n\n" + "\n".join(lines)
-    messaging_send(channel, phone_number, body)
+    prompt = _msg("select_account")
+    plain_lines = [f"{i + 1}. {c['full_name']} ({c['user_type'].capitalize()})" for i, c in enumerate(candidates)]
+    plain_text = prompt + "\n\n" + "\n".join(plain_lines)
+
+    if len(candidates) <= 3:
+        buttons = [{"id": f"candidate_{i + 1}", "title": c["full_name"]} for i, c in enumerate(candidates)]
+        interactive = InteractivePayload(
+            type=InteractiveType.REPLY_BUTTONS,
+            body=prompt,
+            action_data=buttons,
+        )
+    else:
+        rows = [
+            {
+                "id": f"candidate_{i + 1}",
+                "title": c["full_name"],
+                "description": c["user_type"].capitalize(),
+            }
+            for i, c in enumerate(candidates)
+        ]
+        interactive = InteractivePayload(
+            type=InteractiveType.LIST,
+            body=prompt,
+            button_label="Select",
+            action_data=[{"title": "Accounts", "rows": rows}],
+        )
+
+    send_message(channel, phone_number, OutboundMessage(text=plain_text, interactive=interactive))

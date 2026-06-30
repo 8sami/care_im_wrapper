@@ -1,8 +1,9 @@
 """Fetch medication requests for the authenticated actor."""
 
+from typing_extensions import Any
+
 from care_im_wrapper.auth.actor import Actor
-from care_im_wrapper.conversation.templates import _msg
-from care_im_wrapper.data.base import cached_fetch, humanize_choice, numbered_list
+from care_im_wrapper.data.base import cached_fetch, humanize_choice
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.data.exceptions import NoDataError
 from care_im_wrapper.models import ConversationSession
@@ -10,7 +11,7 @@ from care_im_wrapper.settings import plugin_settings
 
 
 @cached_fetch(timeout_seconds=int(plugin_settings.DATA_CACHE_TIMEOUT_SECONDS))
-def fetch_medications(actor: Actor, session: ConversationSession) -> str:
+def fetch_medications(actor: Actor, session: ConversationSession) -> list[dict[str, Any]]:
     """
     patient: returns their own last 10 medications.
     staff:   returns medications for session.active_patient_external_id.
@@ -27,46 +28,18 @@ def fetch_medications(actor: Actor, session: ConversationSession) -> str:
     items = []
     for med in records:
         status = humanize_choice(getattr(med, "status", None))
-
         medication_name = _extract_medication_name(med)
 
-        dosage_parts = []
-        dosage_instructions = getattr(med, "dosage_instruction", [])
-        if isinstance(dosage_instructions, list):
-            for instr in dosage_instructions:
-                if isinstance(instr, dict):
-                    display = instr.get("display") or instr.get("text")
-                    if display:
-                        dosage_parts.append(str(display))
-                    else:
-                        parts = [v for k, v in instr.items() if v and k not in ("code", "system")]
-                        if parts:
-                            dosage_parts.append("; ".join(map(str, parts)))
+        # We return structured data. The Handler will decide how to display this.
+        items.append(
+            {
+                "name": medication_name,
+                "status": status,
+                "created_date": med.created_date.isoformat(),
+            }
+        )
 
-                    timing = instr.get("timing", {})
-                    if isinstance(timing, dict):
-                        repeat = timing.get("repeat", {})
-                        if isinstance(repeat, dict):
-                            bounds = repeat.get("bounds_duration")
-                            if isinstance(bounds, dict) and "value" in bounds and "unit" in bounds:
-                                dosage_parts.append(f"(Duration: {bounds['value']} {bounds['unit']})")
-
-                elif instr:
-                    dosage_parts.append(str(instr))
-
-        dosage_text = " | ".join(dosage_parts) if dosage_parts else ""
-
-        item_details = [medication_name, f"Status: {status}"]
-        if dosage_text:
-            item_details.append(f"Dosage: {dosage_text}")
-
-        note = getattr(med, "note", None)
-        if note:
-            item_details.append(f"Note: {note}")
-
-        items.append(" | ".join(item_details))
-
-    return numbered_list(_msg("medications_header"), items)
+    return items
 
 
 def _extract_medication_name(med) -> str:

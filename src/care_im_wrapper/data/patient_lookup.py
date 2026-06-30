@@ -1,6 +1,7 @@
 """Staff-only patient search by phone number or name."""
 
 import logging
+from typing import Any
 
 from care.security.authorization.base import AuthorizationController  # type: ignore[import-untyped]
 
@@ -11,7 +12,7 @@ from care_im_wrapper.models import ConversationSession
 logger = logging.getLogger(__name__)
 
 
-def search_patients(actor, query: str) -> list[dict]:
+def search_patients(actor, query: str) -> list[dict[str, Any]]:
     """
     Returns list of {id, name, phone_number} dicts, max 10 results.
     Raises PermissionDeniedError if actor is not staff or lacks permission.
