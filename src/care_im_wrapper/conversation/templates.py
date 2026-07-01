@@ -29,6 +29,21 @@ _MESSAGES: dict[str, str] = {
     "lab_reports_header": "Your recent lab reports:",
     "summary_header": "Patient Summary",
     "rate_limit_exceeded": "Too many messages. Please wait a moment before trying again.",
+    # Per-record line templates
+    "medication_line": "{name} — {status}",
+    "medication_dosage": "Dosage: {dosage}",
+    "encounter_line": "{date} — {facility} ({status})",
+    "appointment_line": "{practitioner} at {location}",
+    "appointment_detail": "{status} · {date} · {time_slot}",
+    "lab_report_line": "{name} — {date} ({status})",
+    "procedure_line": "{name} — {date} ({status})",
+    # Patient summary field labels
+    "summary_name": "Name: {value}",
+    "summary_dob": "Date of Birth: {value}",
+    "summary_blood_group": "Blood Group: {value}",
+    "summary_gender": "Gender: {value}",
+    "summary_phone": "Phone: {value}",
+    "summary_not_recorded": "Not recorded",
 }
 
 

@@ -1,16 +1,16 @@
 """Fetch encounter details for the authenticated actor."""
 
 from care_im_wrapper.auth.actor import Actor
-from care_im_wrapper.conversation.templates import _msg
-from care_im_wrapper.data.base import cached_fetch, humanize_choice, humanize_date, numbered_list
+from care_im_wrapper.data.base import cached_fetch, humanize_choice, humanize_date
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.data.exceptions import NoDataError
+from care_im_wrapper.data.records import EncounterRecord
 from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.settings import plugin_settings
 
 
 @cached_fetch(timeout_seconds=int(plugin_settings.DATA_CACHE_TIMEOUT_SECONDS))
-def fetch_encounters(actor: Actor, session: ConversationSession) -> str:
+def fetch_encounters(actor: Actor, session: ConversationSession) -> list[EncounterRecord]:
     """
     patient: returns their own last 10 encounters.
     staff:   returns encounters for session.active_patient_external_id.
@@ -19,18 +19,21 @@ def fetch_encounters(actor: Actor, session: ConversationSession) -> str:
     from care.emr.models.encounter import Encounter  # type: ignore[import-untyped]
 
     patient = resolve_target_patient(actor, session)
+    # N+1 risk: fmt_facility_name() below walks enc.facility.name
+    # Add select_related("facility") in the upcoming N+1 review pass.
     queryset = Encounter.objects.filter(patient=patient)
     records = queryset.order_by("-created_date")[:10]
     if not records:
         raise NoDataError
 
-    items = []
+    encounter_records = []
     for enc in records:
         status = humanize_choice(getattr(enc, "status", None))
         date = humanize_date(getattr(enc, "created_date", None))
-        items.append(f"{date} — {fmt_facility_name(enc)} ({status})")
+        facility = fmt_facility_name(enc)
+        encounter_records.append(EncounterRecord(date=date, facility=facility, status=status))
 
-    return numbered_list(_msg("encounters_header"), items)
+    return encounter_records
 
 
 def fmt_facility_name(enc) -> str:

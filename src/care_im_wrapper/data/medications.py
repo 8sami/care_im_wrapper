@@ -1,17 +1,16 @@
 """Fetch medication requests for the authenticated actor."""
 
-from typing_extensions import Any
-
 from care_im_wrapper.auth.actor import Actor
 from care_im_wrapper.data.base import cached_fetch, humanize_choice
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.data.exceptions import NoDataError
+from care_im_wrapper.data.records import MedicationRecord
 from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.settings import plugin_settings
 
 
 @cached_fetch(timeout_seconds=int(plugin_settings.DATA_CACHE_TIMEOUT_SECONDS))
-def fetch_medications(actor: Actor, session: ConversationSession) -> list[dict[str, Any]]:
+def fetch_medications(actor: Actor, session: ConversationSession) -> list[MedicationRecord]:
     """
     patient: returns their own last 10 medications.
     staff:   returns medications for session.active_patient_external_id.
@@ -20,26 +19,51 @@ def fetch_medications(actor: Actor, session: ConversationSession) -> list[dict[s
     from care.emr.models.medication_request import MedicationRequest  # type: ignore[import-untyped]
 
     patient = resolve_target_patient(actor, session)
+    # N+1 risk: _extract_medication_name() below walks med.requested_product.name
+    # Add select_related("requested_product") in the upcoming N+1 review pass.
     queryset = MedicationRequest.objects.filter(patient=patient)
     records = queryset.order_by("-created_date")[:10]
     if not records:
         raise NoDataError
 
-    items = []
+    medication_records = []
     for med in records:
         status = humanize_choice(getattr(med, "status", None))
-        medication_name = _extract_medication_name(med)
+        name = _extract_medication_name(med)
 
-        # We return structured data. The Handler will decide how to display this.
-        items.append(
-            {
-                "name": medication_name,
-                "status": status,
-                "created_date": med.created_date.isoformat(),
-            }
-        )
+        # Extract dosage if present
+        dosage = None
+        if hasattr(med, "dosage_instruction") and med.dosage_instruction:
+            instructions = med.dosage_instruction
+            if isinstance(instructions, list):
+                parts = []
+                for inst in instructions:
+                    if isinstance(inst, dict):
+                        # 1. Capture display/text
+                        display_val = inst.get("display") or inst.get("text")
+                        if display_val:
+                            parts.append(display_val)
+                        else:
+                            # If no text/display, check for timing/duration info
+                            timing = inst.get("timing", {})
+                            if isinstance(timing, dict):
+                                repeat = timing.get("repeat")
+                                if isinstance(repeat, dict):
+                                    duration = repeat.get("bounds_duration")
+                                    if duration:
+                                        parts.append(f"(Duration: {duration})")
+                            elif inst:
+                                parts.append(str(inst))
+                    else:
+                        parts.append(str(inst))
+                dosage = " | ".join(parts) if parts else None
+            elif isinstance(instructions, str):
+                dosage = instructions
 
-    return items
+        note = getattr(med, "note", None)
+        medication_records.append(MedicationRecord(name=name, status=status, dosage=dosage, note=note))
+
+    return medication_records
 
 
 def _extract_medication_name(med) -> str:

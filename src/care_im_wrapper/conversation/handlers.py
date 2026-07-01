@@ -9,19 +9,11 @@ from care_im_wrapper.auth.actor import resolve_actor
 from care_im_wrapper.auth.resolver import resolve_phone_number
 from care_im_wrapper.conversation.menus import _PATIENT_MENU, _STAFF_MENU
 from care_im_wrapper.conversation.messages import InteractivePayload, InteractiveType, OutboundMessage
+from care_im_wrapper.conversation.renderers import render_patient_search_results
 from care_im_wrapper.conversation.templates import _msg
-from care_im_wrapper.data import (
-    patient_lookup,
-)
-from care_im_wrapper.data.base import numbered_list
-from care_im_wrapper.data.exceptions import (
-    DataFetchError,
-    MissingContextError,
-    NoDataError,
-    PermissionDeniedError,
-)
-from care_im_wrapper.messaging.registry import send as messaging_send
-from care_im_wrapper.messaging.registry import send_message
+from care_im_wrapper.data import patient_lookup
+from care_im_wrapper.data.exceptions import DataFetchError, MissingContextError, NoDataError, PermissionDeniedError
+from care_im_wrapper.messaging.registry import get_max_chars, send_message
 from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.settings import plugin_settings
 
@@ -36,7 +28,7 @@ def run_state_machine(phone_number: str, text: str, channel: str) -> None:
         )
 
         if session.is_in_cooldown():
-            messaging_send(channel, phone_number, _msg("cooldown", minutes=session.get_cooldown_remaining_minutes()))
+            send_message(channel, phone_number, _msg("cooldown", minutes=session.get_cooldown_remaining_minutes()))
             return
 
         dispatch = {
@@ -57,7 +49,7 @@ def run_state_machine(phone_number: str, text: str, channel: str) -> None:
 def _handle_new(session: ConversationSession, phone_number: str, text: str, channel: str) -> None:
     result = resolve_phone_number(phone_number)
     if not result.found:
-        messaging_send(channel, phone_number, _msg("not_found"))
+        send_message(channel, phone_number, _msg("not_found"))
         return
 
     # Serialise all candidates to JSON-safe dicts for storage between turns
@@ -74,13 +66,13 @@ def _handle_new(session: ConversationSession, phone_number: str, text: str, chan
     session.candidates = candidates_list
     session.state = ConversationSession.State.AWAITING_YOB
     session.save(update_fields=["state", "candidates"])
-    messaging_send(channel, phone_number, _msg("yob_prompt"))
+    send_message(channel, phone_number, _msg("yob_prompt"))
 
 
 def _handle_awaiting_yob(session: ConversationSession, phone_number: str, text: str, channel: str) -> None:
     stripped = text.strip()
     if not stripped.isdigit() or len(stripped) != 4:
-        messaging_send(channel, phone_number, _msg("yob_invalid"))
+        send_message(channel, phone_number, _msg("yob_invalid"))
         return
 
     year = int(stripped)
@@ -92,10 +84,10 @@ def _handle_awaiting_yob(session: ConversationSession, phone_number: str, text: 
     if not shortlist:
         session.increment_failed_attempt()
         if session.state == ConversationSession.State.COOLDOWN:
-            messaging_send(channel, phone_number, _msg("cooldown", minutes=session.get_cooldown_remaining_minutes()))
+            send_message(channel, phone_number, _msg("cooldown", minutes=session.get_cooldown_remaining_minutes()))
         else:
             remaining = int(plugin_settings.MAX_FAILED_ATTEMPTS) - int(session.failed_attempts)  # pyright: ignore[reportOperatorIssue, reportArgumentType]
-            messaging_send(channel, phone_number, _msg("yob_wrong", remaining=remaining))
+            send_message(channel, phone_number, _msg("yob_wrong", remaining=remaining))
         return
 
     if len(shortlist) == 1:
@@ -123,18 +115,18 @@ def _handle_ambiguous(session: ConversationSession, phone_number: str, text: str
         try:
             index = int(choice.removeprefix("candidate_")) - 1
         except ValueError:
-            messaging_send(channel, phone_number, _msg("invalid_choice"))
+            send_message(channel, phone_number, _msg("invalid_choice"))
             return
     elif choice.isdigit():
         # plain-text fallback path (non-interactive provider or typed digit)
         index = int(choice) - 1
     else:
-        messaging_send(channel, phone_number, _msg("invalid_choice"))
+        send_message(channel, phone_number, _msg("invalid_choice"))
         return
 
     candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore[reportAssignmentType]
     if index < 0 or index >= len(candidates):
-        messaging_send(channel, phone_number, _msg("invalid_choice"))
+        send_message(channel, phone_number, _msg("invalid_choice"))
         return
 
     match = candidates[index]
@@ -152,34 +144,35 @@ def _handle_authenticated(session: ConversationSession, phone_number: str, text:
 
     if choice == "0":
         session.logout()
-        messaging_send(channel, phone_number, _msg("logout_confirm"))
+        send_message(channel, phone_number, _msg("logout_confirm"))
         return
 
     actor = resolve_actor(session)
     if actor is None:
         session.logout()
-        messaging_send(channel, phone_number, _msg("session_expired"))
+        send_message(channel, phone_number, _msg("session_expired"))
         return
 
     user_type_str = str(session.user_type)
-    menu = _STAFF_MENU if session.user_type == ConversationSession.UserType.STAFF else _PATIENT_MENU
+    menu = _STAFF_MENU if session.user_type == ConversationSession.UserType.STAFF.value else _PATIENT_MENU
     entry = menu.get(choice)
 
     if not entry:
         _send_main_menu(phone_number, user_type_str, channel=channel)
         return
 
-    label, fetcher = entry
+    label, fetcher, renderer = entry
 
     if fetcher is None:
         session.state = ConversationSession.State.AWAITING_PATIENT_SEARCH
         session.save(update_fields=["state"])
-        messaging_send(channel, phone_number, _msg("patient_search_prompt"))
+        send_message(channel, phone_number, _msg("patient_search_prompt"))
         return
 
     try:
-        result = fetcher(actor, session)
-        messaging_send(channel, phone_number, str(result))
+        data = fetcher(actor, session)
+        msg = renderer(data, get_max_chars(channel))
+        send_message(channel, phone_number, msg)
     except PermissionDeniedError:
         logger.warning(
             "PermissionDenied: %s id=%s action=%s",
@@ -187,14 +180,14 @@ def _handle_authenticated(session: ConversationSession, phone_number: str, text:
             actor.instance.id,
             label,
         )
-        messaging_send(channel, phone_number, _msg("permission_denied"))
+        send_message(channel, phone_number, _msg("permission_denied"))
     except MissingContextError as exc:
-        messaging_send(channel, phone_number, str(exc))
+        send_message(channel, phone_number, str(exc))
     except NoDataError:
-        messaging_send(channel, phone_number, _msg("no_data", label=label.lower()))
+        send_message(channel, phone_number, _msg("no_data", label=label.lower()))
     except DataFetchError as exc:
         logger.error("DataFetchError %s: %s", label, exc)
-        messaging_send(channel, phone_number, _msg("fetch_error"))
+        send_message(channel, phone_number, _msg("fetch_error"))
 
     _send_main_menu(phone_number, user_type_str, channel=channel)
 
@@ -203,18 +196,18 @@ def _handle_awaiting_patient_search(session: ConversationSession, phone_number: 
     actor = resolve_actor(session)
     if actor is None:
         session.logout()
-        messaging_send(channel, phone_number, _msg("session_expired"))
+        send_message(channel, phone_number, _msg("session_expired"))
         return
 
     try:
         results = patient_lookup.search_patients(actor, text)
     except PermissionDeniedError:
-        messaging_send(channel, phone_number, _msg("permission_denied"))
+        send_message(channel, phone_number, _msg("permission_denied"))
         session.state = ConversationSession.State.AUTHENTICATED
         session.save(update_fields=["state"])
         return
     except NoDataError:
-        messaging_send(channel, phone_number, _msg("no_patients_found"))
+        send_message(channel, phone_number, _msg("no_patients_found"))
         return
 
     session.candidates = results
@@ -223,7 +216,7 @@ def _handle_awaiting_patient_search(session: ConversationSession, phone_number: 
 
     prompt = _msg("patient_search_results")
     plain_options = [f"{r['name']} — {r['phone_number']}" for r in results]
-    plain_text = numbered_list(prompt, plain_options)  # keep using numbered_list for the fallback
+    msg = render_patient_search_results(prompt, plain_options, get_max_chars(channel))
 
     if len(results) <= 3:
         buttons = [{"id": f"patient_{i}", "title": r["name"]} for i, r in enumerate(results)]
@@ -243,7 +236,7 @@ def _handle_awaiting_patient_search(session: ConversationSession, phone_number: 
             action_data=[{"title": "Patients", "rows": rows}],
         )
 
-    send_message(channel, phone_number, OutboundMessage(text=plain_text, interactive=interactive))
+    send_message(channel, phone_number, OutboundMessage(text=msg.text, interactive=interactive))
 
 
 def _handle_selecting_patient(session: ConversationSession, phone_number: str, text: str, channel: str) -> None:
@@ -253,18 +246,18 @@ def _handle_selecting_patient(session: ConversationSession, phone_number: str, t
         try:
             index = int(choice.removeprefix("patient_"))
         except ValueError:
-            messaging_send(channel, phone_number, _msg("invalid_choice"))
+            send_message(channel, phone_number, _msg("invalid_choice"))
             return
     elif choice.isdigit():
         # plain-text fallback path — numbered_list() uses 1-based display
         index = int(choice) - 1
     else:
-        messaging_send(channel, phone_number, _msg("invalid_choice"))
+        send_message(channel, phone_number, _msg("invalid_choice"))
         return
 
     candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore[reportAssignmentType]
     if index < 0 or index >= len(candidates):
-        messaging_send(channel, phone_number, _msg("invalid_choice"))
+        send_message(channel, phone_number, _msg("invalid_choice"))
         return
 
     selected = candidates[index]
@@ -273,20 +266,12 @@ def _handle_selecting_patient(session: ConversationSession, phone_number: str, t
     session.candidates = []
     session.save(update_fields=["state", "active_patient_external_id", "candidates"])
 
-    messaging_send(
+    send_message(
         channel,
         phone_number,
         _msg("patient_selected", name=selected["name"]),
     )
     _send_main_menu(phone_number, str(session.user_type), channel=channel)
-
-
-def _get_or_create_session(phone_number: str, provider: str) -> ConversationSession:
-    session, created = ConversationSession.objects.get_or_create(  # pyright: ignore[reportAttributeAccessIssue]
-        phone_number=phone_number,
-        provider=provider,
-    )
-    return session
 
 
 def _send_main_menu(phone_number: str, user_type: str, channel: str, name: str | None = None) -> None:
@@ -298,7 +283,6 @@ def _send_main_menu(phone_number: str, user_type: str, channel: str, name: str |
 
     greeting = _msg("greeting", name=name) if name else _msg("choose_option")
 
-    # Plain-text body — complete standalone fallback
     plain_lines = [f"{r['id']}. {r['title']}" for r in rows]
     plain_text = greeting + "\n\n" + "\n".join(plain_lines)
 

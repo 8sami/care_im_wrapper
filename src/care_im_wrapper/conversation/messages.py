@@ -15,8 +15,7 @@ class InteractiveType(str, Enum):
 class InteractivePayload:
     """
     Provider-agnostic description of an interactive message.
-    WhatsAppClient translates this into the exact Meta API JSON shape.
-    Other providers translate it into their own shape, or fall back to plain text.
+    Providers translate it into their own shape, or fall back to plain text.
 
     action_data shapes by type:
       REPLY_BUTTONS → [{"id": str, "title": str}, ...]               max 3 items
@@ -49,7 +48,7 @@ class OutboundMessage:
     """
     Provider-agnostic outbound message.
     Always populate `text` — it is the plain-text fallback for non-interactive providers
-    and for error recovery. Never set it to an
+    and for error recovery.
     Set `interactive` when an interactive UI should be shown (provider permitting).
     """
 

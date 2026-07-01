@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class WhatsAppClient:
     supports_interactive: bool = True
+    max_message_chars: int = 4096
 
     def send_text(self, to: str, body: str) -> None:
         self._send(

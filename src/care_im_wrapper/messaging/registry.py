@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 class MessageSender(Protocol):
     supports_interactive: bool
+    max_message_chars: int
 
     def send_text(self, to: str, body: str) -> None: ...
     def send_interactive(self, to: str, msg: OutboundMessage) -> None: ...
@@ -30,19 +31,18 @@ _PROVIDERS: dict[str, Callable[[], MessageSender]] = {
 }
 
 
-def send(channel: str, to: str, body: str) -> None:
-    """
-    Sends a plain-text message. DO NOT REMOVE — still used by handlers.py
-    as messaging_send() for all data-fetch responses.
-    """
+def get_max_chars(channel: str) -> int:
+    """Returns the maximum allowed characters for a given provider."""
     factory = _PROVIDERS.get(channel)
     if factory is None:
-        logger.error("messaging.send: no provider registered for channel %s", channel)
-        return
-    factory().send_text(to, body)
+        return 4096  # Default fallback
+    return factory().max_message_chars
 
 
-def send_message(channel: str, to: str, msg: OutboundMessage) -> None:
+def send_message(channel: str, to: str, msg: OutboundMessage | str) -> None:
+    if isinstance(msg, str):
+        msg = OutboundMessage(text=msg)
+
     """
     Single outbound entry point for all new code — use this for menus and navigation.
     Capability-based dispatch: if the provider supports interactive AND msg.interactive

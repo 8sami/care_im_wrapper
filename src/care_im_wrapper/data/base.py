@@ -15,17 +15,6 @@ def truncate(text: str) -> str:
     return text[: _WHATSAPP_MESSAGE_LIMIT - 20] + "\n... (truncated)"
 
 
-def numbered_list(header: str, items: list[str]) -> str:
-    lines = [header, ""]
-    for i, item in enumerate(items, start=1):
-        lines.append(f"{i}. {item}")
-    return truncate("\n".join(lines))
-
-
-def field(label: str, value: str | None) -> str:
-    return f"{label}: {value or 'Not recorded'}"
-
-
 def humanize_choice(value: str | None) -> str:
     """
     Converts a Django TextChoices-style value like 'in_progress' or
