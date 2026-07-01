@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class WhatsAppClient:
     supports_interactive: bool = True
-    max_message_chars: int = 4096
+    max_message_chars: int = int(plugin_settings.WHATSAPP_MESSAGE_CHAR_LIMIT)
 
     def send_text(self, to: str, body: str) -> None:
         self._send(
@@ -48,7 +48,7 @@ class WhatsAppClient:
                     "type": "reply",
                     "reply": {
                         "id": str(b["id"])[:256],
-                        "title": str(b["title"])[:20],
+                        "title": str(b["title"])[: int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)],
                     },
                 }
                 for b in iv.action_data[:3]  # hard cap: max 3 buttons
@@ -65,20 +65,22 @@ class WhatsAppClient:
             for section in iv.action_data:
                 rows = []
                 for row in section.get("rows", []):
-                    if total_rows >= 10:  # hard cap: max 10 rows across all sections
+                    if total_rows >= int(plugin_settings.DATA_FETCH_LIMIT):  # hard cap: max 10 rows across all sections
                         break
                     entry: dict[str, Any] = {
                         "id": str(row["id"])[:256],
-                        "title": str(row["title"])[:24],
+                        "title": str(row["title"])[: int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)],
                     }
                     if row.get("description"):
-                        entry["description"] = str(row["description"])[:72]
+                        entry["description"] = str(row["description"])[
+                            : int(plugin_settings.WHATSAPP_DESCRIPTION_TRUNCATE)
+                        ]
                     rows.append(entry)
                     total_rows += 1
                 if rows:
                     sections.append(
                         {
-                            "title": str(section.get("title", ""))[:24],
+                            "title": str(section.get("title", ""))[: int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)],
                             "rows": rows,
                         }
                     )
@@ -86,7 +88,7 @@ class WhatsAppClient:
                 "type": "list",
                 "body": {"text": iv.body},
                 "action": {
-                    "button": str(iv.button_label)[:20],
+                    "button": str(iv.button_label)[: int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)],
                     "sections": sections,
                 },
             }
@@ -99,7 +101,9 @@ class WhatsAppClient:
                 "action": {
                     "name": "cta_url",
                     "parameters": {
-                        "display_text": str(params.get("display_text", "Open"))[:20],
+                        "display_text": str(params.get("display_text", "Open"))[
+                            : int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)
+                        ],
                         "url": str(params.get("url", "")),
                     },
                 },

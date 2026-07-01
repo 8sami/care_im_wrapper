@@ -20,12 +20,13 @@ from care_im_wrapper.data.records import (
     PatientSummary,
     ProcedureRecord,
 )
+from care_im_wrapper.settings import plugin_settings
 
 
 def _truncate(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
-    return text[: max_chars - 20] + "\n... (truncated)"
+    return text[: max_chars - plugin_settings.WHATSAPP_TITLE_TRUNCATE] + "\n... (truncated)"
 
 
 def _numbered_block(header: str, lines: list[str], max_chars: int) -> str:

@@ -28,7 +28,7 @@ def fetch_lab_reports(actor: Actor, session: ConversationSession) -> list[LabRep
         if group_key not in latest_by_group:
             latest_by_group[group_key] = r
 
-    records = list(latest_by_group.values())[:10]
+    records = list(latest_by_group.values())[: plugin_settings.DATA_FETCH_LIMIT]
     if not records:
         raise NoDataError
 

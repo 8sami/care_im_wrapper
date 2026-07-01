@@ -25,7 +25,7 @@ def fetch_appointments(actor: Actor, session: ConversationSession) -> list[Appoi
     # Add select_related("token_slot__resource__user", "token_slot__resource__facility")
     # in the upcoming N+1 review pass.
     queryset = TokenBooking.objects.filter(patient=patient)
-    records = queryset.order_by("-booked_on")[:10]
+    records = queryset.order_by("-booked_on")[: plugin_settings.DATA_FETCH_LIMIT]
     if not records:
         raise NoDataError
 

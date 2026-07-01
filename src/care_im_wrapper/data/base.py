@@ -6,13 +6,18 @@ from typing import Any
 
 from django.core.cache import cache as django_cache
 
+from care_im_wrapper.settings import plugin_settings
+
 _WHATSAPP_MESSAGE_LIMIT = 4096
 
 
 def truncate(text: str) -> str:
-    if len(text) <= _WHATSAPP_MESSAGE_LIMIT:
+    if len(text) <= int(plugin_settings.WHATSAPP_MESSAGE_CHAR_LIMIT):
         return text
-    return text[: _WHATSAPP_MESSAGE_LIMIT - 20] + "\n... (truncated)"
+    return (
+        text[: int(plugin_settings.WHATSAPP_MESSAGE_CHAR_LIMIT) - int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)]
+        + "\n... (truncated)"
+    )
 
 
 def humanize_choice(value: str | None) -> str:

@@ -20,7 +20,7 @@ def fetch_procedures(actor: Actor, session: ConversationSession) -> list[Procedu
 
     patient = resolve_target_patient(actor, session)
     queryset = ServiceRequest.objects.filter(patient=patient)
-    records = queryset.order_by("-created_date")[:10]
+    records = queryset.order_by("-created_date")[: int(plugin_settings.DATA_FETCH_LIMIT)]
     if not records:
         raise NoDataError
 

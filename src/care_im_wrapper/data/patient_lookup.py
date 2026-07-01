@@ -8,6 +8,7 @@ from care.security.authorization.base import AuthorizationController  # type: ig
 from care_im_wrapper.core.sanitize import mask_phone_number, normalize_phone_number
 from care_im_wrapper.data.exceptions import NoDataError, PermissionDeniedError
 from care_im_wrapper.models import ConversationSession
+from care_im_wrapper.settings import plugin_settings
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ def search_patients(actor, query: str) -> list[dict[str, Any]]:
         qs = Patient.objects.filter(name__icontains=query)
 
     results = []
-    for p in qs.distinct()[:10]:
+    for p in qs.distinct()[: plugin_settings.DATA_FETCH_LIMIT]:
         results.append(
             {
                 "id": p.id,
