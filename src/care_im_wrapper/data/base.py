@@ -5,6 +5,7 @@ from functools import wraps
 from typing import Any
 
 from django.core.cache import cache as django_cache
+from django.utils import timezone
 
 from care_im_wrapper.settings import plugin_settings
 
@@ -40,7 +41,24 @@ def humanize_date(value: datetime | str | None) -> str:
     if isinstance(value, str):
         return value
     try:
-        return value.strftime("%d %b %Y")
+        local_dt = timezone.localtime(value)
+        return local_dt.strftime("%d %b %Y")
+    except (AttributeError, ValueError):
+        return str(value)
+
+
+def humanize_time(value: datetime | str | None) -> str:
+    """
+    Converts a raw datetime into a short human-readable time.
+    Never shows microseconds or UTC offset to the end user.
+    """
+    if not value:
+        return "Not recorded"
+    if isinstance(value, str):
+        return value
+    try:
+        local_dt = timezone.localtime(value)
+        return local_dt.strftime("%I:%M %p").lower()
     except (AttributeError, ValueError):
         return str(value)
 

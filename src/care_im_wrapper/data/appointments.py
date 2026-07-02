@@ -1,7 +1,7 @@
 """Fetch appointment details for the authenticated actor."""
 
 from care_im_wrapper.auth.actor import Actor
-from care_im_wrapper.data.base import cached_fetch, humanize_choice, humanize_date
+from care_im_wrapper.data.base import cached_fetch, humanize_choice, humanize_date, humanize_time
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.data.exceptions import NoDataError
 from care_im_wrapper.data.records import AppointmentRecord
@@ -24,7 +24,9 @@ def fetch_appointments(actor: Actor, session: ConversationSession) -> list[Appoi
     #   booking.token_slot.resource.facility
     # Add select_related("token_slot__resource__user", "token_slot__resource__facility")
     # in the upcoming N+1 review pass.
-    queryset = TokenBooking.objects.filter(patient=patient)
+    queryset = TokenBooking.objects.filter(patient=patient).select_related(
+        "token_slot__resource__user", "token_slot__resource__facility"
+    )
     records = queryset.order_by("-booked_on")[: plugin_settings.DATA_FETCH_LIMIT]
     if not records:
         raise NoDataError
@@ -60,9 +62,7 @@ def _extract_booking_info(booking) -> AppointmentRecord | None:
     time_slot = ""
     if slot and hasattr(slot, "start_datetime"):
         date_str = humanize_date(slot.start_datetime)
-        time_slot = (
-            f"{slot.start_datetime.strftime('%I:%M %p').lower()} - {slot.end_datetime.strftime('%I:%M %p').lower()}"
-        )
+        time_slot = f"{humanize_time(slot.start_datetime)} - {humanize_time(slot.end_datetime)}"
 
     if not date_str or not time_slot:
         return None

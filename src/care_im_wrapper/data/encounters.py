@@ -21,7 +21,7 @@ def fetch_encounters(actor: Actor, session: ConversationSession) -> list[Encount
     patient = resolve_target_patient(actor, session)
     # N+1 risk: fmt_facility_name() below walks enc.facility.name
     # Add select_related("facility") in the upcoming N+1 review pass.
-    queryset = Encounter.objects.filter(patient=patient)
+    queryset = Encounter.objects.filter(patient=patient).select_related("facility")
     records = queryset.order_by("-created_date")[: plugin_settings.DATA_FETCH_LIMIT]
     if not records:
         raise NoDataError

@@ -21,7 +21,7 @@ def fetch_medications(actor: Actor, session: ConversationSession) -> list[Medica
     patient = resolve_target_patient(actor, session)
     # N+1 risk: _extract_medication_name() below walks med.requested_product.name
     # Add select_related("requested_product") in the upcoming N+1 review pass.
-    queryset = MedicationRequest.objects.filter(patient=patient)
+    queryset = MedicationRequest.objects.filter(patient=patient).select_related("requested_product")
     records = queryset.order_by("-created_date")[: plugin_settings.DATA_FETCH_LIMIT]
     if not records:
         raise NoDataError
