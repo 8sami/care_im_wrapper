@@ -4,3 +4,15 @@ class WhatsAppError(Exception):
 
 class WhatsAppPairRateLimitError(WhatsAppError):
     """Raised when Meta's pair rate limit is hit (error code 131056)."""
+
+
+class WhatsAppBadRequestError(WhatsAppError):
+    """Raised for permanent 4xx errors (excluding 429/131056)."""
+
+
+class WhatsAppServerError(WhatsAppError):
+    """Raised for 5xx errors."""
+
+
+class WhatsAppNetworkError(WhatsAppError):
+    """Raised for network/timeout issues."""

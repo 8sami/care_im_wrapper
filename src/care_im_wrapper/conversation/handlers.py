@@ -153,12 +153,11 @@ def _handle_authenticated(session: ConversationSession, phone_number: str, text:
         send_message(channel, phone_number, _msg("session_expired"))
         return
 
-    user_type_str = str(session.user_type)
     menu = _STAFF_MENU if session.user_type == ConversationSession.UserType.STAFF.value else _PATIENT_MENU
     entry = menu.get(choice)
 
     if not entry:
-        _send_main_menu(phone_number, user_type_str, channel=channel)
+        send_message(channel, phone_number, _msg("invalid_choice"))
         return
 
     label, fetcher, renderer = entry
@@ -171,8 +170,48 @@ def _handle_authenticated(session: ConversationSession, phone_number: str, text:
 
     try:
         data = fetcher(actor, session)
-        msg = renderer(data, get_max_chars(channel))
-        send_message(channel, phone_number, msg)
+        renderer_msg = renderer(data, get_max_chars(channel))
+
+        current_menu = _STAFF_MENU if session.user_type == ConversationSession.UserType.STAFF.value else _PATIENT_MENU
+
+        menu_rows = []
+        for m_key, m_entry in current_menu.items():
+            menu_rows.append({"id": m_key, "title": m_entry[0]})
+        menu_rows.append({"id": "0", "title": "Logout"})
+
+        greeting = _msg("choose_option")
+        menu_items_text = "\n".join([f"{r['id']}. {r['title']}" for r in menu_rows])
+        full_text = f"{renderer_msg.text}\n\n{greeting}\n\n{menu_items_text}"
+
+        interactive_payload = InteractivePayload(
+            type=InteractiveType.LIST,
+            body=greeting,
+            button_label="View Menu",
+            action_data=[{"title": "Menu", "rows": menu_rows}],
+        )
+
+        limit_key = f"{channel.upper()}_INTERACTIVE_BODY_CHAR_LIMIT"
+        try:
+            limit = getattr(plugin_settings, limit_key)
+        except AttributeError:
+            limit = float("inf")
+
+        if len(renderer_msg.text) + len(greeting) > limit:
+            # Fallback: Send data as plain text, then menu separately.
+            send_message(channel, phone_number, OutboundMessage(text=renderer_msg.text))
+            send_message(channel, phone_number, OutboundMessage(text=greeting, interactive=interactive_payload))
+        else:
+            # Single message: data + greeting in interactive body (avoiding redundant menu list)
+            interactive_payload = InteractivePayload(
+                type=interactive_payload.type,
+                body=f"{renderer_msg.text}\n\n{greeting}",
+                action_data=interactive_payload.action_data,
+                button_label=interactive_payload.button_label,
+                header=interactive_payload.header,
+                footer=interactive_payload.footer,
+            )
+            send_message(channel, phone_number, OutboundMessage(text=full_text, interactive=interactive_payload))
+
     except PermissionDeniedError:
         logger.warning(
             "PermissionDenied: %s id=%s action=%s",
@@ -180,16 +219,34 @@ def _handle_authenticated(session: ConversationSession, phone_number: str, text:
             actor.instance.id,
             label,
         )
-        send_message(channel, phone_number, _msg("permission_denied"))
+        _send_main_menu(
+            phone_number,
+            str(session.user_type),
+            channel=channel,
+            prefix=_msg("permission_denied"),
+        )
     except MissingContextError as exc:
-        send_message(channel, phone_number, str(exc))
+        _send_main_menu(
+            phone_number,
+            str(session.user_type),
+            channel=channel,
+            prefix=str(exc),
+        )
     except NoDataError:
-        send_message(channel, phone_number, _msg("no_data", label=label.lower()))
+        _send_main_menu(
+            phone_number,
+            str(session.user_type),
+            channel=channel,
+            prefix=_msg("no_data", label=label.lower()),
+        )
     except DataFetchError as exc:
         logger.error("DataFetchError %s: %s", label, exc)
-        send_message(channel, phone_number, _msg("fetch_error"))
-
-    _send_main_menu(phone_number, user_type_str, channel=channel)
+        _send_main_menu(
+            phone_number,
+            str(session.user_type),
+            channel=channel,
+            prefix=_msg("fetch_error"),
+        )
 
 
 def _handle_awaiting_patient_search(session: ConversationSession, phone_number: str, text: str, channel: str) -> None:
@@ -265,16 +322,17 @@ def _handle_selecting_patient(session: ConversationSession, phone_number: str, t
     session.state = ConversationSession.State.AUTHENTICATED
     session.candidates = []
     session.save(update_fields=["state", "active_patient_external_id", "candidates"])
-
-    send_message(
-        channel,
+    _send_main_menu(
         phone_number,
-        _msg("patient_selected", name=selected["name"]),
+        str(session.user_type),
+        channel=channel,
+        prefix=_msg("patient_selected", name=selected["name"]),
     )
-    _send_main_menu(phone_number, str(session.user_type), channel=channel)
 
 
-def _send_main_menu(phone_number: str, user_type: str, channel: str, name: str | None = None) -> None:
+def _send_main_menu(
+    phone_number: str, user_type: str, channel: str, name: str | None = None, prefix: str | None = None
+) -> None:
     menu = _STAFF_MENU if user_type == ConversationSession.UserType.STAFF.value else _PATIENT_MENU
 
     # ids match the existing menu keys so _handle_authenticated's menu.get(choice) works unchanged
@@ -282,15 +340,20 @@ def _send_main_menu(phone_number: str, user_type: str, channel: str, name: str |
     rows.append({"id": "0", "title": "Logout"})
 
     greeting = _msg("greeting", name=name) if name else _msg("choose_option")
+    menu_items_text = "\n".join([f"{r['id']}. {r['title']}" for r in rows])
 
-    plain_lines = [f"{r['id']}. {r['title']}" for r in rows]
-    plain_text = greeting + "\n\n" + "\n".join(plain_lines)
+    if prefix:
+        plain_text = f"{prefix}\n\n{greeting}\n\n{menu_items_text}"
+        interactive_body = f"{prefix}\n\n{greeting}"
+    else:
+        plain_text = greeting + "\n\n" + "\n".join([f"{r['id']}. {r['title']}" for r in rows])
+        interactive_body = greeting
 
     msg = OutboundMessage(
         text=plain_text,
         interactive=InteractivePayload(
             type=InteractiveType.LIST,
-            body=greeting,
+            body=interactive_body,
             button_label="View Menu",
             action_data=[{"title": "Menu", "rows": rows}],
         ),

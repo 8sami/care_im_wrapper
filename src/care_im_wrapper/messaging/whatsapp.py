@@ -6,7 +6,12 @@ from typing import Any
 import httpx
 
 from care_im_wrapper.conversation.messages import OutboundMessage
-from care_im_wrapper.messaging.exceptions import WhatsAppPairRateLimitError
+from care_im_wrapper.messaging.exceptions import (
+    WhatsAppBadRequestError,
+    WhatsAppNetworkError,
+    WhatsAppPairRateLimitError,
+    WhatsAppServerError,
+)
 from care_im_wrapper.settings import plugin_settings
 
 logger = logging.getLogger(__name__)
@@ -147,13 +152,19 @@ class WhatsAppClient:
             response = httpx.post(url, json=payload, headers=headers, timeout=10.0)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 400:
-                try:
-                    error_data = exc.response.json()
-                    if error_data.get("error", {}).get("code") == 131056:
-                        raise WhatsAppPairRateLimitError("WhatsApp pair rate limit hit (131056)") from exc
-                except (ValueError, KeyError):
-                    pass
-            logger.error("WhatsApp API %s: %s", exc.response.status_code, exc.response.text)
+            status_code = exc.response.status_code
+            error_code: int | None = None
+            try:
+                if exc.response.content:
+                    error_code = exc.response.json().get("error", {}).get("code")
+            except (ValueError, KeyError):
+                pass
+
+            if status_code == 429 or error_code == 131056:
+                raise WhatsAppPairRateLimitError(f"WhatsApp rate limit hit: {exc.response.text}") from exc
+            if 400 <= status_code < 500:
+                raise WhatsAppBadRequestError(f"WhatsApp permanent error ({status_code}): {exc.response.text}") from exc
+            if status_code >= 500:
+                raise WhatsAppServerError(f"WhatsApp server error ({status_code}): {exc.response.text}") from exc
         except httpx.RequestError as exc:
-            logger.error("WhatsApp network error: %s", exc)
+            raise WhatsAppNetworkError(f"WhatsApp network/timeout error: {exc}") from exc

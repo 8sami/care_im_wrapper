@@ -7,7 +7,12 @@ from celery import shared_task
 from django.core.cache import cache
 
 from care_im_wrapper.conversation.handlers import run_state_machine
-from care_im_wrapper.messaging.exceptions import WhatsAppPairRateLimitError
+from care_im_wrapper.messaging.exceptions import (
+    WhatsAppBadRequestError,
+    WhatsAppNetworkError,
+    WhatsAppPairRateLimitError,
+    WhatsAppServerError,
+)
 from care_im_wrapper.settings import plugin_settings
 
 logger = logging.getLogger(__name__)
@@ -36,8 +41,11 @@ def process_inbound_message(
 
     try:
         run_state_machine(phone_number, text, channel)
-    except WhatsAppPairRateLimitError:
-        logger.warning("WhatsApp pair rate limit hit for %s. Skipping retry.", phone_number)
+    except (WhatsAppPairRateLimitError, WhatsAppNetworkError, WhatsAppServerError) as exc:
+        logger.warning("Transient WhatsApp error for %s: %s. Retrying.", phone_number, exc)
+        raise self.retry(exc=exc) from exc
+    except WhatsAppBadRequestError as exc:
+        logger.error("Permanent WhatsApp error for %s: %s. Dropping message.", phone_number, exc)
     except Exception as exc:
         logger.error("process_inbound_message failed: %s", exc)
         raise self.retry(exc=exc) from exc
