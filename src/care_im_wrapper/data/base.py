@@ -31,6 +31,23 @@ def humanize_choice(value: str | None) -> str:
     return value.replace("_", " ").title()
 
 
+def humanize_encounter_class(value: str | None) -> str:
+    """
+    Converts FHIR short codes into human-readable strings.
+    """
+    mapping = {
+        "imp": "Inpatient",
+        "amb": "Outperson",
+        "obsenc": "Observation",
+        "emer": "Emergency",
+        "vr": "Virtual",
+        "hh": "Home Health",
+    }
+    if not value:
+        return "Not recorded"
+    return mapping.get(value, value.title())
+
+
 def humanize_date(value: datetime | str | None) -> str:
     """
     Converts a raw datetime into a short human-readable date.

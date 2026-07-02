@@ -22,6 +22,7 @@ class EncounterRecord:
     date: str  # already humanized via humanize_date()
     facility: str
     status: str  # already humanized via humanize_choice()
+    encounter_class: str
 
 
 @dataclass(frozen=True)

@@ -60,7 +60,10 @@ def render_medications(records: list[MedicationRecord], max_chars: int) -> Outbo
 
 def render_encounters(records: list[EncounterRecord], max_chars: int) -> OutboundMessage:
     header = _msg("encounters_header")
-    lines = [_msg("encounter_line", date=r.date, facility=r.facility, status=r.status) for r in records]
+    lines = [
+        _msg("encounter_line", date=r.date, facility=r.facility, status=r.status, encounter_class=r.encounter_class)
+        for r in records
+    ]
     return OutboundMessage(text=_numbered_block(header, lines, max_chars))
 
 

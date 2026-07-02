@@ -32,7 +32,7 @@ _MESSAGES: dict[str, str] = {
     # Per-record line templates
     "medication_line": "*{name}* ({status})",
     "medication_dosage": "Dosage: _{dosage}_",
-    "encounter_line": "{date} — {facility} ({status})",
+    "encounter_line": "*{facility}* — {date} ({status})",
     "appointment_line": "*{practitioner}* at *{location}*",
     "appointment_detail": "{date} — {time_slot} ({status})",
     "lab_report_line": "*{name}* — {date} ({status})",

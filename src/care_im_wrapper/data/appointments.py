@@ -19,15 +19,13 @@ def fetch_appointments(actor: Actor, session: ConversationSession) -> list[Appoi
     from care.emr.models.scheduling.booking import TokenBooking  # type: ignore[import-untyped]
 
     patient = resolve_target_patient(actor, session)
-    # N+1 risk: _extract_booking_info() below walks
-    #   booking.token_slot.resource.user
-    #   booking.token_slot.resource.facility
-    # Add select_related("token_slot__resource__user", "token_slot__resource__facility")
-    # in the upcoming N+1 review pass.
     queryset = TokenBooking.objects.filter(patient=patient).select_related(
-        "token_slot__resource__user", "token_slot__resource__facility"
+        "token_slot__resource__user",
+        "token_slot__resource__facility",
+        "token_slot__resource__location",
+        "token_slot__resource__healthcare_service",
     )
-    records = queryset.order_by("-booked_on")[: plugin_settings.DATA_FETCH_LIMIT]
+    records = queryset.order_by("-booked_on")[: int(plugin_settings.DATA_FETCH_LIMIT)]
     if not records:
         raise NoDataError
 
@@ -44,19 +42,31 @@ def _extract_booking_info(booking) -> AppointmentRecord | None:
     slot = getattr(booking, "token_slot", None)
     status = humanize_choice(getattr(booking, "status", None))
 
-    practitioner = "Unknown"
+    location = "Unknown"
     resource = getattr(slot, "resource", None) if slot else None
+
+    if resource:
+        res_type = getattr(resource, "resource_type", None)
+        if res_type == "location":
+            loc_obj = getattr(resource, "location", None)
+            if loc_obj:
+                location = getattr(loc_obj, "name", "Unknown")
+        elif res_type == "healthcare_service":
+            hs_obj = getattr(resource, "healthcare_service", None)
+            if hs_obj:
+                location = getattr(hs_obj, "name", "Unknown")
+        else:
+            facility = getattr(resource, "facility", None)
+            if facility:
+                location = getattr(facility, "name", "Unknown")
+
+    practitioner = "Unknown"
     if resource:
         user = getattr(resource, "user", None)
         if user:
             first_name = getattr(user, "first_name", "")
             last_name = getattr(user, "last_name", "")
             practitioner = f"{first_name} {last_name}".strip() or "Unknown"
-
-    location = "Unknown"
-    facility = getattr(resource, "facility", None) if resource else None
-    if facility:
-        location = getattr(facility, "name", "Unknown")
 
     date_str = ""
     time_slot = ""

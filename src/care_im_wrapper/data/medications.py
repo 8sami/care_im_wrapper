@@ -19,9 +19,12 @@ def fetch_medications(actor: Actor, session: ConversationSession) -> list[Medica
     from care.emr.models.medication_request import MedicationRequest  # type: ignore[import-untyped]
 
     patient = resolve_target_patient(actor, session)
-    # N+1 risk: _extract_medication_name() below walks med.requested_product.name
-    # Add select_related("requested_product") in the upcoming N+1 review pass.
-    queryset = MedicationRequest.objects.filter(patient=patient).select_related("requested_product")
+    queryset = (
+        MedicationRequest.objects.filter(patient=patient)
+        .exclude(status="entered_in_error")
+        .select_related("requested_product")
+    )
+    # TODO(product): nutritional_product/consumable exposure pending mentor sign-off.
     records = queryset.order_by("-created_date")[: plugin_settings.DATA_FETCH_LIMIT]
     if not records:
         raise NoDataError
