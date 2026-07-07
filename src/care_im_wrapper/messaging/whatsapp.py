@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -11,18 +11,23 @@ from care_im_wrapper.messaging.exceptions import (
     WhatsAppNetworkError,
     WhatsAppPairRateLimitError,
     WhatsAppServerError,
+    WhatsAppTemplateNotConfiguredError,
 )
 from care_im_wrapper.settings import plugin_settings
+
+if TYPE_CHECKING:
+    from care_im_wrapper.models.notification import NotificationTemplate
 
 logger = logging.getLogger(__name__)
 
 
 class WhatsAppClient:
     supports_interactive: bool = True
+    supports_templates: bool = True
     max_message_chars: int = int(plugin_settings.WHATSAPP_MESSAGE_CHAR_LIMIT)
 
-    def send_text(self, to: str, body: str) -> None:
-        self._send(
+    def send_text(self, to: str, body: str) -> str | None:
+        return self._send(
             {
                 "messaging_product": "whatsapp",
                 "recipient_type": "individual",
@@ -32,7 +37,7 @@ class WhatsAppClient:
             }
         )
 
-    def send_interactive(self, to: str, msg: OutboundMessage) -> None:
+    def send_interactive(self, to: str, msg: OutboundMessage) -> str | None:
         """
         Renders OutboundMessage.interactive as the exact Meta Cloud API JSON shape and sends it.
         Silently falls back to send_text() if msg.interactive is None.
@@ -41,8 +46,7 @@ class WhatsAppClient:
         from care_im_wrapper.conversation.messages import InteractiveType
 
         if msg.interactive is None:
-            self.send_text(to, msg.as_plain_text())
-            return
+            return self.send_text(to, msg.as_plain_text())
 
         iv = msg.interactive
         interactive_obj: dict[str, Any]
@@ -115,15 +119,14 @@ class WhatsAppClient:
             }
 
         else:
-            self.send_text(to, msg.as_plain_text())
-            return
+            return self.send_text(to, msg.as_plain_text())
 
         if iv.header:
             interactive_obj["header"] = {"type": "text", "text": iv.header}
         if iv.footer:
             interactive_obj["footer"] = {"text": iv.footer}
 
-        self._send(
+        return self._send(
             {
                 "messaging_product": "whatsapp",
                 "recipient_type": "individual",
@@ -133,7 +136,7 @@ class WhatsAppClient:
             }
         )
 
-    def _send(self, payload: dict[str, Any]) -> None:
+    def _send(self, payload: dict[str, Any]) -> str | None:
         token = plugin_settings.WHATSAPP_ACCESS_TOKEN
         phone_id = plugin_settings.WHATSAPP_PHONE_NUMBER_ID
         api_url = plugin_settings.WHATSAPP_API_URL
@@ -166,5 +169,87 @@ class WhatsAppClient:
                 raise WhatsAppBadRequestError(f"WhatsApp permanent error ({status_code}): {exc.response.text}") from exc
             if status_code >= 500:
                 raise WhatsAppServerError(f"WhatsApp server error ({status_code}): {exc.response.text}") from exc
+            return None
         except httpx.RequestError as exc:
             raise WhatsAppNetworkError(f"WhatsApp network/timeout error: {exc}") from exc
+
+        try:
+            message_id = response.json().get("messages", [{}])[0].get("id")
+        except (ValueError, IndexError, AttributeError):
+            message_id = None
+
+        if message_id is None:
+            logger.warning("WhatsApp _send: response did not contain a message id: %s", response.text)
+
+        return message_id
+
+    def _build_body_parameters(self, template: NotificationTemplate, merged_variables: dict) -> list[dict[str, Any]]:
+        """
+        Builds Meta's body `parameters` list. A template uses exactly one of two
+        mutually-exclusive schemes (`template.parameter_format`), never a mix:
+          POSITIONAL — `variable_mapping` keys are Meta's numbered slots ("1", "2", ...),
+            substituted by list order; parameter objects carry no name.
+          NAMED — `variable_mapping` keys are Meta's own `{{name}}` placeholder names,
+            substituted by matching `parameter_name`; list order doesn't matter to Meta,
+            but is still deterministic here (sorted) for stable request payloads/logging.
+        """
+        from care_im_wrapper.models.notification import TemplateParameterFormat
+
+        if not template.variable_mapping:
+            logger.error("WhatsApp send_template: template %s has no variable_mapping configured", template.slug)
+            raise WhatsAppTemplateNotConfiguredError(
+                f"NotificationTemplate '{template.slug}' has no variable_mapping configured"
+            )
+
+        variable_mapping: dict[str, str] = template.variable_mapping  # pyright: ignore[reportAssignmentType]
+        is_named = template.parameter_format == TemplateParameterFormat.NAMED
+
+        parameters: list[dict[str, Any]] = []
+        for meta_key in sorted(variable_mapping) if is_named else sorted(variable_mapping, key=int):
+            variable_name = variable_mapping[meta_key]
+            if variable_name not in merged_variables:
+                logger.warning(
+                    "WhatsApp send_template: variable '%s' (%s %s) missing from merged_variables for template %s",
+                    variable_name,
+                    "parameter" if is_named else "position",
+                    meta_key,
+                    template.slug,
+                )
+            value = str(merged_variables.get(variable_name, ""))
+            if is_named:
+                parameters.append({"type": "text", "parameter_name": meta_key, "text": value})
+            else:
+                parameters.append({"type": "text", "text": value})
+        return parameters
+
+    def send_template(self, to: str, template: NotificationTemplate, merged_variables: dict) -> str | None:
+        body_parameters = self._build_body_parameters(template, merged_variables)
+
+        language_code = template.language_code
+        if not language_code:
+            logger.warning(
+                "WhatsApp send_template: template %s has no language_code, falling back to en_US", template.slug
+            )
+            language_code = "en_US"
+
+        template_obj: dict[str, Any] = {
+            "name": template.slug,
+            "language": {"code": language_code},
+        }
+        if body_parameters:
+            template_obj["components"] = [
+                {
+                    "type": "body",
+                    "parameters": body_parameters,
+                }
+            ]
+
+        return self._send(
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to,
+                "type": "template",
+                "template": template_obj,
+            }
+        )

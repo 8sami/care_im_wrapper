@@ -16,3 +16,7 @@ class WhatsAppServerError(WhatsAppError):
 
 class WhatsAppNetworkError(WhatsAppError):
     """Raised for network/timeout issues."""
+
+
+class WhatsAppTemplateNotConfiguredError(WhatsAppError):
+    """Raised when a template's variable_mapping has not been configured."""
