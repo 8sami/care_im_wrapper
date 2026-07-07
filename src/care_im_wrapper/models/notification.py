@@ -71,6 +71,18 @@ class TemplateApprovalStatus(models.TextChoices):
     DISABLED = "disabled", "Disabled"  # pyright: ignore[reportAssignmentType]
 
 
+class TemplateParameterFormat(models.TextChoices):
+    """
+    Which of Meta's two mutually-exclusive body-parameter schemes this template
+    uses. A given approved WhatsApp template is created with exactly one of these —
+    never a mix — so this is a per-template setting, not something inferred at
+    dispatch time.
+    """
+
+    POSITIONAL = "positional", "Positional ({{1}}, {{2}}, ...)"  # pyright: ignore[reportAssignmentType]
+    NAMED = "named", "Named ({{patient_name}}, ...)"  # pyright: ignore[reportAssignmentType]
+
+
 class NotificationTemplate(models.Model):
     external_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
     created_date = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -95,6 +107,19 @@ class NotificationTemplate(models.Model):
     language_code = models.CharField(max_length=10, null=True, blank=True)
     payload = models.JSONField(null=True, blank=True)
     variable_mapping = models.JSONField(null=True, blank=True)
+    # Synced from Meta's own GET /message_templates response (same call already used
+    # for category/approval_status/language_code/payload) — Meta returns this because
+    # it's set at template-creation time and is a stored attribute of the template
+    # itself, unlike variable_mapping (our own semantic-name mapping, which Meta has
+    # no way to know). Default matches Meta's own documented behavior: a template
+    # created without an explicit parameter_format defaults to "positional".
+    # See WhatsAppClient._build_body_parameters for how this and variable_mapping are
+    # interpreted together.
+    parameter_format = models.CharField(
+        max_length=20,
+        choices=TemplateParameterFormat.choices,
+        default=TemplateParameterFormat.POSITIONAL,
+    )
 
     objects = SoftDeleteManager()
 

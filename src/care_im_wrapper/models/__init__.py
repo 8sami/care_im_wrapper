@@ -9,6 +9,7 @@ from care_im_wrapper.models.notification import (
     NotificationTrigger,
     SoftDeleteManager,
     TemplateApprovalStatus,
+    TemplateParameterFormat,
     TriggerType,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "NotificationTrigger",
     "SoftDeleteManager",
     "TemplateApprovalStatus",
+    "TemplateParameterFormat",
     "TriggerType",
 ]
