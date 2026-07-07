@@ -25,6 +25,7 @@ class WhatsAppClient:
     supports_interactive: bool = True
     supports_templates: bool = True
     max_message_chars: int = int(plugin_settings.WHATSAPP_MESSAGE_CHAR_LIMIT)
+    min_send_interval_seconds: int = int(plugin_settings.WHATSAPP_MIN_SEND_INTERVAL_SECONDS)
 
     def send_text(self, to: str, body: str) -> str | None:
         return self._send(

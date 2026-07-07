@@ -18,6 +18,7 @@ class MessageSender(Protocol):
     supports_interactive: bool
     supports_templates: bool
     max_message_chars: int
+    min_send_interval_seconds: int
 
     def send_text(self, to: str, body: str) -> str | None: ...
     def send_interactive(self, to: str, msg: OutboundMessage) -> str | None: ...
@@ -43,6 +44,14 @@ def get_max_chars(channel: str) -> int:
     if factory is None:
         return 4096  # Default fallback
     return factory().max_message_chars
+
+
+def get_min_send_interval_seconds(channel: str) -> int:
+    """Returns the minimum seconds between sends to the same number for a given provider."""
+    factory = _PROVIDERS.get(channel)
+    if factory is None:
+        return 0  # Unregistered channel: no real provider to throttle against
+    return factory().min_send_interval_seconds
 
 
 def send_message(channel: str, to: str, msg: OutboundMessage | str) -> str | None:
