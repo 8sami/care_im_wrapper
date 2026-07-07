@@ -45,8 +45,9 @@ class NotificationTemplateAdmin(admin.ModelAdmin):
         "category",
         "approval_status",
         "is_active",
+        "parameter_format",
     )
-    list_filter = ("provider", "category", "approval_status")
+    list_filter = ("provider", "category", "approval_status", "parameter_format")
     readonly_fields = (
         "external_id",
         "created_date",
@@ -61,6 +62,7 @@ class NotificationTemplateAdmin(admin.ModelAdmin):
         "approval_status",
         "payload",
         "language_code",
+        "parameter_format",
     )
 
 
