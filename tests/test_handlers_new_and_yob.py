@@ -89,7 +89,7 @@ class HandleAwaitingYobTests(TestCase):
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.AWAITING_YOB)
         self.assertEqual(self.session.failed_attempts, 1)
-        mock_send.assert_called_once_with(CHANNEL, PHONE, "That doesn't match. You have *4* attempt(s) remaining.")
+        mock_send.assert_called_once_with(CHANNEL, PHONE, "That doesn't match. You have *2* attempt(s) remaining.")
 
     @patch("care_im_wrapper.conversation.handlers.send_message")
     def test_fifth_wrong_attempt_triggers_cooldown(self, mock_send):

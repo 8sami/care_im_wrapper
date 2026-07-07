@@ -9,7 +9,7 @@ from care_im_wrapper.models import ConversationSession
 
 PHONE = "+919876543210"
 CHANNEL = "whatsapp"
-GREETING = "Please choose an option:"  # len == 25
+GREETING = "Please choose an option:"  # len == 24
 LIMIT = 1024  # WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT default
 
 
@@ -63,7 +63,7 @@ class HandleAuthenticatedSuccessPathTests(TestCase):
     @patch("care_im_wrapper.conversation.handlers.send_message")
     def test_data_exceeding_limit_splits_into_two_messages(self, mock_send, mock_resolve_actor, mock_max_chars):
         mock_resolve_actor.return_value = _make_actor()
-        long_text = "A" * 1000  # + GREETING(25) = 1025 > 1024 -> triggers fallback
+        long_text = "A" * 1001  # + GREETING(24) = 1025 > 1024 -> triggers fallback
 
         with self._patch_menu(long_text):
             _handle_authenticated(self.session, PHONE, "1", CHANNEL)
