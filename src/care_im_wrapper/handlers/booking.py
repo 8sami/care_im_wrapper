@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from care_im_wrapper.handlers.dispatch import NotificationRecipientSpec, fire_notification_event
 from care_im_wrapper.models.notification import _FACILITY_RESOLVERS
+from care_im_wrapper.settings import plugin_settings
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +65,12 @@ def on_booking_pre_save(sender: type[TokenBooking], instance: TokenBooking, **kw
 
 @receiver(post_save, sender=TokenBooking)
 def on_booking_post_save(sender: type[TokenBooking], instance: TokenBooking, created: bool, **kwargs: Any) -> None:
+    trigger_slugs = plugin_settings.APPOINTMENT_TRIGGER_SLUGS
+
     if created:
         if instance.status == BookingStatusChoices.booked:
             _create_event_and_recipient(
-                instance, "appointment_confirmed", f"Appointment confirmed — {instance.external_id}"
+                instance, trigger_slugs["booked"], f"Appointment confirmed — {instance.external_id}"
             )
         return
 
@@ -77,9 +80,9 @@ def on_booking_post_save(sender: type[TokenBooking], instance: TokenBooking, cre
 
     if instance.status == BookingStatusChoices.cancelled:
         _create_event_and_recipient(
-            instance, "appointment_cancelled", f"Appointment cancelled — {instance.external_id}"
+            instance, trigger_slugs["cancelled"], f"Appointment cancelled — {instance.external_id}"
         )
     elif instance.status == BookingStatusChoices.rescheduled:
         _create_event_and_recipient(
-            instance, "appointment_rescheduled", f"Appointment rescheduled — {instance.external_id}"
+            instance, trigger_slugs["rescheduled"], f"Appointment rescheduled — {instance.external_id}"
         )

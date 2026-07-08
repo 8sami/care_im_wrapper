@@ -142,6 +142,12 @@ DEFAULTS = {
     # approval/status changes are infrequent, unlike dispatch latency, hence the much
     # longer default (6 hours) than NOTIFICATION_DISPATCH_INTERVAL_SECONDS above.
     "TEMPLATE_SYNC_INTERVAL_SECONDS": 21600,
+    # Which NotificationTrigger.slug a booking status transition fires. Centralized here.
+    "APPOINTMENT_TRIGGER_SLUGS": {
+        "booked": "appointment_update",
+        "cancelled": "appointment_update",
+        "rescheduled": "appointment_update",
+    },
 }
 
 
