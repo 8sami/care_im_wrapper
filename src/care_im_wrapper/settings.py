@@ -143,6 +143,19 @@ DEFAULTS = {
         "cancelled": "appointment_cancelled",
         "rescheduled": "appointment_rescheduled",
     },
+    # NotificationTemplate.slug -> variable_mapping (Meta param name -> Jinja2 expression,
+    # rendered via messaging.variables.resolve_variable).
+    "NOTIFICATION_TEMPLATE_VARIABLE_MAPPINGS": {
+        "appointment_update": {
+            "header_status": "{{ status }}",
+            "patient_name": "{{ object.patient.name }}",
+            "doctor_name": "{{ object.token_slot.resource.user.full_name }}",
+            "date": "{{ object.token_slot.start_datetime|date('%d %b %Y') }}",
+            "time": "{{ object.token_slot.start_datetime|time }}",
+            "location_or_link": "{{ object.token_slot.resource.facility.name }}",
+            "status": "{{ status }}",
+        },
+    },
 }
 
 
