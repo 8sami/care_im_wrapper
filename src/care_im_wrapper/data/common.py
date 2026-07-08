@@ -23,7 +23,7 @@ def resolve_target_patient(actor, session):
     Raises MissingContextError if staff has no patient selected.
     Raises PermissionDeniedError if staff lacks permission on the resolved patient.
     """
-    if actor.user_type == ConversationSession.UserType.PATIENT:
+    if actor.user_type == ConversationSession.UserType.PATIENT.value:
         return actor.instance
 
     from care.emr.models.patient import Patient  # type: ignore[import-untyped]
