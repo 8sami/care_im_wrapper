@@ -10,4 +10,5 @@ class CareImWrapperConfig(AppConfig):
 
     def ready(self) -> None:
         # ready() must import handlers or @receiver decorators never register
+        import care_im_wrapper.handlers.booking  # noqa: F401
         import care_im_wrapper.handlers.meta  # noqa: F401

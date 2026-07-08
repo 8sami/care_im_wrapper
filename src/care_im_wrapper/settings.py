@@ -131,6 +131,10 @@ DEFAULTS = {
     "PHONE_NUMBER_MASK_PREFIX_LEN": 4,
     "PHONE_NUMBER_MASK_SUFFIX_LEN": 3,
     "WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT": 1024,
+    # Channel used for signal-triggered notifications that have no other channel
+    # signal to consult (e.g. a booking's patient has no prior ConversationSession).
+    # Must be a value registered in messaging.registry._PROVIDERS.
+    "NOTIFICATION_DEFAULT_PROVIDER": "whatsapp",
 }
 
 

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Protocol
 from care_im_wrapper.conversation.messages import OutboundMessage
 from care_im_wrapper.conversation.template_rendering import merge_variable_values
 from care_im_wrapper.models import ConversationSession
+from care_im_wrapper.settings import plugin_settings
 
 if TYPE_CHECKING:
     from care_im_wrapper.models.notification import NotificationTemplate
@@ -52,6 +53,20 @@ def get_min_send_interval_seconds(channel: str) -> int:
     if factory is None:
         return 0  # Unregistered channel: no real provider to throttle against
     return factory().min_send_interval_seconds
+
+
+def get_default_channel() -> str:
+    """Last-resort channel fallback, configured via `NOTIFICATION_DEFAULT_PROVIDER`."""
+    return plugin_settings.NOTIFICATION_DEFAULT_PROVIDER
+
+
+def resolve_channel(phone_number: str) -> str:
+    """Channel to notify a number on: its most recent `ConversationSession` provider,
+    else `get_default_channel()`."""
+    session = ConversationSession.objects.filter(phone_number=phone_number).order_by("-updated_at").first()  # pyright: ignore[reportAttributeAccessIssue]
+    if session is not None:
+        return session.provider
+    return get_default_channel()
 
 
 def send_message(channel: str, to: str, msg: OutboundMessage | str) -> str | None:
