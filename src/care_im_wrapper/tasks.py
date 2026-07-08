@@ -14,6 +14,7 @@ from care_im_wrapper.messaging.exceptions import (
     WhatsAppPairRateLimitError,
     WhatsAppServerError,
 )
+from care_im_wrapper.messaging.normalize import normalize_status_update
 from care_im_wrapper.messaging.registry import (
     get_min_send_interval_seconds,
     get_template_capable_providers,
@@ -23,6 +24,13 @@ from care_im_wrapper.models.notification import NotificationRecipient, Notificat
 from care_im_wrapper.settings import plugin_settings
 
 logger = logging.getLogger(__name__)
+
+_STATE_ORDER: dict[NotificationStatusState, int] = {
+    NotificationStatusState.SENT: 0,
+    NotificationStatusState.DELIVERED: 1,
+    NotificationStatusState.READ: 2,
+    NotificationStatusState.FAILED: 3,
+}
 
 
 @shared_task(
@@ -64,9 +72,29 @@ def process_inbound_message(
     default_retry_delay=plugin_settings.TASK_RETRY_DELAY_SECONDS,
 )
 def process_status_update(self, payload: dict[str, Any], channel: str) -> None:
-    # TODO: Week 6 -> notification status tracking
     try:
-        pass
+        update = normalize_status_update(payload, channel)
+        if update is None:
+            logger.warning("process_status_update: could not normalize payload, dropping")
+            return
+
+        recipient = NotificationRecipient.objects.filter(tracking_id=update.tracking_id).first()
+        if recipient is None:
+            logger.info(
+                "process_status_update: no NotificationRecipient with tracking_id=%s",
+                update.tracking_id,
+            )
+            return
+
+        NotificationStatus.objects.create(
+            recipient=recipient,
+            state=update.state,
+            payload=update.raw_payload,
+        )
+
+        if _STATE_ORDER.get(recipient.latest_status, -1) <= _STATE_ORDER[update.state]:
+            recipient.latest_status = update.state
+            recipient.save(update_fields=["latest_status"])
     except Exception as exc:
         logger.error("process_status_update failed: %s", exc)
         raise self.retry(exc=exc) from exc

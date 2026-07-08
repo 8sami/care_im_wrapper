@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from care_im_wrapper.models.notification import NotificationStatusState
+
 
 class InteractiveType(str, Enum):
     REPLY_BUTTONS = "button"
@@ -41,6 +43,15 @@ class InboundMessage:
     channel: str  # "whatsapp" | "telegram" | future providers
     raw_id: str | None = None  # provider's message id (wamid, etc.)
     # status-update correlation, optional for now
+
+
+@dataclass(frozen=True)
+class StatusUpdate:
+    """A normalized representation of a delivery/read status webhook from any provider."""
+
+    tracking_id: str
+    state: NotificationStatusState
+    raw_payload: dict[str, Any]
 
 
 @dataclass(frozen=True)

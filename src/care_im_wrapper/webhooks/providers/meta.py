@@ -4,6 +4,7 @@ from typing import Any, ClassVar
 
 from django.http import HttpRequest, HttpResponse
 
+from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.signals import meta_message_received, meta_status_updated
 from care_im_wrapper.webhooks.exceptions import SignatureVerificationError
 from care_im_wrapper.webhooks.mixins import ChallengeMixin, HmacVerificationMixin
@@ -22,7 +23,7 @@ class MetaWebhookView(ChallengeMixin, HmacVerificationMixin, WebhookView):
     signature_prefix: ClassVar[str] = "sha256="
 
     _CHANNEL_MAP: ClassVar[dict[str, str]] = {
-        "whatsapp_business_account": "whatsapp",
+        "whatsapp_business_account": ConversationSession.Provider.WHATSAPP.value,
         # "instagram": "instagram",
         # "page": "messenger",
     }

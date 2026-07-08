@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from care_im_wrapper.conversation.messages import OutboundMessage
+from care_im_wrapper.conversation.messages import InboundMessage, OutboundMessage, StatusUpdate
 from care_im_wrapper.messaging.exceptions import (
     WhatsAppBadRequestError,
     WhatsAppNetworkError,
@@ -13,6 +13,7 @@ from care_im_wrapper.messaging.exceptions import (
     WhatsAppServerError,
     WhatsAppTemplateNotConfiguredError,
 )
+from care_im_wrapper.models.notification import NotificationStatusState
 from care_im_wrapper.settings import plugin_settings
 
 if TYPE_CHECKING:
@@ -31,6 +32,88 @@ def _resolve_choice(
         return choices_cls(meta_value.lower())
     except ValueError:
         return default
+
+
+def normalize_meta_message(payload: dict[str, Any], channel: str) -> InboundMessage | None:
+    """
+    Normalizes a WhatsApp Cloud API (Meta) message payload.
+
+    Handles:
+      - type "text"        → text = payload["text"]["body"]
+      - type "interactive" / "button_reply" → text = interactive["button_reply"]["id"]
+      - type "interactive" / "list_reply"   → text = interactive["list_reply"]["id"]
+
+    Returns None for stickers, images, audio, unhandled types — caller drops them.
+    The `text` field carries the button/row id string for interactive replies,
+    which the state machine in handlers.py dispatches on directly.
+    """
+    raw_phone = payload.get("from")
+    if not raw_phone:
+        return None
+    phone_number = raw_phone if raw_phone.startswith("+") else f"+{raw_phone}"
+
+    msg_type = payload.get("type")
+
+    if msg_type == "text":
+        try:
+            text = payload.get("text", {}).get("body", "").strip()
+        except AttributeError:
+            return None
+
+    elif msg_type == "interactive":
+        interactive = payload.get("interactive", {})
+        interactive_type = interactive.get("type")
+        if interactive_type == "button_reply":
+            text = interactive.get("button_reply", {}).get("id", "").strip()
+        elif interactive_type == "list_reply":
+            text = interactive.get("list_reply", {}).get("id", "").strip()
+        else:
+            logger.debug("normalize_meta_message: unhandled interactive subtype %r, dropping", interactive_type)
+            return None
+
+    else:
+        logger.debug("normalize_meta_message: unhandled message type %r, dropping", msg_type)
+        return None
+
+    if not text:
+        return None
+
+    return InboundMessage(
+        phone_number=phone_number,
+        text=text,
+        channel=channel,
+        raw_id=payload.get("id"),
+    )
+
+
+_META_STATUS_MAP: dict[str, NotificationStatusState] = {
+    "sent": NotificationStatusState.SENT,
+    "delivered": NotificationStatusState.DELIVERED,
+    "read": NotificationStatusState.READ,
+    "failed": NotificationStatusState.FAILED,
+}
+
+
+def normalize_meta_status(payload: dict[str, Any], channel: str) -> StatusUpdate | None:
+    """
+    Normalizes a WhatsApp Cloud API (Meta) status webhook entry.
+
+    Meta's documented, stable fields: payload["id"] (the wamid),
+    payload["status"] (one of "sent"/"delivered"/"read"/"failed"),
+    payload.get("timestamp"), payload.get("errors").
+    """
+    tracking_id = payload.get("id")
+    if not tracking_id:
+        logger.warning("normalize_meta_status: missing id, dropping")
+        return None
+
+    status = payload.get("status") or ""
+    state = _META_STATUS_MAP.get(status)
+    if state is None:
+        logger.warning("normalize_meta_status: unrecognized status %r, dropping", status)
+        return None
+
+    return StatusUpdate(tracking_id=tracking_id, state=state, raw_payload=payload)
 
 
 class WhatsAppClient:
