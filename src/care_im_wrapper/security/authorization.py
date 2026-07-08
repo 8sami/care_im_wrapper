@@ -20,24 +20,21 @@ class NotificationAccess(AuthorizationHandler):
         )
 
     def can_read_notification_event(self, user, event: NotificationEvent) -> bool:
-        # An event with no resolvable facility (resolve_event_orgs(event) == []) is
-        # visible to superusers only, not any facility staff role — this falls out of
-        # check_permission_in_facility_organization's own organization_id__in=[]
-        # filter, not special-cased here.
+        # No resolvable facility > empty orgs > superuser-only, falls out of the check below naturally.
         return self.check_permission_in_facility_organization(
             [NotificationPermissions.can_read_notification_event.name], user, orgs=resolve_event_orgs(event)
         )
 
-    def can_create_notification_event(self, user, event: NotificationEvent | None = None, *, facility=None) -> bool:
-        if facility is not None:
-            return self.check_permission_in_facility_organization(
-                [NotificationPermissions.can_create_notification_event.name], user, facility=facility
+    def can_create_notification_event(self, user, event_or_facility_context: NotificationEvent | None = None) -> bool:
+        # No context yet (facility_organization_cache is only computed in NotificationEvent.save()) > org-level check.
+        if event_or_facility_context is None:
+            return self.check_permission_in_organization(
+                [NotificationPermissions.can_create_notification_event.name], user
             )
-        if event is None:
-            msg = "can_create_notification_event requires either event or facility"
-            raise ValueError(msg)
         return self.check_permission_in_facility_organization(
-            [NotificationPermissions.can_create_notification_event.name], user, orgs=resolve_event_orgs(event)
+            [NotificationPermissions.can_create_notification_event.name],
+            user,
+            orgs=resolve_event_orgs(event_or_facility_context),
         )
 
     def can_dispatch_notification_event(self, user, event: NotificationEvent) -> bool:
