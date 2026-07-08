@@ -21,6 +21,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _resolve_choice(
+    choices_cls: type, meta_value: str, *, overrides: dict[str, Any] | None = None, default: Any
+) -> Any:
+    """Maps a Meta-vocabulary string onto a `TextChoices` member: `overrides` first, then a case-insensitive match."""
+    if overrides and meta_value in overrides:
+        return overrides[meta_value]
+    try:
+        return choices_cls(meta_value.lower())
+    except ValueError:
+        return default
+
+
 class WhatsAppClient:
     supports_interactive: bool = True
     supports_templates: bool = True
@@ -254,3 +266,74 @@ class WhatsAppClient:
                 "template": template_obj,
             }
         )
+
+    def list_templates(self) -> list[dict[str, Any]]:
+        token = plugin_settings.WHATSAPP_ACCESS_TOKEN
+        api_url = plugin_settings.WHATSAPP_API_URL
+        business_account_id = plugin_settings.WHATSAPP_BUSINESS_ACCOUNT_ID
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        url: str | None = f"{api_url}/{business_account_id}/message_templates"
+        params: dict[str, Any] | None = None
+        templates: list[dict[str, Any]] = []
+
+        while url is not None:
+            try:
+                response = httpx.get(url, params=params, headers=headers, timeout=10.0)
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                if status_code >= 500:
+                    raise WhatsAppServerError(f"WhatsApp server error ({status_code}): {exc.response.text}") from exc
+                raise WhatsAppServerError(f"WhatsApp error ({status_code}): {exc.response.text}") from exc
+            except httpx.RequestError as exc:
+                raise WhatsAppNetworkError(f"WhatsApp network/timeout error: {exc}") from exc
+
+            body = response.json()
+            templates.extend(body.get("data", []))
+            url = body.get("paging", {}).get("next")
+            params = None
+
+        return templates
+
+    def upsert_synced_templates(self, raw_templates: list[dict[str, Any]]) -> None:
+        from care_im_wrapper.models import ConversationSession
+        from care_im_wrapper.models.notification import (
+            NotificationCategory,
+            NotificationTemplate,
+            TemplateApprovalStatus,
+            TemplateParameterFormat,
+        )
+
+        status_overrides = {"APPROVED": TemplateApprovalStatus.ACTIVE}
+
+        for template in raw_templates:
+            NotificationTemplate.objects.update_or_create(
+                slug=template["name"],
+                provider=ConversationSession.Provider.WHATSAPP,
+                defaults={
+                    "name": template["name"],
+                    "category": _resolve_choice(
+                        NotificationCategory, template.get("category", ""), default=NotificationCategory.UTILITY
+                    ),
+                    "approval_status": _resolve_choice(
+                        TemplateApprovalStatus,
+                        template.get("status", ""),
+                        overrides=status_overrides,
+                        default=TemplateApprovalStatus.DISABLED,
+                    ),
+                    "language_code": template.get("language"),
+                    "parameter_format": _resolve_choice(
+                        TemplateParameterFormat,
+                        template.get("parameter_format", "positional"),
+                        default=TemplateParameterFormat.POSITIONAL,
+                    ),
+                    "payload": template,
+                },
+            )
+
+    def sync_templates(self) -> None:
+        self.upsert_synced_templates(self.list_templates())

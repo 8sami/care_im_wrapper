@@ -24,6 +24,7 @@ class MessageSender(Protocol):
     def send_text(self, to: str, body: str) -> str | None: ...
     def send_interactive(self, to: str, msg: OutboundMessage) -> str | None: ...
     def send_template(self, to: str, template: NotificationTemplate, merged_variables: dict) -> str | None: ...
+    def sync_templates(self) -> None: ...
 
 
 def _get_whatsapp_client() -> MessageSender:
@@ -53,6 +54,15 @@ def get_min_send_interval_seconds(channel: str) -> int:
     if factory is None:
         return 0  # Unregistered channel: no real provider to throttle against
     return factory().min_send_interval_seconds
+
+
+def get_template_capable_providers() -> list[tuple[str, MessageSender]]:
+    """Returns (channel, client) pairs for every registered provider that supports templates."""
+    return [
+        (channel, client)
+        for channel, client in ((channel, factory()) for channel, factory in _PROVIDERS.items())
+        if client.supports_templates
+    ]
 
 
 def get_default_channel() -> str:

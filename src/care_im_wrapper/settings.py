@@ -138,6 +138,10 @@ DEFAULTS = {
     # Beat sweep interval (seconds) for dispatch_pending_notification_recipients;
     # this is the sole dispatch path, so it directly sets end-to-end notification latency.
     "NOTIFICATION_DISPATCH_INTERVAL_SECONDS": 10,
+    # Beat sweep interval (seconds) for sync_notification_templates. Template
+    # approval/status changes are infrequent, unlike dispatch latency, hence the much
+    # longer default (6 hours) than NOTIFICATION_DISPATCH_INTERVAL_SECONDS above.
+    "TEMPLATE_SYNC_INTERVAL_SECONDS": 21600,
 }
 
 

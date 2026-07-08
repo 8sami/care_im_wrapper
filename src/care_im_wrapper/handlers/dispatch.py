@@ -59,15 +59,7 @@ def fire_notification_event(
     recipient: NotificationRecipientSpec,
     variable_values: dict[str, Any],
 ) -> NotificationEvent | None:
-    """
-    Shared entry point for every signal handler that needs to create a
-    NotificationEvent + NotificationRecipient pair. Resolves the trigger,
-    channel, and matching template once here, so individual handlers
-    (booking.py, and any future ones) only supply what's actually specific to
-    their domain: the related object, the recipient, and the rendered
-    variable values. Returns None (and logs why) if no active trigger or no
-    matching template was found, without raising.
-    """
+    """Shared entry point for signal handlers: resolves trigger/channel/template, creates event + recipient."""
     trigger = get_active_trigger(trigger_slug)
     if trigger is None:
         return None

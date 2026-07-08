@@ -14,7 +14,11 @@ from care_im_wrapper.messaging.exceptions import (
     WhatsAppPairRateLimitError,
     WhatsAppServerError,
 )
-from care_im_wrapper.messaging.registry import get_min_send_interval_seconds, send_template_message
+from care_im_wrapper.messaging.registry import (
+    get_min_send_interval_seconds,
+    get_template_capable_providers,
+    send_template_message,
+)
 from care_im_wrapper.models.notification import NotificationRecipient, NotificationStatus, NotificationStatusState
 from care_im_wrapper.settings import plugin_settings
 
@@ -137,6 +141,19 @@ def dispatch_notification_recipient(self, recipient_id: int) -> None:
     )
     recipient.latest_status = NotificationStatusState.SENT
     recipient.save(update_fields=["latest_status"])
+
+
+@shared_task(
+    bind=True,
+    max_retries=plugin_settings.TASK_MAX_RETRIES,
+    default_retry_delay=plugin_settings.TASK_RETRY_DELAY_SECONDS,
+)
+def sync_notification_templates(self) -> None:
+    for channel, client in get_template_capable_providers():
+        try:
+            client.sync_templates()
+        except Exception as exc:
+            logger.error("sync_notification_templates: sync failed for provider %s: %s", channel, exc)
 
 
 @shared_task
