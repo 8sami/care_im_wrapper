@@ -131,22 +131,17 @@ DEFAULTS = {
     "PHONE_NUMBER_MASK_PREFIX_LEN": 4,
     "PHONE_NUMBER_MASK_SUFFIX_LEN": 3,
     "WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT": 1024,
-    # Channel used for signal-triggered notifications that have no other channel
-    # signal to consult (e.g. a booking's patient has no prior ConversationSession).
-    # Must be a value registered in messaging.registry._PROVIDERS.
+    # Fallback channel when a recipient has no prior ConversationSession to consult.
     "NOTIFICATION_DEFAULT_PROVIDER": "whatsapp",
-    # Beat sweep interval (seconds) for dispatch_pending_notification_recipients;
-    # this is the sole dispatch path, so it directly sets end-to-end notification latency.
-    "NOTIFICATION_DISPATCH_INTERVAL_SECONDS": 10,
-    # Beat sweep interval (seconds) for sync_notification_templates. Template
-    # approval/status changes are infrequent, unlike dispatch latency, hence the much
-    # longer default (6 hours) than NOTIFICATION_DISPATCH_INTERVAL_SECONDS above.
+    # Beat sweep interval (seconds); real-time dispatch happens via on_commit, this is a safety net.
+    "NOTIFICATION_DISPATCH_INTERVAL_SECONDS": 120,
+    # Beat sweep interval (seconds) for syncing template approval status from Meta.
     "TEMPLATE_SYNC_INTERVAL_SECONDS": 21600,
-    # Which NotificationTrigger.slug a booking status transition fires. Centralized here.
+    # Which NotificationTrigger.slug a booking status transition fires.
     "APPOINTMENT_TRIGGER_SLUGS": {
-        "booked": "appointment_update",
-        "cancelled": "appointment_update",
-        "rescheduled": "appointment_update",
+        "booked": "appointment_confirmed",
+        "cancelled": "appointment_cancelled",
+        "rescheduled": "appointment_rescheduled",
     },
 }
 

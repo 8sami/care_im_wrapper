@@ -5,7 +5,6 @@ from care.emr.models.scheduling.booking import TokenBooking  # pyright: ignore[r
 from care.emr.resources.scheduling.slot.spec import BookingStatusChoices  # pyright: ignore[reportMissingImports]
 from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
-from django.utils import timezone
 
 from care_im_wrapper.handlers.dispatch import NotificationRecipientSpec, fire_notification_event
 from care_im_wrapper.models.notification import _FACILITY_RESOLVERS
@@ -21,26 +20,8 @@ def _resolve_booking_facility(booking: TokenBooking) -> Any | None:
 _FACILITY_RESOLVERS[TokenBooking] = _resolve_booking_facility
 
 
-def _build_variable_values(booking: TokenBooking) -> dict[str, Any]:
-    token_slot = booking.token_slot
-    resource = token_slot.resource
-    values: dict[str, Any] = {
-        "patient_name": booking.patient.name,
-        "appointment_datetime": timezone.localtime(token_slot.start_datetime).strftime("%d %b %Y, %I:%M %p"),
-        "practitioner_name": resource.user.full_name if resource.user_id else "",
-    }
-    facility = resource.facility
-    if facility is not None:
-        values["facility_name"] = facility.name
-
-    video_connect_link = resource.user.video_connect_link if resource.user_id else None
-    if video_connect_link:
-        values["teleconsultation_link"] = video_connect_link
-
-    return values
-
-
 def _create_event_and_recipient(booking: TokenBooking, trigger_slug: str, title: str) -> None:
+    # Field values are resolved from trigger.default_variable_values and booking at send time.
     fire_notification_event(
         trigger_slug=trigger_slug,
         title=title,
@@ -49,7 +30,7 @@ def _create_event_and_recipient(booking: TokenBooking, trigger_slug: str, title:
             content_object=booking.patient,
             phone_number=booking.patient.phone_number,
         ),
-        variable_values=_build_variable_values(booking),
+        variable_values={},
     )
 
 

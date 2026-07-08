@@ -127,6 +127,7 @@ def dispatch_notification_recipient(self, recipient_id: int) -> None:
             channel=recipient.provider,
             to=recipient.phone_number,
             template=recipient.event.template,
+            related_object=recipient.event.related_object,
             event_variable_values=recipient.event.variable_values,
             recipient_variable_overrides=recipient.variable_overrides,
         )

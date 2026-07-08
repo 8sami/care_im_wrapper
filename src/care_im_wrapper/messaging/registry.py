@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from care_im_wrapper.conversation.messages import OutboundMessage
 from care_im_wrapper.conversation.template_rendering import merge_variable_values
@@ -23,7 +23,9 @@ class MessageSender(Protocol):
 
     def send_text(self, to: str, body: str) -> str | None: ...
     def send_interactive(self, to: str, msg: OutboundMessage) -> str | None: ...
-    def send_template(self, to: str, template: NotificationTemplate, merged_variables: dict) -> str | None: ...
+    def send_template(
+        self, to: str, template: NotificationTemplate, related_object: Any, context: dict
+    ) -> str | None: ...
     def sync_templates(self) -> None: ...
 
 
@@ -110,6 +112,7 @@ def send_template_message(
     channel: str,
     to: str,
     template: NotificationTemplate,
+    related_object: Any,
     event_variable_values: dict | None,
     recipient_variable_overrides: dict | None,
 ) -> str | None:
@@ -121,5 +124,5 @@ def send_template_message(
     if not client.supports_templates:
         logger.error("messaging.send_template_message: provider %s does not support templates", channel)
         return None
-    merged = merge_variable_values(event_variable_values, recipient_variable_overrides)
-    return client.send_template(to, template, merged)
+    context = merge_variable_values(event_variable_values, recipient_variable_overrides)
+    return client.send_template(to, template, related_object, context)

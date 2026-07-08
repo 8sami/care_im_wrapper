@@ -21,7 +21,7 @@ class CareImWrapperConfig(AppConfig):
 
         register_notification_permissions()
 
-        @app.on_after_finalize.connect
+        @app.on_after_finalize.connect(weak=False)
         def _register_periodic_tasks(sender, **kwargs):  # noqa: ANN001, ANN003, ANN202
             sender.add_periodic_task(
                 plugin_settings.NOTIFICATION_DISPATCH_INTERVAL_SECONDS,

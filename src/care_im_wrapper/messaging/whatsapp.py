@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -13,6 +14,7 @@ from care_im_wrapper.messaging.exceptions import (
     WhatsAppServerError,
     WhatsAppTemplateNotConfiguredError,
 )
+from care_im_wrapper.messaging.variables import resolve_variable
 from care_im_wrapper.models.notification import NotificationStatusState
 from care_im_wrapper.settings import plugin_settings
 
@@ -20,6 +22,8 @@ if TYPE_CHECKING:
     from care_im_wrapper.models.notification import NotificationTemplate
 
 logger = logging.getLogger(__name__)
+
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([^}]+?)\s*\}\}")
 
 
 def _resolve_choice(
@@ -279,15 +283,32 @@ class WhatsAppClient:
 
         return message_id
 
-    def _build_body_parameters(self, template: NotificationTemplate, merged_variables: dict) -> list[dict[str, Any]]:
+    def _build_parameters(
+        self,
+        meta_keys: list[str],
+        template: NotificationTemplate,
+        related_object: Any,
+        context: dict[str, Any],
+        *,
+        is_named: bool,
+    ) -> list[dict[str, Any]]:
+        variable_mapping: dict[str, str] = template.variable_mapping  # pyright: ignore[reportAssignmentType]
+        parameters: list[dict[str, Any]] = []
+        for meta_key in meta_keys:
+            value = resolve_variable(variable_mapping[meta_key], related_object, context)
+            if is_named:
+                parameters.append({"type": "text", "parameter_name": meta_key, "text": value})
+            else:
+                parameters.append({"type": "text", "text": value})
+        return parameters
+
+    def _build_components(
+        self, template: NotificationTemplate, related_object: Any, context: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """
-        Builds Meta's body `parameters` list. A template uses exactly one of two
-        mutually-exclusive schemes (`template.parameter_format`), never a mix:
-          POSITIONAL — `variable_mapping` keys are Meta's numbered slots ("1", "2", ...),
-            substituted by list order; parameter objects carry no name.
-          NAMED — `variable_mapping` keys are Meta's own `{{name}}` placeholder names,
-            substituted by matching `parameter_name`; list order doesn't matter to Meta,
-            but is still deterministic here (sorted) for stable request payloads/logging.
+        Builds Meta's `components` list (HEADER + BODY, TEXT only) from the synced `payload`'s
+        `{{...}}` placeholders. Each `variable_mapping` value is a `resolve_variable` expression,
+        evaluated against `related_object` and the handler-supplied `context`.
         """
         from care_im_wrapper.models.notification import TemplateParameterFormat
 
@@ -299,27 +320,31 @@ class WhatsAppClient:
 
         variable_mapping: dict[str, str] = template.variable_mapping  # pyright: ignore[reportAssignmentType]
         is_named = template.parameter_format == TemplateParameterFormat.NAMED
+        payload_components = (template.payload or {}).get("components", [])  # pyright: ignore[reportAttributeAccessIssue]
 
-        parameters: list[dict[str, Any]] = []
-        for meta_key in sorted(variable_mapping) if is_named else sorted(variable_mapping, key=int):
-            variable_name = variable_mapping[meta_key]
-            if variable_name not in merged_variables:
-                logger.warning(
-                    "WhatsApp send_template: variable '%s' (%s %s) missing from merged_variables for template %s",
-                    variable_name,
-                    "parameter" if is_named else "position",
-                    meta_key,
-                    template.slug,
-                )
-            value = str(merged_variables.get(variable_name, ""))
-            if is_named:
-                parameters.append({"type": "text", "parameter_name": meta_key, "text": value})
-            else:
-                parameters.append({"type": "text", "text": value})
-        return parameters
+        components: list[dict[str, Any]] = []
+        for comp in payload_components:
+            comp_type = comp.get("type", "").upper()
+            if comp_type not in ("HEADER", "BODY") or comp.get("format", "TEXT").upper() != "TEXT":
+                continue
+            placeholder_keys = [k for k in _PLACEHOLDER_RE.findall(comp.get("text", "")) if k in variable_mapping]
+            if not placeholder_keys:
+                continue
+            meta_keys = sorted(placeholder_keys) if is_named else sorted(placeholder_keys, key=int)
+            components.append(
+                {
+                    "type": comp_type.lower(),
+                    "parameters": self._build_parameters(
+                        meta_keys, template, related_object, context, is_named=is_named
+                    ),
+                }
+            )
+        return components
 
-    def send_template(self, to: str, template: NotificationTemplate, merged_variables: dict) -> str | None:
-        body_parameters = self._build_body_parameters(template, merged_variables)
+    def send_template(
+        self, to: str, template: NotificationTemplate, related_object: Any, context: dict[str, Any]
+    ) -> str | None:
+        components = self._build_components(template, related_object, context)
 
         language_code = template.language_code
         if not language_code:
@@ -332,13 +357,8 @@ class WhatsAppClient:
             "name": template.slug,
             "language": {"code": language_code},
         }
-        if body_parameters:
-            template_obj["components"] = [
-                {
-                    "type": "body",
-                    "parameters": body_parameters,
-                }
-            ]
+        if components:
+            template_obj["components"] = components
 
         return self._send(
             {

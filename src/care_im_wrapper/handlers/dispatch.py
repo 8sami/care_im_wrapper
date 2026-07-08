@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from django.contrib.contenttypes.models import ContentType
+from django.db import transaction
 from django.db.models import Model
 
 from care_im_wrapper.messaging.registry import resolve_channel
@@ -36,16 +37,17 @@ def get_active_trigger(slug: str) -> NotificationTrigger | None:
 
 def get_matching_template(trigger: NotificationTrigger, channel: str) -> NotificationTemplate | None:
     template = NotificationTemplate.objects.filter(
-        slug=trigger.slug,
+        slug=trigger.template_slug,
         provider=channel,
         approval_status=TemplateApprovalStatus.ACTIVE,
         is_active=True,
     ).first()
     if template is None:
         logger.error(
-            "dispatch: no active NotificationTemplate for channel=%s with slug=%s matching trigger, "
+            "dispatch: no active NotificationTemplate for channel=%s with slug=%s matching trigger %s, "
             "skipping event creation",
             channel,
+            trigger.template_slug,
             trigger.slug,
         )
     return template
@@ -75,15 +77,24 @@ def fire_notification_event(
         title=title,
         related_object_content_type=ContentType.objects.get_for_model(type(related_object)),
         related_object_id=related_object.pk,
-        variable_values=variable_values,
+        variable_values={**(trigger.default_variable_values or {}), **variable_values},
     )
 
-    NotificationRecipient.objects.create(
+    notification_recipient = NotificationRecipient.objects.create(
         event=event,
         recipient_content_type=ContentType.objects.get_for_model(type(recipient.content_object)),
         recipient_object_id=recipient.content_object.pk,
         phone_number=recipient.phone_number,
         provider=channel,
+    )
+
+    # on_commit: ATOMIC_REQUESTS means a direct .delay() could race the worker ahead of the commit.
+    from care_im_wrapper.tasks import dispatch_notification_recipient
+
+    transaction.on_commit(
+        lambda: dispatch_notification_recipient.delay(  # pyright: ignore[reportFunctionMemberAccess]
+            notification_recipient.pk
+        )
     )
 
     return event

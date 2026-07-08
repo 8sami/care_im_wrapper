@@ -32,6 +32,10 @@ class NotificationTrigger(models.Model):
     description = models.TextField(null=True, blank=True)
     trigger_type = models.CharField(max_length=20, choices=TriggerType.choices)
     is_active = models.BooleanField(default=True)  # pyright: ignore[reportArgumentType]
+    # Which NotificationTemplate.slug this trigger renders, decoupled from this trigger's own slug.
+    template_slug = models.CharField(max_length=100)
+    # Base context merged into NotificationEvent.variable_values (handler values win on collision).
+    default_variable_values = models.JSONField(null=True, blank=True)
 
     objects = SoftDeleteManager()
 
@@ -107,14 +111,7 @@ class NotificationTemplate(models.Model):
     language_code = models.CharField(max_length=10, null=True, blank=True)
     payload = models.JSONField(null=True, blank=True)
     variable_mapping = models.JSONField(null=True, blank=True)
-    # Synced from Meta's own GET /message_templates response (same call already used
-    # for category/approval_status/language_code/payload) — Meta returns this because
-    # it's set at template-creation time and is a stored attribute of the template
-    # itself, unlike variable_mapping (our own semantic-name mapping, which Meta has
-    # no way to know). Default matches Meta's own documented behavior: a template
-    # created without an explicit parameter_format defaults to "positional".
-    # See WhatsAppClient._build_body_parameters for how this and variable_mapping are
-    # interpreted together.
+    # Synced from Meta; defaults to "positional" per Meta's own documented behavior.
     parameter_format = models.CharField(
         max_length=20,
         choices=TemplateParameterFormat.choices,
@@ -200,8 +197,7 @@ class NotificationRecipient(models.Model):
     recipient_content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
     recipient_object_id = models.PositiveIntegerField()
     recipient = GenericForeignKey("recipient_content_type", "recipient_object_id")
-    # Captured at creation time, immutable afterward — reflects the number
-    # actually used even if the recipient's own number changes later.
+    # Captured at creation time, immutable afterward, even if the recipient's number later changes.
     phone_number = models.CharField(max_length=20)
     provider = models.CharField(
         max_length=20,
@@ -211,8 +207,7 @@ class NotificationRecipient(models.Model):
     tracking_id = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     message_payload = models.JSONField(null=True, blank=True)
     variable_overrides = models.JSONField(null=True, blank=True)
-    # Pure cache, always written as a side effect of inserting a new
-    # NotificationStatus row. None means not yet dispatched.
+    # Pure cache written as a side effect of inserting a NotificationStatus row; None = not dispatched.
     latest_status = models.CharField(max_length=20, null=True, blank=True, choices=NotificationStatusState.choices)
 
     objects = SoftDeleteManager()
