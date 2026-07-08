@@ -135,6 +135,9 @@ DEFAULTS = {
     # signal to consult (e.g. a booking's patient has no prior ConversationSession).
     # Must be a value registered in messaging.registry._PROVIDERS.
     "NOTIFICATION_DEFAULT_PROVIDER": "whatsapp",
+    # Beat sweep interval (seconds) for dispatch_pending_notification_recipients;
+    # this is the sole dispatch path, so it directly sets end-to-end notification latency.
+    "NOTIFICATION_DISPATCH_INTERVAL_SECONDS": 10,
 }
 
 

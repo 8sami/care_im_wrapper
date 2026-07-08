@@ -7,12 +7,15 @@ from celery import shared_task
 from django.core.cache import cache
 
 from care_im_wrapper.conversation.handlers import run_state_machine
+from care_im_wrapper.core.rate_limit import is_outbound_rate_limited
 from care_im_wrapper.messaging.exceptions import (
     WhatsAppBadRequestError,
     WhatsAppNetworkError,
     WhatsAppPairRateLimitError,
     WhatsAppServerError,
 )
+from care_im_wrapper.messaging.registry import get_min_send_interval_seconds, send_template_message
+from care_im_wrapper.models.notification import NotificationRecipient, NotificationStatus, NotificationStatusState
 from care_im_wrapper.settings import plugin_settings
 
 logger = logging.getLogger(__name__)
@@ -63,3 +66,84 @@ def process_status_update(self, payload: dict[str, Any], channel: str) -> None:
     except Exception as exc:
         logger.error("process_status_update failed: %s", exc)
         raise self.retry(exc=exc) from exc
+
+
+@shared_task(
+    bind=True,
+    max_retries=plugin_settings.TASK_MAX_RETRIES,
+    default_retry_delay=plugin_settings.TASK_RETRY_DELAY_SECONDS,
+)
+def dispatch_notification_recipient(self, recipient_id: int) -> None:
+    recipient = NotificationRecipient.objects.select_related("event__template").filter(pk=recipient_id).first()
+    if recipient is None:
+        logger.error("dispatch_notification_recipient: no NotificationRecipient with pk=%s", recipient_id)
+        return
+
+    if recipient.latest_status is not None:
+        logger.info(
+            "dispatch_notification_recipient: recipient %s already has latest_status=%s, skipping",
+            recipient_id,
+            recipient.latest_status,
+        )
+        return
+
+    if is_outbound_rate_limited(recipient.provider, recipient.phone_number, is_urgent=recipient.event.is_urgent):
+        raise self.retry(countdown=get_min_send_interval_seconds(recipient.provider))
+
+    try:
+        tracking_id = send_template_message(
+            channel=recipient.provider,
+            to=recipient.phone_number,
+            template=recipient.event.template,
+            event_variable_values=recipient.event.variable_values,
+            recipient_variable_overrides=recipient.variable_overrides,
+        )
+    except Exception as exc:
+        NotificationStatus.objects.create(
+            recipient=recipient,
+            state=NotificationStatusState.FAILED,
+            payload={"error": str(exc)[:500]},
+        )
+        recipient.latest_status = NotificationStatusState.FAILED
+        recipient.save(update_fields=["latest_status"])
+        raise self.retry(exc=exc) from exc
+
+    if tracking_id is None:
+        logger.error(
+            "dispatch_notification_recipient: send_template_message returned no tracking id for recipient %s",
+            recipient_id,
+        )
+        NotificationStatus.objects.create(
+            recipient=recipient,
+            state=NotificationStatusState.FAILED,
+            payload=None,
+        )
+        recipient.latest_status = NotificationStatusState.FAILED
+        recipient.save(update_fields=["latest_status"])
+        return
+
+    recipient.tracking_id = tracking_id
+    recipient.message_payload = {
+        "template_slug": recipient.event.template.slug,
+        "event_variable_values": recipient.event.variable_values,
+        "recipient_variable_overrides": recipient.variable_overrides,
+    }
+    recipient.save(update_fields=["tracking_id", "message_payload"])
+
+    NotificationStatus.objects.create(
+        recipient=recipient,
+        state=NotificationStatusState.SENT,
+        payload=None,
+    )
+    recipient.latest_status = NotificationStatusState.SENT
+    recipient.save(update_fields=["latest_status"])
+
+
+@shared_task
+def dispatch_pending_notification_recipients() -> None:
+    recipients = NotificationRecipient.objects.filter(
+        latest_status__isnull=True,
+        event__deleted=False,
+    ).select_related("event")
+    for recipient in recipients:
+        dispatch_notification_recipient.delay(recipient.pk)  # pyright: ignore[reportCallIssue]
