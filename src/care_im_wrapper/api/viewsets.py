@@ -4,7 +4,10 @@ from care.emr.api.viewsets.base import (  # pyright: ignore[reportMissingImports
     EMRListMixin,
     EMRRetrieveMixin,
 )
-from care.emr.models.organization import FacilityOrganization  # pyright: ignore[reportMissingImports]
+from care.emr.models.organization import (  # pyright: ignore[reportMissingImports]
+    FacilityOrganization,
+    FacilityOrganizationUser,
+)
 from care.emr.models.patient import Patient  # pyright: ignore[reportMissingImports]
 from care.facility.models.facility import Facility  # pyright: ignore[reportMissingImports]
 from care.security.authorization.base import AuthorizationController  # pyright: ignore[reportMissingImports]
@@ -32,6 +35,11 @@ from care_im_wrapper.models.notification import (
     TriggerType,
 )
 from care_im_wrapper.tasks import dispatch_notification_recipient
+
+
+def _resolve_facility_root_org(facility_external_id):
+    facility = get_object_or_404(Facility, external_id=facility_external_id)
+    return get_object_or_404(FacilityOrganization, facility=facility, org_type="root")
 
 
 class BaseViewSet(GenericViewSet):
@@ -111,8 +119,7 @@ class NotificationEventViewSet(EMRCreateMixin, EMRListMixin, EMRRetrieveMixin, E
                 raise PermissionDenied("The facility query parameter is required.")
             return queryset
 
-        facility = get_object_or_404(Facility, external_id=facility_external_id)
-        root_org = get_object_or_404(FacilityOrganization, facility=facility, org_type="root")
+        root_org = _resolve_facility_root_org(facility_external_id)
         # can_read_notification_event only inspects facility_organization_cache, so an unsaved probe event works.
         probe_event = NotificationEvent(facility_organization_cache=[root_org.id])
         if not AuthorizationController.call("can_read_notification_event", self.request.user, probe_event):
@@ -134,12 +141,16 @@ class NotificationEventViewSet(EMRCreateMixin, EMRListMixin, EMRRetrieveMixin, E
         patient_external_ids = getattr(instance, "_recipient_patient_ids", [])
         user_external_ids = getattr(instance, "_recipient_user_ids", [])
 
+        # Resolve + authorize every recipient before touching the DB, so a caller can't target
+        # patients/users outside their accessible facility organizations.
+        patients_by_external_id = self._authorized_recipient_patients(patient_external_ids)
+        users_by_external_id = self._authorized_recipient_users(user_external_ids)
+
         with transaction.atomic():  # pyright: ignore[reportGeneralTypeIssues]
             instance.save()
 
             patient_content_type = ContentType.objects.get_for_model(Patient)
-            for external_id in patient_external_ids:
-                patient = get_object_or_404(Patient, external_id=external_id)
+            for patient in patients_by_external_id.values():
                 NotificationRecipient.objects.create(
                     event=instance,
                     recipient_content_type=patient_content_type,
@@ -148,14 +159,44 @@ class NotificationEventViewSet(EMRCreateMixin, EMRListMixin, EMRRetrieveMixin, E
                 )
 
             user_content_type = ContentType.objects.get_for_model(User)
-            for external_id in user_external_ids:
-                recipient_user = get_object_or_404(User, external_id=external_id)
+            for recipient_user in users_by_external_id.values():
                 NotificationRecipient.objects.create(
                     event=instance,
                     recipient_content_type=user_content_type,
                     recipient_object_id=recipient_user.id,
                     phone_number=recipient_user.phone_number,
                 )
+
+    def _authorized_recipient_patients(self, external_ids):
+        if not external_ids:
+            return {}
+        candidates = Patient.objects.filter(external_id__in=external_ids)
+        accessible = AuthorizationController.call("get_filtered_patients", candidates, self.request.user)
+        by_external_id = {str(p.external_id): p for p in accessible}
+        missing = {str(eid) for eid in external_ids} - by_external_id.keys()
+        if missing:
+            raise PermissionDenied(f"You do not have permission to target patient(s): {', '.join(sorted(missing))}.")
+        return by_external_id
+
+    def _authorized_recipient_users(self, external_ids):
+        if not external_ids:
+            return {}
+        candidates = {str(u.external_id): u for u in User.objects.filter(external_id__in=external_ids)}
+        missing = {str(eid) for eid in external_ids} - candidates.keys()
+        if missing:
+            raise ValidationError(f"Unknown user id(s): {', '.join(sorted(missing))}.")
+
+        for external_id, recipient_user in candidates.items():
+            org_ids = FacilityOrganizationUser.objects.filter(user=recipient_user).values_list(
+                "organization_id", flat=True
+            )
+            orgs = FacilityOrganization.objects.filter(id__in=org_ids)
+            if not any(
+                AuthorizationController.call("can_list_facility_organization_users_obj", self.request.user, org)
+                for org in orgs
+            ):
+                raise PermissionDenied(f"You do not have permission to target user {external_id}.")
+        return candidates
 
     # Named dispatch_recipients: an @action literally named `dispatch` would shadow View.dispatch and break routing.
     @action(detail=True, methods=["post"], url_path="dispatch", url_name="dispatch")
@@ -186,7 +227,18 @@ class NotificationRecipientViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSe
         event_external_id = self.request.GET.get("event")
         if event_external_id:
             queryset = queryset.filter(event__external_id=event_external_id)
-        return queryset
+
+        facility_external_id = self.request.GET.get("facility")
+        if not facility_external_id:
+            if not self.request.user.is_superuser:
+                raise PermissionDenied("The facility query parameter is required.")
+            return queryset
+
+        root_org = _resolve_facility_root_org(facility_external_id)
+        probe_event = NotificationEvent(facility_organization_cache=[root_org.id])
+        if not AuthorizationController.call("can_read_notification_event", self.request.user, probe_event):
+            raise PermissionDenied("You do not have permission to view notification recipients for this facility.")
+        return queryset.filter(event__facility_organization_cache__contains=[root_org.id])
 
     def authorize_retrieve(self, instance):
         if not AuthorizationController.call("can_read_notification_event", self.request.user, instance.event):
