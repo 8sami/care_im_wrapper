@@ -12,12 +12,30 @@ from care_im_wrapper.conversation.messages import InteractivePayload, Interactiv
 from care_im_wrapper.conversation.renderers import render_patient_search_results
 from care_im_wrapper.conversation.templates import _msg
 from care_im_wrapper.data import patient_lookup
-from care_im_wrapper.data.exceptions import DataFetchError, MissingContextError, NoDataError, PermissionDeniedError
-from care_im_wrapper.messaging.registry import get_max_chars, send_message
+from care_im_wrapper.data.exceptions import (
+    DataFetchError,
+    InvalidQueryError,
+    MissingContextError,
+    NoDataError,
+    PermissionDeniedError,
+)
+from care_im_wrapper.messaging.registry import get_interactive_body_char_limit, get_max_chars, send_message
 from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.settings import plugin_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _menu_rows(menu: dict[str, Any]) -> list[dict[str, str]]:
+    """Builds interactive list rows from a menu dict, plus the trailing Logout row."""
+    rows = [{"id": key, "title": entry[0]} for key, entry in menu.items()]
+    rows.append({"id": "0", "title": _msg("logout")})
+    return rows
+
+
+def _menu_text(rows: list[dict[str, str]]) -> str:
+    """Renders menu rows as a numbered plain-text fallback for non-interactive display."""
+    return "\n".join(f"{r['id']}. {r['title']}" for r in rows)
 
 
 def run_state_machine(phone_number: str, text: str, channel: str) -> None:
@@ -172,29 +190,20 @@ def _handle_authenticated(session: ConversationSession, phone_number: str, text:
         data = fetcher(actor, session)
         renderer_msg = renderer(data, get_max_chars(channel))
 
-        current_menu = _STAFF_MENU if session.user_type == ConversationSession.UserType.STAFF.value else _PATIENT_MENU
-
-        menu_rows = []
-        for m_key, m_entry in current_menu.items():
-            menu_rows.append({"id": m_key, "title": m_entry[0]})
-        menu_rows.append({"id": "0", "title": "Logout"})
+        menu_rows = _menu_rows(menu)
 
         greeting = _msg("choose_option")
-        menu_items_text = "\n".join([f"{r['id']}. {r['title']}" for r in menu_rows])
+        menu_items_text = _menu_text(menu_rows)
         full_text = f"{renderer_msg.text}\n\n{greeting}\n\n{menu_items_text}"
 
         interactive_payload = InteractivePayload(
             type=InteractiveType.LIST,
             body=greeting,
-            button_label="View Menu",
-            action_data=[{"title": "Menu", "rows": menu_rows}],
+            button_label=_msg("view_menu"),
+            action_data=[{"title": _msg("menu_title"), "rows": menu_rows}],
         )
 
-        limit_key = f"{channel.upper()}_INTERACTIVE_BODY_CHAR_LIMIT"
-        try:
-            limit = getattr(plugin_settings, limit_key)
-        except AttributeError:
-            limit = float("inf")
+        limit = get_interactive_body_char_limit(channel)
 
         if len(renderer_msg.text) + len(greeting) > limit:
             # Fallback: Send data as plain text, then menu separately.
@@ -263,6 +272,10 @@ def _handle_awaiting_patient_search(session: ConversationSession, phone_number: 
         session.state = ConversationSession.State.AUTHENTICATED
         session.save(update_fields=["state"])
         return
+    except InvalidQueryError as exc:
+        # Stay in AWAITING_PATIENT_SEARCH so the next message is retried as a search query.
+        send_message(channel, phone_number, str(exc))
+        return
     except NoDataError:
         send_message(channel, phone_number, _msg("no_patients_found"))
         return
@@ -289,8 +302,8 @@ def _handle_awaiting_patient_search(session: ConversationSession, phone_number: 
         interactive = InteractivePayload(
             type=InteractiveType.LIST,
             body=prompt,
-            button_label="Select Patient",
-            action_data=[{"title": "Patients", "rows": rows}],
+            button_label=_msg("select_patient"),
+            action_data=[{"title": _msg("patients_title"), "rows": rows}],
         )
 
     send_message(channel, phone_number, OutboundMessage(text=msg.text, interactive=interactive))
@@ -336,17 +349,16 @@ def _send_main_menu(
     menu = _STAFF_MENU if user_type == ConversationSession.UserType.STAFF.value else _PATIENT_MENU
 
     # ids match the existing menu keys so _handle_authenticated's menu.get(choice) works unchanged
-    rows = [{"id": key, "title": entry[0]} for key, entry in menu.items()]
-    rows.append({"id": "0", "title": "Logout"})
+    rows = _menu_rows(menu)
 
     greeting = _msg("greeting", name=name) if name else _msg("choose_option")
-    menu_items_text = "\n".join([f"{r['id']}. {r['title']}" for r in rows])
+    menu_items_text = _menu_text(rows)
 
     if prefix:
         plain_text = f"{prefix}\n\n{greeting}\n\n{menu_items_text}"
         interactive_body = f"{prefix}\n\n{greeting}"
     else:
-        plain_text = greeting + "\n\n" + "\n".join([f"{r['id']}. {r['title']}" for r in rows])
+        plain_text = f"{greeting}\n\n{menu_items_text}"
         interactive_body = greeting
 
     msg = OutboundMessage(
@@ -354,8 +366,8 @@ def _send_main_menu(
         interactive=InteractivePayload(
             type=InteractiveType.LIST,
             body=interactive_body,
-            button_label="View Menu",
-            action_data=[{"title": "Menu", "rows": rows}],
+            button_label=_msg("view_menu"),
+            action_data=[{"title": _msg("menu_title"), "rows": rows}],
         ),
     )
     send_message(channel, phone_number, msg)
@@ -385,8 +397,8 @@ def _send_candidate_menu(phone_number: str, candidates: list[dict[str, Any]], ch
         interactive = InteractivePayload(
             type=InteractiveType.LIST,
             body=prompt,
-            button_label="Select",
-            action_data=[{"title": "Accounts", "rows": rows}],
+            button_label=_msg("select"),
+            action_data=[{"title": _msg("accounts_title"), "rows": rows}],
         )
 
     send_message(channel, phone_number, OutboundMessage(text=plain_text, interactive=interactive))

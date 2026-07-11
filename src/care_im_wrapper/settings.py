@@ -9,6 +9,8 @@ from django.core.signals import setting_changed
 from django.dispatch import receiver
 from rest_framework.settings import perform_import
 
+from care_im_wrapper.core.choices import Provider
+
 PLUGIN_NAME = "care_im_wrapper"  # was causing circular import
 
 env = environ.Env()
@@ -109,9 +111,17 @@ REQUIRED_SETTINGS = {
 DEFAULTS = {
     "WHATSAPP_MESSAGE_CHAR_LIMIT": 4096,
     "WHATSAPP_TITLE_TRUNCATE": 20,
+    "WHATSAPP_TRUNCATE_RESERVE_CHARS": 20,  # chars reserved for the "... (truncated)" suffix
     "WHATSAPP_DESCRIPTION_TRUNCATE": 72,
     "DATA_FETCH_LIMIT": 10,
+    "PATIENT_SEARCH_MIN_QUERY_LENGTH": 3,  # minimum chars before staff patient lookup runs a query
+    # Fallbacks used only when messaging.registry is asked about a channel with no registered
+    # provider -- not derived from any specific provider's actual limits.
+    "DEFAULT_MAX_MESSAGE_CHARS": 4096,
+    "DEFAULT_MIN_SEND_INTERVAL_SECONDS": 0,
     "WHATSAPP_MIN_SEND_INTERVAL_SECONDS": 6,
+    "WHATSAPP_DEFAULT_LANGUAGE_CODE": "en_US",  # used when a template has no language_code set
+    "WHATSAPP_HTTP_TIMEOUT_SECONDS": 10,
     "WHATSAPP_API_URL": "https://graph.facebook.com/v25.0",
     "WHATSAPP_PHONE_NUMBER_ID": "",
     "WHATSAPP_WEBHOOK_VERIFY_TOKEN": "",
@@ -132,7 +142,7 @@ DEFAULTS = {
     "PHONE_NUMBER_MASK_SUFFIX_LEN": 3,
     "WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT": 1024,
     # Fallback channel when a recipient has no prior ConversationSession to consult.
-    "NOTIFICATION_DEFAULT_PROVIDER": "whatsapp",
+    "NOTIFICATION_DEFAULT_PROVIDER": Provider.WHATSAPP.value,
     # Beat sweep interval (seconds); real-time dispatch happens via on_commit, this is a safety net.
     "NOTIFICATION_DISPATCH_INTERVAL_SECONDS": 120,
     # Beat sweep interval (seconds) for syncing template approval status from Meta.
