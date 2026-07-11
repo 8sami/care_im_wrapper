@@ -9,6 +9,7 @@ from django.core.cache import cache
 from care_im_wrapper.conversation.handlers import run_state_machine
 from care_im_wrapper.core.rate_limit import is_outbound_rate_limited
 from care_im_wrapper.messaging.exceptions import (
+    OutboundRateLimitedError,
     WhatsAppBadRequestError,
     WhatsAppNetworkError,
     WhatsAppPairRateLimitError,
@@ -46,7 +47,10 @@ def process_inbound_message(
     channel: str,
     raw_id: str | None = None,
 ) -> None:
-    if raw_id:
+    # Only guard against Meta re-delivering the same webhook on the first attempt --
+    # self.retry() re-invokes this exact function for the *same* raw_id, and that must
+    # not be mistaken for a duplicate delivery or every retry path silently no-ops.
+    if raw_id and self.request.retries == 0:
         dup_key = f"msg_seen:{raw_id}"
         if not cache.add(dup_key, True, timeout=plugin_settings.MESSAGE_DEDUP_TIMEOUT_SECONDS):
             logger.info("Duplicate message detected (ID: %s). Dropping.", raw_id)
@@ -56,6 +60,13 @@ def process_inbound_message(
 
     try:
         run_state_machine(phone_number, text, channel)
+    except OutboundRateLimitedError as exc:
+        # Proactively paced (see messaging.registry.send_message) -- retry after the
+        # provider's own minimum send interval instead of the generic 60s task delay,
+        # so a burst of inbound messages doesn't trickle out replies for minutes.
+        countdown = get_min_send_interval_seconds(channel)
+        logger.info("Outbound rate-limited for %s on %s. Retrying in %ss.", phone_number, channel, countdown)
+        raise self.retry(exc=exc, countdown=countdown) from exc
     except (WhatsAppPairRateLimitError, WhatsAppNetworkError, WhatsAppServerError) as exc:
         logger.warning("Transient WhatsApp error for %s: %s. Retrying.", phone_number, exc)
         raise self.retry(exc=exc) from exc
@@ -80,7 +91,7 @@ def process_status_update(self, payload: dict[str, Any], channel: str) -> None:
 
         recipient = NotificationRecipient.objects.filter(tracking_id=update.tracking_id).first()
         if recipient is None:
-            logger.info(
+            logger.debug(
                 "process_status_update: no NotificationRecipient with tracking_id=%s",
                 update.tracking_id,
             )

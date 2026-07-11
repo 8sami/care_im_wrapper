@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from care_im_wrapper.conversation.messages import OutboundMessage
 from care_im_wrapper.conversation.template_rendering import merge_variable_values
+from care_im_wrapper.core.rate_limit import is_outbound_rate_limited
+from care_im_wrapper.messaging.exceptions import OutboundRateLimitedError
 from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.settings import plugin_settings
 
@@ -20,6 +22,7 @@ class MessageSender(Protocol):
     supports_templates: bool
     max_message_chars: int
     min_send_interval_seconds: int
+    interactive_body_char_limit: int
 
     def send_text(self, to: str, body: str) -> str | None: ...
     def send_interactive(self, to: str, msg: OutboundMessage) -> str | None: ...
@@ -46,7 +49,7 @@ def get_max_chars(channel: str) -> int:
     """Returns the maximum allowed characters for a given provider."""
     factory = _PROVIDERS.get(channel)
     if factory is None:
-        return 4096  # Default fallback
+        return int(plugin_settings.DEFAULT_MAX_MESSAGE_CHARS)
     return factory().max_message_chars
 
 
@@ -54,8 +57,20 @@ def get_min_send_interval_seconds(channel: str) -> int:
     """Returns the minimum seconds between sends to the same number for a given provider."""
     factory = _PROVIDERS.get(channel)
     if factory is None:
-        return 0  # Unregistered channel: no real provider to throttle against
+        return int(plugin_settings.DEFAULT_MIN_SEND_INTERVAL_SECONDS)
     return factory().min_send_interval_seconds
+
+
+def get_interactive_body_char_limit(channel: str) -> float:
+    """Returns the max chars allowed in an interactive message body for a given provider.
+
+    A capability of the provider itself (like max_message_chars), not something inferred
+    from the channel name -- an unregistered channel has no limit to enforce.
+    """
+    factory = _PROVIDERS.get(channel)
+    if factory is None:
+        return float("inf")
+    return factory().interactive_body_char_limit
 
 
 def get_template_capable_providers() -> list[tuple[str, MessageSender]]:
@@ -82,19 +97,24 @@ def resolve_channel(phone_number: str) -> str:
 
 
 def send_message(channel: str, to: str, msg: OutboundMessage | str) -> str | None:
-    if isinstance(msg, str):
-        msg = OutboundMessage(text=msg)
-
     """
     Single outbound entry point for all new code — use this for menus and navigation.
     Capability-based dispatch: if the provider supports interactive AND msg.interactive
     is set, calls send_interactive(). On any failure, falls back to send_text().
     For non-interactive providers (or msg.interactive=None), always uses send_text().
+    Raises OutboundRateLimitedError if the provider's minimum per-recipient send
+    interval hasn't elapsed yet -- callers running as a Celery task should catch this
+    and retry after get_min_send_interval_seconds(channel) rather than attempt the send.
     """
+    if isinstance(msg, str):
+        msg = OutboundMessage(text=msg)
+
     factory = _PROVIDERS.get(channel)
     if factory is None:
         logger.error("messaging.send_message: no provider registered for channel %s", channel)
         return None
+    if is_outbound_rate_limited(channel, to):
+        raise OutboundRateLimitedError(f"Outbound send to {to} on channel {channel} is rate-limited.")
     client = factory()
     if client.supports_interactive and msg.interactive is not None:
         try:

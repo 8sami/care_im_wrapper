@@ -20,3 +20,13 @@ class WhatsAppNetworkError(WhatsAppError):
 
 class WhatsAppTemplateNotConfiguredError(WhatsAppError):
     """Raised when a template's variable_mapping has not been configured."""
+
+
+class OutboundRateLimitedError(Exception):
+    """
+    Raised by messaging.registry.send_message when a send would exceed the provider's
+    minimum interval between messages to the same recipient (see core.rate_limit
+    .is_outbound_rate_limited). Provider-agnostic and raised before any API call is
+    attempted, unlike WhatsAppPairRateLimitError which is Meta's own after-the-fact
+    rejection (error code 131056).
+    """
