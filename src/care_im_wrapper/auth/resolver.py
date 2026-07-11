@@ -34,45 +34,39 @@ def resolve_phone_number(phone_number: str) -> ResolutionResult:
     # Normalization happens in tasks._extract_phone, so we assume E.164 here.
     identities = []
 
-    try:
-        patients = Patient.objects.filter(phone_number=phone_number).order_by("id")
-        for p in patients:
-            yob = getattr(p, "year_of_birth", None)
-            if not yob and getattr(p, "date_of_birth", None):
-                yob = p.date_of_birth.year
+    patients = Patient.objects.filter(phone_number=phone_number).order_by("id")
+    for p in patients:
+        yob = getattr(p, "year_of_birth", None)
+        if not yob and getattr(p, "date_of_birth", None):
+            yob = p.date_of_birth.year
 
-            if not yob:
-                logger.warning("Patient %s has no year_of_birth, skipping", p.id)
-                continue
-            identities.append(
-                ResolvedIdentity(
-                    user_type="patient",
-                    user_id=p.id,
-                    year_of_birth=yob,
-                    full_name=p.name,
-                    phone_number=p.phone_number,
-                )
+        if not yob:
+            logger.warning("Patient %s has no year_of_birth, skipping", p.id)
+            continue
+        identities.append(
+            ResolvedIdentity(
+                user_type="patient",
+                user_id=p.id,
+                year_of_birth=yob,
+                full_name=p.name,
+                phone_number=p.phone_number,
             )
-    except Exception:
-        raise
+        )
 
-    try:
-        users = User.objects.filter(phone_number=phone_number, is_active=True).order_by("id")
-        for u in users:
-            dob = getattr(u, "date_of_birth", None)
-            if not dob:
-                logger.warning("User %s has no date_of_birth, skipping", u.id)
-                continue
-            identities.append(
-                ResolvedIdentity(
-                    user_type="staff",
-                    user_id=u.id,
-                    year_of_birth=dob.year,
-                    full_name=u.get_full_name(),
-                    phone_number=u.phone_number,
-                )
+    users = User.objects.filter(phone_number=phone_number, is_active=True).order_by("id")
+    for u in users:
+        dob = getattr(u, "date_of_birth", None)
+        if not dob:
+            logger.warning("User %s has no date_of_birth, skipping", u.id)
+            continue
+        identities.append(
+            ResolvedIdentity(
+                user_type="staff",
+                user_id=u.id,
+                year_of_birth=dob.year,
+                full_name=u.get_full_name(),
+                phone_number=u.phone_number,
             )
-    except Exception:
-        raise
+        )
 
     return ResolutionResult(found=bool(identities), identities=identities)
