@@ -1,7 +1,13 @@
 """Fetch appointment details for the authenticated actor."""
 
 from care_im_wrapper.auth.actor import Actor
-from care_im_wrapper.data.base import cached_fetch, humanize_choice, humanize_date, humanize_time
+from care_im_wrapper.data.base import (
+    ENTERED_IN_ERROR_STATUS,
+    cached_fetch,
+    humanize_choice,
+    humanize_date,
+    humanize_time,
+)
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.data.exceptions import NoDataError
 from care_im_wrapper.data.records import AppointmentRecord
@@ -19,11 +25,15 @@ def fetch_appointments(actor: Actor, session: ConversationSession) -> list[Appoi
     from care.emr.models.scheduling.booking import TokenBooking  # type: ignore[import-untyped]
 
     patient = resolve_target_patient(actor, session)
-    queryset = TokenBooking.objects.filter(patient=patient).select_related(
-        "token_slot__resource__user",
-        "token_slot__resource__facility",
-        "token_slot__resource__location",
-        "token_slot__resource__healthcare_service",
+    queryset = (
+        TokenBooking.objects.filter(patient=patient)
+        .exclude(status=ENTERED_IN_ERROR_STATUS)
+        .select_related(
+            "token_slot__resource__user",
+            "token_slot__resource__facility",
+            "token_slot__resource__location",
+            "token_slot__resource__healthcare_service",
+        )
     )
     records = queryset.order_by("-booked_on")[: int(plugin_settings.DATA_FETCH_LIMIT)]
     if not records:

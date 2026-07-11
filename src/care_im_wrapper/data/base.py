@@ -1,24 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from functools import wraps
 from typing import Any
 
 from django.core.cache import cache as django_cache
 from django.utils import timezone
 
-from care_im_wrapper.settings import plugin_settings
-
-_WHATSAPP_MESSAGE_LIMIT = 4096
-
-
-def truncate(text: str) -> str:
-    if len(text) <= int(plugin_settings.WHATSAPP_MESSAGE_CHAR_LIMIT):
-        return text
-    return (
-        text[: int(plugin_settings.WHATSAPP_MESSAGE_CHAR_LIMIT) - int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)]
-        + "\n... (truncated)"
-    )
+ENTERED_IN_ERROR_STATUS = "entered_in_error"
 
 
 def humanize_choice(value: str | None) -> str:
@@ -37,7 +26,7 @@ def humanize_encounter_class(value: str | None) -> str:
     """
     mapping = {
         "imp": "Inpatient",
-        "amb": "Outperson",
+        "amb": "Ambulatory",
         "obsenc": "Observation",
         "emer": "Emergency",
         "vr": "Virtual",
@@ -48,9 +37,10 @@ def humanize_encounter_class(value: str | None) -> str:
     return mapping.get(value, value.title())
 
 
-def humanize_date(value: datetime | str | None) -> str:
+def humanize_date(value: datetime | date | str | None) -> str:
     """
-    Converts a raw datetime into a short human-readable date.
+    Converts a raw date/datetime into a short human-readable date.
+    datetimes are localized first; plain dates have no timezone to convert.
     Never shows microseconds or UTC offset to the end user.
     """
     if not value:
@@ -58,8 +48,9 @@ def humanize_date(value: datetime | str | None) -> str:
     if isinstance(value, str):
         return value
     try:
-        local_dt = timezone.localtime(value)
-        return local_dt.strftime("%d %b %Y")
+        if isinstance(value, datetime):
+            value = timezone.localtime(value)
+        return value.strftime("%d %b %Y")
     except (AttributeError, ValueError):
         return str(value)
 

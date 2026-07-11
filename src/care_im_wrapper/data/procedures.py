@@ -1,7 +1,7 @@
 """Fetch procedure/service request details for the authenticated actor."""
 
 from care_im_wrapper.auth.actor import Actor
-from care_im_wrapper.data.base import cached_fetch, humanize_choice, humanize_date
+from care_im_wrapper.data.base import ENTERED_IN_ERROR_STATUS, cached_fetch, humanize_choice, humanize_date
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.data.exceptions import NoDataError
 from care_im_wrapper.data.records import ProcedureRecord
@@ -19,7 +19,7 @@ def fetch_procedures(actor: Actor, session: ConversationSession) -> list[Procedu
     from care.emr.models.service_request import ServiceRequest  # type: ignore[import-untyped]
 
     patient = resolve_target_patient(actor, session)
-    queryset = ServiceRequest.objects.filter(patient=patient)
+    queryset = ServiceRequest.objects.filter(patient=patient).exclude(status=ENTERED_IN_ERROR_STATUS)
     records = queryset.order_by("-created_date")[: int(plugin_settings.DATA_FETCH_LIMIT)]
     if not records:
         raise NoDataError

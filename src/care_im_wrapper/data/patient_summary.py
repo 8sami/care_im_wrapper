@@ -1,7 +1,8 @@
 """Fetch patient summary for the authenticated actor."""
 
 from care_im_wrapper.auth.actor import Actor
-from care_im_wrapper.data.base import cached_fetch, humanize_choice
+from care_im_wrapper.core.sanitize import mask_phone_number
+from care_im_wrapper.data.base import cached_fetch, humanize_choice, humanize_date
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.data.records import PatientSummary
 from care_im_wrapper.models import ConversationSession
@@ -24,7 +25,7 @@ def fetch_summary(actor: Actor, session: ConversationSession) -> PatientSummary:
         date_of_birth=dob_display,
         blood_group=humanize_choice(getattr(patient, "blood_group", None)),
         gender=humanize_choice(getattr(patient, "gender", None)),
-        phone=getattr(patient, "phone_number", None),
+        phone=mask_phone_number(getattr(patient, "phone_number", None) or ""),
     )
 
 
@@ -34,7 +35,7 @@ def _format_dob_or_yob(patient) -> str | None:
     """
     dob = getattr(patient, "date_of_birth", None)
     if dob:
-        return dob.strftime("%d %b %Y")
+        return humanize_date(dob)
     yob = getattr(patient, "year_of_birth", None)
     if yob:
         return f"Year of birth: {yob}"

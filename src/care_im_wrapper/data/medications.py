@@ -1,7 +1,7 @@
 """Fetch medication requests for the authenticated actor."""
 
 from care_im_wrapper.auth.actor import Actor
-from care_im_wrapper.data.base import cached_fetch, humanize_choice
+from care_im_wrapper.data.base import ENTERED_IN_ERROR_STATUS, cached_fetch, humanize_choice
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.data.exceptions import NoDataError
 from care_im_wrapper.data.records import MedicationRecord
@@ -21,7 +21,7 @@ def fetch_medications(actor: Actor, session: ConversationSession) -> list[Medica
     patient = resolve_target_patient(actor, session)
     queryset = (
         MedicationRequest.objects.filter(patient=patient)
-        .exclude(status="entered_in_error")
+        .exclude(status=ENTERED_IN_ERROR_STATUS)
         .select_related("requested_product")
     )
     # TODO(product): nutritional_product/consumable exposure pending mentor sign-off.

@@ -1,7 +1,13 @@
 """Fetch encounter details for the authenticated actor."""
 
 from care_im_wrapper.auth.actor import Actor
-from care_im_wrapper.data.base import cached_fetch, humanize_choice, humanize_date, humanize_encounter_class
+from care_im_wrapper.data.base import (
+    ENTERED_IN_ERROR_STATUS,
+    cached_fetch,
+    humanize_choice,
+    humanize_date,
+    humanize_encounter_class,
+)
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.data.exceptions import NoDataError
 from care_im_wrapper.data.records import EncounterRecord
@@ -19,7 +25,9 @@ def fetch_encounters(actor: Actor, session: ConversationSession) -> list[Encount
     from care.emr.models.encounter import Encounter  # type: ignore[import-untyped]
 
     patient = resolve_target_patient(actor, session)
-    queryset = Encounter.objects.filter(patient=patient).select_related("facility")
+    queryset = (
+        Encounter.objects.filter(patient=patient).exclude(status=ENTERED_IN_ERROR_STATUS).select_related("facility")
+    )
     records = queryset.order_by("-created_date")[: plugin_settings.DATA_FETCH_LIMIT]
     if not records:
         raise NoDataError
