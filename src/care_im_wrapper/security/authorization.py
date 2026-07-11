@@ -43,4 +43,5 @@ class NotificationAccess(AuthorizationHandler):
         )
 
 
-AuthorizationController.register_override_controller(NotificationAccess)
+def register_notification_authorization() -> None:
+    AuthorizationController.register_override_controller(NotificationAccess)

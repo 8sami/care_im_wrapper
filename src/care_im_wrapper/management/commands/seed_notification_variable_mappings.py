@@ -18,8 +18,8 @@ class Command(BaseCommand):
         for slug, variable_mapping in mappings.items():
             updated = NotificationTemplate.objects.filter(slug=slug).update(variable_mapping=variable_mapping)
             if updated:
-                self.stdout.write(self.style.SUCCESS(f"variable_mapping set for '{slug}'"))
+                self.stdout.write(self.style.SUCCESS(f"variable_mapping set for '{slug}'"))  # pyright: ignore[reportAttributeAccessIssue]
             else:
                 self.stdout.write(
-                    self.style.WARNING(f"No NotificationTemplate with slug='{slug}' (not yet approved by Meta?)")
+                    self.style.WARNING(f"No NotificationTemplate with slug='{slug}' (not yet approved by Meta?)")  # pyright: ignore[reportAttributeAccessIssue]
                 )

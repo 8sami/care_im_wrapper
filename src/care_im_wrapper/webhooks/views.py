@@ -25,6 +25,10 @@ class WebhookView(View):
 
     def post(self, request, *args, **kwargs) -> HttpResponse:
         try:
+            # Verify the signature against the raw body before parsing, so an unauthenticated
+            # caller can't reach JSON parsing (or anything downstream of it) at all.
+            if not self.verify_signature(request):
+                raise SignatureVerificationError("Invalid signature")
             payload = self._parse_payload(request)
             return self.handle_event(request, payload)
         except SignatureVerificationError:
@@ -34,6 +38,10 @@ class WebhookView(View):
         except Exception:
             logging.getLogger(__name__).exception("Unhandled error in %s", self.__class__.__name__)
             return HttpResponse(status=500)
+
+    def verify_signature(self, request) -> bool:
+        """No signature scheme by default; providers that need one mix in HmacVerificationMixin."""
+        return True
 
     def _parse_payload(self, request) -> dict[str, Any]:
         try:

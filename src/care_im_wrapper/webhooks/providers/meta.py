@@ -5,8 +5,7 @@ from typing import Any, ClassVar
 from django.http import HttpRequest, HttpResponse
 
 from care_im_wrapper.models import ConversationSession
-from care_im_wrapper.signals import meta_message_received, meta_status_updated
-from care_im_wrapper.webhooks.exceptions import SignatureVerificationError
+from care_im_wrapper.signals import inbound_message_received, inbound_status_updated
 from care_im_wrapper.webhooks.mixins import ChallengeMixin, HmacVerificationMixin
 from care_im_wrapper.webhooks.views import WebhookView
 
@@ -29,9 +28,6 @@ class MetaWebhookView(ChallengeMixin, HmacVerificationMixin, WebhookView):
     }
 
     def handle_event(self, request: HttpRequest, payload: dict[str, Any]) -> HttpResponse:
-        if not self.verify_signature(request):
-            raise SignatureVerificationError("Invalid signature")
-
         obj = str(payload.get("object", ""))
         channel = self._CHANNEL_MAP.get(obj, obj)
 
@@ -45,14 +41,14 @@ class MetaWebhookView(ChallengeMixin, HmacVerificationMixin, WebhookView):
         value = change.get("value", {})
 
         for message in value.get("messages", []):
-            meta_message_received.send(
+            inbound_message_received.send(
                 sender=self.__class__,
                 payload=message,
                 channel=channel,
             )
 
         for status in value.get("statuses", []):
-            meta_status_updated.send(
+            inbound_status_updated.send(
                 sender=self.__class__,
                 payload=status,
                 channel=channel,

@@ -14,12 +14,13 @@ class CareImWrapperConfig(AppConfig):
 
         import care_im_wrapper.handlers.booking  # noqa: F401
         import care_im_wrapper.handlers.meta  # noqa: F401
-        import care_im_wrapper.security.authorization  # noqa: F401
+        from care_im_wrapper.security.authorization import register_notification_authorization
         from care_im_wrapper.security.permission_registration import register_notification_permissions
         from care_im_wrapper.settings import plugin_settings
         from care_im_wrapper.tasks import dispatch_pending_notification_recipients, sync_notification_templates
 
         register_notification_permissions()
+        register_notification_authorization()
 
         @app.on_after_finalize.connect(weak=False)
         def _register_periodic_tasks(sender, **kwargs):  # noqa: ANN001, ANN003, ANN202

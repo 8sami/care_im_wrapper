@@ -125,6 +125,7 @@ class WhatsAppClient:
     supports_templates: bool = True
     max_message_chars: int = int(plugin_settings.WHATSAPP_MESSAGE_CHAR_LIMIT)
     min_send_interval_seconds: int = int(plugin_settings.WHATSAPP_MIN_SEND_INTERVAL_SECONDS)
+    interactive_body_char_limit: int = int(plugin_settings.WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT)
 
     def send_text(self, to: str, body: str) -> str | None:
         return self._send(
@@ -252,7 +253,9 @@ class WhatsAppClient:
             "Content-Type": "application/json",
         }
         try:
-            response = httpx.post(url, json=payload, headers=headers, timeout=10.0)
+            response = httpx.post(
+                url, json=payload, headers=headers, timeout=float(plugin_settings.WHATSAPP_HTTP_TIMEOUT_SECONDS)
+            )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
@@ -262,6 +265,8 @@ class WhatsAppClient:
                     error_code = exc.response.json().get("error", {}).get("code")
             except (ValueError, KeyError):
                 pass
+
+            logger.error("WhatsApp API error (HTTP %s): %s", status_code, exc.response.text)
 
             if status_code == 429 or error_code == 131056:
                 raise WhatsAppPairRateLimitError(f"WhatsApp rate limit hit: {exc.response.text}") from exc
@@ -348,10 +353,12 @@ class WhatsAppClient:
 
         language_code = template.language_code
         if not language_code:
+            language_code = str(plugin_settings.WHATSAPP_DEFAULT_LANGUAGE_CODE)
             logger.warning(
-                "WhatsApp send_template: template %s has no language_code, falling back to en_US", template.slug
+                "WhatsApp send_template: template %s has no language_code, falling back to %s",
+                template.slug,
+                language_code,
             )
-            language_code = "en_US"
 
         template_obj: dict[str, Any] = {
             "name": template.slug,
@@ -385,7 +392,9 @@ class WhatsAppClient:
 
         while url is not None:
             try:
-                response = httpx.get(url, params=params, headers=headers, timeout=10.0)
+                response = httpx.get(
+                    url, params=params, headers=headers, timeout=float(plugin_settings.WHATSAPP_HTTP_TIMEOUT_SECONDS)
+                )
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code

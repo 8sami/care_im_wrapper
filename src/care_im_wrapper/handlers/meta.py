@@ -9,13 +9,13 @@ from care_im_wrapper.core.rate_limit import is_rate_limited
 from care_im_wrapper.core.sanitize import mask_phone_number
 from care_im_wrapper.messaging.normalize import normalize_inbound
 from care_im_wrapper.settings import plugin_settings
-from care_im_wrapper.signals import meta_message_received, meta_status_updated
+from care_im_wrapper.signals import inbound_message_received, inbound_status_updated
 from care_im_wrapper.tasks import process_inbound_message, process_status_update
 
 logger = logging.getLogger(__name__)
 
 
-@receiver(meta_message_received)
+@receiver(inbound_message_received)
 def on_meta_message(*, payload: dict[str, Any], channel: str, **kwargs: Any) -> None:
     message = normalize_inbound(payload, channel)
     if message is None:
@@ -47,6 +47,6 @@ def on_meta_message(*, payload: dict[str, Any], channel: str, **kwargs: Any) -> 
     cache.set(pending_task_key, result.id, timeout=plugin_settings.DEBOUNCE_SECONDS + 2)
 
 
-@receiver(meta_status_updated)
+@receiver(inbound_status_updated)
 def on_meta_status(*, payload: dict[str, Any], channel: str, **kwargs: Any) -> None:
     process_status_update.delay(payload=payload, channel=channel)  # pyright: ignore[reportCallIssue]
