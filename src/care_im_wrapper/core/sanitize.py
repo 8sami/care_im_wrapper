@@ -26,20 +26,3 @@ def mask_phone_number(phone: str) -> str:
     mask = "*" * (len(sanitized) - prefix_len - suffix_len)
 
     return f"{prefix}{mask}{suffix}"
-
-
-def mask_name(name: str) -> str:
-    """Returns e.g. 'John Doe' -> 'J*** Doe' or 'John D.' depending on implementation.
-    Requirement says: first name + last initial."""
-    parts = name.strip().split()
-    if not parts:
-        return ""
-    if len(parts) == 1:
-        return f"{parts[0][0]}***"
-
-    first_name = parts[0]
-    last_initial = parts[-1][0]
-
-    masked_first = f"{first_name[0]}{'*' * (len(first_name) - 1)}" if len(first_name) > 1 else first_name
-
-    return f"{masked_first} {last_initial}."
