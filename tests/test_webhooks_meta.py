@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 from django.test import RequestFactory, TestCase, override_settings
 
-from care_im_wrapper.signals import meta_message_received, meta_status_updated
+from care_im_wrapper.signals import inbound_message_received, inbound_status_updated
 from care_im_wrapper.webhooks.providers.meta import MetaWebhookView
 
 SECRET = "test-app-secret"
@@ -145,8 +145,8 @@ class MetaWebhookSignatureTests(TestCase):
 
         response = self.view(request)
 
-        # NOTE: payload parsing happens before signature verification in WebhookView.post(),
-        # so a malformed body returns 400 regardless of whether the signature is valid.
+        # Signature verification happens before payload parsing in WebhookView.post();
+        # this body's signature is valid, so it proceeds to parsing and fails there instead.
         self.assertEqual(response.status_code, 400)
 
 
@@ -157,12 +157,12 @@ class MetaWebhookDispatchTests(TestCase):
         self.view = MetaWebhookView.as_view()
         self.message_receiver = MagicMock()
         self.status_receiver = MagicMock()
-        meta_message_received.connect(self.message_receiver, weak=False)
-        meta_status_updated.connect(self.status_receiver, weak=False)
+        inbound_message_received.connect(self.message_receiver, weak=False)
+        inbound_status_updated.connect(self.status_receiver, weak=False)
 
     def tearDown(self):
-        meta_message_received.disconnect(self.message_receiver)
-        meta_status_updated.disconnect(self.status_receiver)
+        inbound_message_received.disconnect(self.message_receiver)
+        inbound_status_updated.disconnect(self.status_receiver)
 
     def _post(self, payload):
         body = json.dumps(payload).encode()
@@ -174,7 +174,7 @@ class MetaWebhookDispatchTests(TestCase):
         )
         return self.view(request)
 
-    def test_message_in_payload_sends_meta_message_received_with_mapped_channel(self):
+    def test_message_in_payload_sends_inbound_message_received_with_mapped_channel(self):
         payload = {
             "object": "whatsapp_business_account",
             "entry": [{"changes": [{"value": {"messages": [{"id": "wamid1", "from": "+91"}]}}]}],
@@ -189,7 +189,7 @@ class MetaWebhookDispatchTests(TestCase):
         self.assertEqual(call_kwargs["channel"], "whatsapp")
         self.status_receiver.assert_not_called()
 
-    def test_status_in_payload_sends_meta_status_updated(self):
+    def test_status_in_payload_sends_inbound_status_updated(self):
         payload = {
             "object": "whatsapp_business_account",
             "entry": [{"changes": [{"value": {"statuses": [{"id": "wamid1", "status": "delivered"}]}}]}],

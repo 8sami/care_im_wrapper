@@ -8,7 +8,7 @@ from care_im_wrapper.auth.actor import Actor
 from care_im_wrapper.data.exceptions import NoDataError
 from care_im_wrapper.data.procedures import _extract_service_name, fetch_procedures
 from care_im_wrapper.models import ConversationSession
-from tests.utils import OverrideCache
+from tests.utils import OverrideCache  # noqa: F401 # pyright: ignore
 
 
 class ExtractServiceNameTests(SimpleTestCase):

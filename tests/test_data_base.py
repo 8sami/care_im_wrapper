@@ -10,7 +10,6 @@ from care_im_wrapper.data.base import (
     humanize_date,
     humanize_encounter_class,
     humanize_time,
-    truncate,
 )
 from tests.utils import OverrideCache  # noqa: F401 # pyright: ignore
 
@@ -21,20 +20,6 @@ def _make_actor(user_type="staff", instance_id=1):
 
 def _make_session(patient_id="patient-1"):
     return SimpleNamespace(active_patient_external_id=patient_id)
-
-
-class TruncateTests(SimpleTestCase):
-    def test_short_text_returned_unchanged(self):
-        self.assertEqual(truncate("short text"), "short text")
-
-    def test_text_at_exact_limit_returned_unchanged(self):
-        text = "A" * 4096
-        self.assertEqual(truncate(text), text)
-
-    def test_text_over_limit_is_truncated_with_suffix(self):
-        text = "A" * 5000
-        expected = "A" * (4096 - 20) + "\n... (truncated)"
-        self.assertEqual(truncate(text), expected)
 
 
 class HumanizeChoiceTests(SimpleTestCase):
@@ -58,10 +43,8 @@ class HumanizeEncounterClassTests(SimpleTestCase):
     def test_imp_maps_to_inpatient(self):
         self.assertEqual(humanize_encounter_class("imp"), "Inpatient")
 
-    def test_amb_maps_to_outperson(self):
-        # NOTE: this is the exact current source mapping, including the "Outperson" typo.
-        # Do not "fix" it here — the test documents current behavior, not intended behavior.
-        self.assertEqual(humanize_encounter_class("amb"), "Outperson")
+    def test_amb_maps_to_ambulatory(self):
+        self.assertEqual(humanize_encounter_class("amb"), "Ambulatory")
 
     def test_obsenc_maps_to_observation(self):
         self.assertEqual(humanize_encounter_class("obsenc"), "Observation")

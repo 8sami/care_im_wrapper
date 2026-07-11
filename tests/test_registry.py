@@ -8,6 +8,18 @@ from care_im_wrapper.conversation.messages import (
     OutboundMessage,
 )
 from care_im_wrapper.messaging import registry
+from care_im_wrapper.messaging.exceptions import OutboundRateLimitedError
+from tests.utils import OverrideCache  # noqa: F401 # pyright: ignore
+
+
+def _make_fake_client(*, supports_interactive: bool, max_message_chars: int = 1000):
+    fake_client = MagicMock()
+    fake_client.supports_interactive = supports_interactive
+    fake_client.max_message_chars = max_message_chars
+    # Real pacing is exercised by SendMessageOutboundPacingTests; other tests here just
+    # need is_outbound_rate_limited's cache.add(..., timeout=...) call to accept an int.
+    fake_client.min_send_interval_seconds = 0
+    return fake_client
 
 
 class GetMaxCharsTests(SimpleTestCase):
@@ -25,15 +37,14 @@ class GetMaxCharsTests(SimpleTestCase):
             self.assertEqual(result, 1000)
 
 
+@OverrideCache
 class SendMessageTests(SimpleTestCase):
     def test_unregistered_channel_does_nothing_and_returns_none(self):
         result = registry.send_message("nonexistent", "+919876543210", "hi")
         self.assertIsNone(result)
 
     def test_string_message_is_converted_and_sent_as_plain_text(self):
-        fake_client = MagicMock()
-        fake_client.supports_interactive = False
-        fake_client.max_message_chars = 1000
+        fake_client = _make_fake_client(supports_interactive=False)
 
         with patch.dict(registry._PROVIDERS, {"fake": lambda: fake_client}, clear=True):
             registry.send_message("fake", "+919876543210", "hello")
@@ -41,9 +52,7 @@ class SendMessageTests(SimpleTestCase):
             fake_client.send_interactive.assert_not_called()
 
     def test_non_interactive_provider_ignores_interactive_payload(self):
-        fake_client = MagicMock()
-        fake_client.supports_interactive = False
-        fake_client.max_message_chars = 1000
+        fake_client = _make_fake_client(supports_interactive=False)
 
         with patch.dict(registry._PROVIDERS, {"fake": lambda: fake_client}, clear=True):
             msg = OutboundMessage(
@@ -55,9 +64,7 @@ class SendMessageTests(SimpleTestCase):
             fake_client.send_interactive.assert_not_called()
 
     def test_interactive_provider_with_interactive_payload_calls_send_interactive(self):
-        fake_client = MagicMock()
-        fake_client.supports_interactive = True
-        fake_client.max_message_chars = 1000
+        fake_client = _make_fake_client(supports_interactive=True)
 
         with patch.dict(registry._PROVIDERS, {"fake": lambda: fake_client}, clear=True):
             msg = OutboundMessage(
@@ -69,9 +76,7 @@ class SendMessageTests(SimpleTestCase):
             fake_client.send_text.assert_not_called()
 
     def test_interactive_provider_without_interactive_payload_uses_send_text(self):
-        fake_client = MagicMock()
-        fake_client.supports_interactive = True
-        fake_client.max_message_chars = 1000
+        fake_client = _make_fake_client(supports_interactive=True)
 
         with patch.dict(registry._PROVIDERS, {"fake": lambda: fake_client}, clear=True):
             msg = OutboundMessage(text="hi")
@@ -80,9 +85,7 @@ class SendMessageTests(SimpleTestCase):
             fake_client.send_interactive.assert_not_called()
 
     def test_interactive_send_failure_falls_back_to_send_text(self):
-        fake_client = MagicMock()
-        fake_client.supports_interactive = True
-        fake_client.max_message_chars = 1000
+        fake_client = _make_fake_client(supports_interactive=True)
         fake_client.send_interactive.side_effect = RuntimeError("boom")
 
         with patch.dict(registry._PROVIDERS, {"fake": lambda: fake_client}, clear=True):
@@ -93,3 +96,40 @@ class SendMessageTests(SimpleTestCase):
             registry.send_message("fake", "+919876543210", msg)
             fake_client.send_interactive.assert_called_once_with("+919876543210", msg)
             fake_client.send_text.assert_called_once_with("+919876543210", "hi")
+
+
+@OverrideCache
+class SendMessageOutboundPacingTests(SimpleTestCase):
+    # OverrideCache isolates per test class, not per test method, so each test below
+    # uses its own dedicated phone number(s) to avoid cross-method cache leakage.
+    def test_rate_limited_send_raises_without_calling_client(self):
+        fake_client = _make_fake_client(supports_interactive=False)
+
+        with patch.dict(registry._PROVIDERS, {"fake": lambda: fake_client}, clear=True):
+            with patch("care_im_wrapper.messaging.registry.is_outbound_rate_limited", return_value=True):
+                with self.assertRaises(OutboundRateLimitedError):
+                    registry.send_message("fake", "+919876500001", "hi")
+
+            fake_client.send_text.assert_not_called()
+            fake_client.send_interactive.assert_not_called()
+
+    def test_second_send_within_min_interval_is_rate_limited(self):
+        fake_client = _make_fake_client(supports_interactive=False)
+        fake_client.min_send_interval_seconds = 6
+
+        with patch.dict(registry._PROVIDERS, {"fake": lambda: fake_client}, clear=True):
+            registry.send_message("fake", "+919876500002", "first")
+            with self.assertRaises(OutboundRateLimitedError):
+                registry.send_message("fake", "+919876500002", "second")
+
+        fake_client.send_text.assert_called_once_with("+919876500002", "first")
+
+    def test_sends_to_different_phone_numbers_are_independent(self):
+        fake_client = _make_fake_client(supports_interactive=False)
+        fake_client.min_send_interval_seconds = 6
+
+        with patch.dict(registry._PROVIDERS, {"fake": lambda: fake_client}, clear=True):
+            registry.send_message("fake", "+919876500003", "hi")
+            registry.send_message("fake", "+919876500004", "hi")
+
+        self.assertEqual(fake_client.send_text.call_count, 2)

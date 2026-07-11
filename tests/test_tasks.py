@@ -4,13 +4,14 @@ from django.core.cache import cache
 from django.test import SimpleTestCase
 
 from care_im_wrapper.messaging.exceptions import (
+    OutboundRateLimitedError,
     WhatsAppBadRequestError,
     WhatsAppNetworkError,
     WhatsAppPairRateLimitError,
     WhatsAppServerError,
 )
 from care_im_wrapper.tasks import process_inbound_message
-from tests.utils import OverrideCache
+from tests.utils import OverrideCache  # noqa: F401 # pyright: ignore
 
 PHONE = "+919876543210"
 CHANNEL = "whatsapp"
@@ -53,9 +54,45 @@ class ProcessInboundMessagePendingTaskCleanupTests(SimpleTestCase):
 
 
 @OverrideCache
+class ProcessInboundMessageRetryDedupTests(SimpleTestCase):
+    """
+    A Celery retry re-invokes this exact task with the same raw_id. The dedup guard
+    must not treat that as a duplicate delivery -- otherwise every retry path (outbound
+    pacing, transient WhatsApp errors) silently no-ops instead of actually reprocessing.
+    """
+
+    @patch("care_im_wrapper.tasks.run_state_machine")
+    def test_retry_of_same_raw_id_still_calls_state_machine(self, mock_run):
+        process_inbound_message.apply(args=[PHONE, "hello", CHANNEL, "wamid-retry-1"])
+        process_inbound_message.apply(args=[PHONE, "hello", CHANNEL, "wamid-retry-1"], retries=1)
+
+        self.assertEqual(mock_run.call_count, 2)
+
+    @patch("care_im_wrapper.tasks.run_state_machine")
+    def test_fresh_delivery_of_same_raw_id_is_still_deduped(self, mock_run):
+        process_inbound_message.apply(args=[PHONE, "hello", CHANNEL, "wamid-retry-2"])
+        process_inbound_message.apply(args=[PHONE, "hello", CHANNEL, "wamid-retry-2"])
+
+        mock_run.assert_called_once()
+
+
+@OverrideCache
 class ProcessInboundMessageErrorHandlingTests(SimpleTestCase):
     def _patch_retry(self):
-        return patch.object(process_inbound_message, "retry", side_effect=lambda exc: exc)
+        return patch.object(process_inbound_message, "retry", side_effect=lambda exc, countdown=None: exc)
+
+    @patch("care_im_wrapper.tasks.get_min_send_interval_seconds", return_value=6)
+    @patch("care_im_wrapper.tasks.run_state_machine")
+    def test_outbound_rate_limited_error_retries_after_min_send_interval(self, mock_run, mock_interval):
+        mock_run.side_effect = OutboundRateLimitedError("paced")
+
+        with self._patch_retry() as mock_retry:
+            with self.assertRaises(OutboundRateLimitedError):
+                process_inbound_message(PHONE, "hello", CHANNEL, raw_id="wamid-0")
+
+        mock_retry.assert_called_once()
+        self.assertIsInstance(mock_retry.call_args.kwargs["exc"], OutboundRateLimitedError)
+        self.assertEqual(mock_retry.call_args.kwargs["countdown"], 6)
 
     @patch("care_im_wrapper.tasks.run_state_machine")
     def test_pair_rate_limit_error_triggers_retry(self, mock_run):

@@ -1,6 +1,6 @@
 from django.test import SimpleTestCase
 
-from care_im_wrapper.core.sanitize import mask_name, mask_phone_number, normalize_phone_number
+from care_im_wrapper.core.sanitize import mask_phone_number, normalize_phone_number
 
 
 class NormalizePhoneNumberTests(SimpleTestCase):
@@ -30,23 +30,3 @@ class MaskPhoneNumberTests(SimpleTestCase):
         # prefix = "+919" (4), suffix = "210" (3)
         # mask = "*" * (13 - 4 - 3) = "******" (6)
         self.assertEqual(mask_phone_number("+919876543210"), "+919******210")
-
-
-class MaskNameTests(SimpleTestCase):
-    def test_empty_string_returns_empty(self):
-        self.assertEqual(mask_name(""), "")
-
-    def test_whitespace_only_returns_empty(self):
-        self.assertEqual(mask_name("   "), "")
-
-    def test_single_word_name(self):
-        self.assertEqual(mask_name("John"), "J***")
-
-    def test_two_word_name(self):
-        self.assertEqual(mask_name("John Doe"), "J*** D.")
-
-    def test_single_letter_first_name(self):
-        self.assertEqual(mask_name("A Doe"), "A D.")
-
-    def test_three_word_name_uses_first_and_last_only(self):
-        self.assertEqual(mask_name("John Middle Doe"), "J*** D.")

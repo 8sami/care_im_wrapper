@@ -74,7 +74,7 @@ class RenderEncountersTests(SimpleTestCase):
 
         result = render_encounters(records, 4096)
 
-        expected = "Your recent encounters:\n\n1. *City Hospital* — 05 Mar 2024 (In Progress)"
+        expected = "Your recent encounters:\n\n1. *City Hospital* — 05 Mar 2024 (In Progress, Inpatient)"
         self.assertEqual(result.text, expected)
 
 
