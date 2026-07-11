@@ -2,6 +2,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from care.utils.models.base import BaseModel  # pyright: ignore[reportMissingImports]
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.postgres.fields import ArrayField
@@ -10,21 +11,13 @@ from django.db import models
 from care_im_wrapper.models.conversation_session import ConversationSession
 
 
-class SoftDeleteManager(models.Manager):
-    def get_queryset(self):
-        return super().get_queryset().filter(deleted=False)
-
-
 class TriggerType(models.TextChoices):
     SIGNAL = "signal", "Signal"  # pyright: ignore[reportAssignmentType]
     MANUAL = "manual", "Manual"  # pyright: ignore[reportAssignmentType]
 
 
-class NotificationTrigger(models.Model):
-    external_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
-    created_date = models.DateTimeField(auto_now_add=True, db_index=True)
-    modified_date = models.DateTimeField(auto_now=True)
-    deleted = models.BooleanField(default=False, db_index=True)  # pyright: ignore[reportArgumentType]
+class NotificationTrigger(BaseModel):
+    # care.users.User.id; plain IntegerField (not a FK) to avoid a cross-app migration dependency.
     created_by_id = models.IntegerField(null=True, blank=True)
     updated_by_id = models.IntegerField(null=True, blank=True)
     name = models.CharField(max_length=255)
@@ -37,17 +30,11 @@ class NotificationTrigger(models.Model):
     # Base context merged into NotificationEvent.variable_values (handler values win on collision).
     default_variable_values = models.JSONField(null=True, blank=True)
 
-    objects = SoftDeleteManager()
-
     class Meta:
         app_label = "care_im_wrapper"
         indexes = [
             models.Index(fields=["trigger_type", "is_active"]),
         ]
-
-    def delete(self, *args: Any, **kwargs: Any) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
-        self.deleted = True
-        self.save(update_fields=["deleted"])
 
 
 # Registered by handlers/booking.py and other future related-object handlers,
@@ -87,11 +74,7 @@ class TemplateParameterFormat(models.TextChoices):
     NAMED = "named", "Named ({{patient_name}}, ...)"  # pyright: ignore[reportAssignmentType]
 
 
-class NotificationTemplate(models.Model):
-    external_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
-    created_date = models.DateTimeField(auto_now_add=True, db_index=True)
-    modified_date = models.DateTimeField(auto_now=True)
-    deleted = models.BooleanField(default=False, db_index=True)  # pyright: ignore[reportArgumentType]
+class NotificationTemplate(BaseModel):
     created_by_id = models.IntegerField(null=True, blank=True)
     updated_by_id = models.IntegerField(null=True, blank=True)
     name = models.CharField(max_length=255)
@@ -118,24 +101,14 @@ class NotificationTemplate(models.Model):
         default=TemplateParameterFormat.POSITIONAL,
     )
 
-    objects = SoftDeleteManager()
-
     class Meta:
         app_label = "care_im_wrapper"
         indexes = [
             models.Index(fields=["provider", "approval_status"]),
         ]
 
-    def delete(self, *args: Any, **kwargs: Any) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
-        self.deleted = True
-        self.save(update_fields=["deleted"])
 
-
-class NotificationEvent(models.Model):
-    external_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
-    created_date = models.DateTimeField(auto_now_add=True, db_index=True)
-    modified_date = models.DateTimeField(auto_now=True)
-    deleted = models.BooleanField(default=False, db_index=True)  # pyright: ignore[reportArgumentType]
+class NotificationEvent(BaseModel):
     # care.users.User.id of staff member. NULL for automatic signal-triggered events.
     created_by_id = models.IntegerField(null=True, blank=True)
     updated_by_id = models.IntegerField(null=True, blank=True)
@@ -149,8 +122,6 @@ class NotificationEvent(models.Model):
     related_object_id = models.PositiveIntegerField(null=True, blank=True)
     related_object = GenericForeignKey("related_object_content_type", "related_object_id")
     facility_organization_cache = ArrayField(models.IntegerField(), default=list)
-
-    objects = SoftDeleteManager()
 
     class Meta:
         app_label = "care_im_wrapper"
@@ -176,10 +147,6 @@ class NotificationEvent(models.Model):
                 self.facility_organization_cache = list(orgs)
         super().save(*args, **kwargs)
 
-    def delete(self, *args: Any, **kwargs: Any) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
-        self.deleted = True
-        self.save(update_fields=["deleted"])
-
 
 class NotificationStatusState(models.TextChoices):
     SENT = "sent", "Sent"  # pyright: ignore[reportAssignmentType]
@@ -188,11 +155,7 @@ class NotificationStatusState(models.TextChoices):
     FAILED = "failed", "Failed"  # pyright: ignore[reportAssignmentType]
 
 
-class NotificationRecipient(models.Model):
-    external_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
-    created_date = models.DateTimeField(auto_now_add=True, db_index=True)
-    modified_date = models.DateTimeField(auto_now=True)
-    deleted = models.BooleanField(default=False, db_index=True)  # pyright: ignore[reportArgumentType]
+class NotificationRecipient(BaseModel):
     event = models.ForeignKey(NotificationEvent, on_delete=models.CASCADE, related_name="recipients")
     recipient_content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
     recipient_object_id = models.PositiveIntegerField()
@@ -210,8 +173,6 @@ class NotificationRecipient(models.Model):
     # Pure cache written as a side effect of inserting a NotificationStatus row; None = not dispatched.
     latest_status = models.CharField(max_length=20, null=True, blank=True, choices=NotificationStatusState.choices)
 
-    objects = SoftDeleteManager()
-
     class Meta:
         app_label = "care_im_wrapper"
         indexes = [
@@ -219,10 +180,6 @@ class NotificationRecipient(models.Model):
             models.Index(fields=["recipient_content_type", "recipient_object_id"]),
             models.Index(fields=["event", "latest_status"]),
         ]
-
-    def delete(self, *args: Any, **kwargs: Any) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
-        self.deleted = True
-        self.save(update_fields=["deleted"])
 
 
 class NotificationStatus(models.Model):

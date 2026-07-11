@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from django.db import models
 from django.utils import timezone
 
+from care_im_wrapper.core.choices import Provider
 from care_im_wrapper.settings import plugin_settings
 
 
@@ -14,8 +15,9 @@ class ConversationSession(models.Model):
         PATIENT = "patient", "Patient"  # pyright: ignore[reportAssignmentType]
         STAFF = "staff", "Staff"  # pyright: ignore[reportAssignmentType]
 
-    class Provider(models.TextChoices):
-        WHATSAPP = "whatsapp", "WhatsApp"  # pyright: ignore[reportAssignmentType]
+    # Re-exported so existing callers can keep using ConversationSession.Provider.WHATSAPP;
+    # lives in core.choices so settings.py can reference it without a circular import.
+    Provider = Provider
 
     class State(models.TextChoices):
         NEW = "new", "New"  # pyright: ignore[reportAssignmentType]
