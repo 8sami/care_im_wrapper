@@ -1,5 +1,3 @@
-from care.emr.models.scheduling.booking import TokenBooking  # pyright: ignore[reportMissingImports]
-from django import forms
 from django.contrib import admin
 
 from care_im_wrapper.core.sanitize import mask_phone_number
@@ -11,33 +9,12 @@ from care_im_wrapper.models.notification import (
     NotificationTrigger,
 )
 
-
-@admin.register(TokenBooking)
-class TokenBookingAdmin(admin.ModelAdmin):
-    """Demo/debug convenience: TokenBooking has no admin registration in care core. This won't be used in production."""
-
-    list_display = ("external_id", "patient", "patient_phone", "patient_year_of_birth", "status", "booked_on")
-    list_filter = ("status",)
-    fields = ("external_id", "patient", "patient_phone", "patient_year_of_birth", "status", "booked_on")
-    readonly_fields = ("external_id", "patient", "patient_phone", "patient_year_of_birth", "booked_on")
-
-    def formfield_for_dbfield(self, db_field, request, **kwargs):
-        # Deferred import: circular import chain if loaded at admin.autodiscover() time.
-        if db_field.name == "status":
-            from care.emr.resources.scheduling.slot.spec import (  # pyright: ignore[reportMissingImports]
-                BookingStatusChoices,
-            )
-
-            kwargs["widget"] = forms.Select(choices=[(c.value, c.value) for c in BookingStatusChoices])
-        return super().formfield_for_dbfield(db_field, request, **kwargs)
-
-    @admin.display(description="Phone")
-    def patient_phone(self, obj: TokenBooking) -> str:
-        return str(obj.patient.phone_number)
-
-    @admin.display(description="Year of birth")
-    def patient_year_of_birth(self, obj: TokenBooking) -> str:
-        return str(getattr(obj.patient, "year_of_birth", "") or "")
+# Field names supplied by care.utils.models.base.BaseModel, shared by every
+# NotificationTrigger/Template/Event/Recipient admin's readonly_fields.
+_BASE_READONLY_FIELDS = ("external_id", "created_date", "modified_date", "deleted")
+# created_by_id/updated_by_id are plugin-specific additions present on every model except
+# NotificationRecipient (captured once at creation, never attributed to a staff editor).
+_AUDITED_READONLY_FIELDS = (*_BASE_READONLY_FIELDS, "created_by_id", "updated_by_id")
 
 
 @admin.register(NotificationTrigger)
@@ -52,12 +29,7 @@ class NotificationTriggerAdmin(admin.ModelAdmin):
     )
     list_filter = ("trigger_type", "is_active")
     readonly_fields = (
-        "external_id",
-        "created_date",
-        "modified_date",
-        "deleted",
-        "created_by_id",
-        "updated_by_id",
+        *_AUDITED_READONLY_FIELDS,
         "name",
         "slug",
         "description",
@@ -80,12 +52,7 @@ class NotificationTemplateAdmin(admin.ModelAdmin):
     )
     list_filter = ("provider", "category", "approval_status", "parameter_format")
     readonly_fields = (
-        "external_id",
-        "created_date",
-        "modified_date",
-        "deleted",
-        "created_by_id",
-        "updated_by_id",
+        *_AUDITED_READONLY_FIELDS,
         "name",
         "slug",
         "provider",
@@ -109,12 +76,7 @@ class NotificationEventAdmin(admin.ModelAdmin):
     )
     list_filter = ("trigger", "is_urgent")
     readonly_fields = (
-        "external_id",
-        "created_date",
-        "modified_date",
-        "deleted",
-        "created_by_id",
-        "updated_by_id",
+        *_AUDITED_READONLY_FIELDS,
         "template",
         "trigger",
         "title",
@@ -138,10 +100,7 @@ class NotificationRecipientAdmin(admin.ModelAdmin):
     )
     list_filter = ("latest_status", "provider")
     readonly_fields = (
-        "external_id",
-        "created_date",
-        "modified_date",
-        "deleted",
+        *_BASE_READONLY_FIELDS,
         "event",
         "recipient_content_type",
         "recipient_object_id",
