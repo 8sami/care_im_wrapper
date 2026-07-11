@@ -12,3 +12,7 @@ class NoDataError(DataFetchError):
 
 class MissingContextError(DataFetchError):
     """Required context (e.g. active_patient_external_id for staff) is not set."""
+
+
+class InvalidQueryError(DataFetchError):
+    """Caller-supplied input (e.g. a search query) fails validation before any lookup runs."""
