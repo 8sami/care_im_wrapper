@@ -34,7 +34,7 @@ from care_im_wrapper.models.notification import (
     NotificationTrigger,
     TriggerType,
 )
-from care_im_wrapper.tasks import dispatch_notification_recipient
+from care_im_wrapper.tasks import dispatch_notification_recipient, sync_notification_templates
 
 
 def _resolve_facility_root_org(facility_external_id):
@@ -82,6 +82,13 @@ class NotificationTemplateViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet
         instance.save(update_fields=["is_active", "updated_by_id", "modified_date"])
         return Response(NotificationTemplateReadSpec.serialize(instance).to_json())
 
+    @action(detail=False, methods=["post"])
+    def sync(self, request, *args, **kwargs):
+        if not AuthorizationController.call("can_manage_notification_template", request.user, None):
+            raise PermissionDenied("You do not have permission to sync notification templates.")
+        sync_notification_templates.delay()  # pyright: ignore[reportCallIssue]
+        return Response({"detail": "Notification template sync queued."}, status=202)
+
     @action(detail=True, methods=["post"])
     def set_variable_mapping(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -102,7 +109,16 @@ class NotificationEventViewSet(EMRCreateMixin, EMRListMixin, EMRRetrieveMixin, E
     pydantic_read_model = NotificationEventReadSpec
 
     def get_queryset(self):
-        queryset = NotificationEvent.objects.all().order_by("-created_date").prefetch_related("recipients")
+        queryset = (
+            NotificationEvent.objects.all()
+            .order_by("-created_date")
+            .prefetch_related(
+                "recipients",
+                "recipients__recipient",
+                "recipients__recipient_content_type",
+                "recipients__status_events",
+            )
+        )
 
         trigger_slug = self.request.GET.get("trigger")
         if trigger_slug:
@@ -223,7 +239,12 @@ class NotificationRecipientViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSe
     pydantic_read_model = NotificationRecipientReadSpec
 
     def get_queryset(self):
-        queryset = NotificationRecipient.objects.all().select_related("event").order_by("-created_date")
+        queryset = (
+            NotificationRecipient.objects.all()
+            .select_related("event", "recipient_content_type")
+            .prefetch_related("recipient", "status_events")
+            .order_by("-created_date")
+        )
         event_external_id = self.request.GET.get("event")
         if event_external_id:
             queryset = queryset.filter(event__external_id=event_external_id)

@@ -55,6 +55,17 @@ class NotificationTriggerReadSpec(EMRResource):
     is_active: bool
 
 
+def _resolve_recipient_name(recipient: NotificationRecipient) -> str | None:
+    target = recipient.recipient
+    if target is None:
+        return None
+    if recipient.recipient_content_type.model == "patient":
+        return getattr(target, "name", None) or None
+    if recipient.recipient_content_type.model == "user":
+        return getattr(target, "full_name", None) or None
+    return None
+
+
 class NotificationRecipientReadSpec(EMRResource):
     __model__ = NotificationRecipient
     __exclude__ = ["phone_number"]
@@ -62,9 +73,12 @@ class NotificationRecipientReadSpec(EMRResource):
     id: UUID4 | None = None
     event_id: UUID4
     recipient_phone: str
+    recipient_name: str | None = None
+    recipient_type: str | None = None
     provider: str
     tracking_id: str | None = None
     latest_status: str | None = None
+    status_history: list[dict[str, Any]] = []
     created_date: datetime.datetime | None = None
 
     # message_payload/variable_overrides omitted: debugging-only raw payloads, not needed for a patient-facing view.
@@ -74,6 +88,12 @@ class NotificationRecipientReadSpec(EMRResource):
         super().perform_extra_serialization(mapping, obj, *args, **kwargs)
         mapping["event_id"] = obj.event.external_id
         mapping["recipient_phone"] = obj.phone_number
+        mapping["recipient_type"] = obj.recipient_content_type.model
+        mapping["recipient_name"] = _resolve_recipient_name(obj)
+        mapping["status_history"] = [
+            {"state": status.state, "created_date": status.created_date.isoformat()}
+            for status in sorted(obj.status_events.all(), key=lambda status: status.created_date)
+        ]
 
 
 class NotificationStatusReadSpec(EMRResource):
@@ -103,6 +123,8 @@ class NotificationEventReadSpec(EMRResource):
     description: str | None = None
     is_urgent: bool
     variable_values: dict[str, Any] | None = None
+    # Staff member who created a manual event; None for automatic signal-triggered events.
+    created_by: dict | None = None
     created_date: datetime.datetime | None = None
     recipients: list[NotificationRecipientReadSpec] = []
 
@@ -112,6 +134,7 @@ class NotificationEventReadSpec(EMRResource):
         mapping["trigger_id"] = obj.trigger.external_id
         mapping["template_id"] = obj.template.external_id
         mapping["recipients"] = [NotificationRecipientReadSpec.serialize(r) for r in obj.recipients.all()]
+        cls.serialize_audit_users(mapping, obj)
 
 
 class NotificationEventWriteSpec(EMRResource):
