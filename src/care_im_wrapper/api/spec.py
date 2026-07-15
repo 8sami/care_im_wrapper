@@ -53,6 +53,7 @@ class NotificationTriggerReadSpec(EMRResource):
     description: str | None = None
     trigger_type: str
     is_active: bool
+    context_slug: str | None = None
 
 
 def _resolve_recipient_name(recipient: NotificationRecipient) -> str | None:

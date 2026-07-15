@@ -30,6 +30,10 @@ class MessageSender(Protocol):
         self, to: str, template: NotificationTemplate, related_object: Any, context: dict
     ) -> str | None: ...
     def sync_templates(self) -> None: ...
+    def validate_variable_mapping_value(self, expr: str) -> list[str]:
+        """Provider-specific formatting rules for one variable_mapping expression.
+        Returns human-readable problems ([] = valid); see WhatsAppClient for an example."""
+        ...
 
 
 def _get_whatsapp_client() -> MessageSender:
@@ -80,6 +84,15 @@ def get_template_capable_providers() -> list[tuple[str, MessageSender]]:
         for channel, client in ((channel, factory()) for channel, factory in _PROVIDERS.items())
         if client.supports_templates
     ]
+
+
+def validate_provider_expression(channel: str, expr: str) -> list[str]:
+    """Provider-specific formatting problems for one expression ([] = valid, or
+    the provider is unregistered). Dispatches through _PROVIDERS like other capability lookups."""
+    factory = _PROVIDERS.get(channel)
+    if factory is None:
+        return []
+    return factory().validate_variable_mapping_value(expr)
 
 
 def get_default_channel() -> str:

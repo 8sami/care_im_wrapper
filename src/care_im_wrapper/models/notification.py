@@ -29,12 +29,31 @@ class NotificationTrigger(BaseModel):
     template_slug = models.CharField(max_length=100)
     # Base context merged into NotificationEvent.variable_values (handler values win on collision).
     default_variable_values = models.JSONField(null=True, blank=True)
+    # Names the context class in NOTIFICATION_CONTEXT_REGISTRY for this trigger's
+    # related_object, driving the variable_mapping field picker. Blank = no picker.
+    context_slug = models.CharField(max_length=100, blank=True, default="")
 
     class Meta:
         app_label = "care_im_wrapper"
         indexes = [
             models.Index(fields=["trigger_type", "is_active"]),
         ]
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        if self.context_slug:
+            # Lazy import: keeps care.emr out of the model module's import path at app load.
+            from django.core.exceptions import ValidationError
+
+            from care_im_wrapper.reports.context_builders import NOTIFICATION_CONTEXT_REGISTRY
+
+            if self.context_slug not in NOTIFICATION_CONTEXT_REGISTRY:
+                raise ValidationError(
+                    {
+                        "context_slug": f"Unknown context_slug '{self.context_slug}'. "
+                        f"Registered: {sorted(NOTIFICATION_CONTEXT_REGISTRY.slugs())}."
+                    }
+                )
+        super().save(*args, **kwargs)
 
 
 # Registered by handlers/booking.py and other future related-object handlers,
