@@ -27,6 +27,7 @@ from care_im_wrapper.api.spec import (
     NotificationTemplateReadSpec,
     NotificationTriggerReadSpec,
 )
+from care_im_wrapper.messaging.variables import resolve_variable
 from care_im_wrapper.models.notification import (
     NotificationEvent,
     NotificationRecipient,
@@ -34,6 +35,12 @@ from care_im_wrapper.models.notification import (
     NotificationTrigger,
     TriggerType,
 )
+from care_im_wrapper.reports.schema import (
+    build_notification_schema,
+    build_preview,
+    resolve_template_context_slugs,
+)
+from care_im_wrapper.reports.validation import validate_variable_mapping
 from care_im_wrapper.tasks import dispatch_notification_recipient, sync_notification_templates
 
 
@@ -97,10 +104,60 @@ class NotificationTemplateViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet
         variable_mapping = request.data.get("variable_mapping")
         if not isinstance(variable_mapping, dict):
             raise ValidationError("variable_mapping must be an object.")
+        # Per-key errors so the FE can surface each on its own placeholder field.
+        errors = validate_variable_mapping(instance, variable_mapping)
+        if errors:
+            return Response({"errors": errors}, status=400)
         instance.variable_mapping = variable_mapping
         instance.updated_by_id = request.user.id
         instance.save(update_fields=["variable_mapping", "updated_by_id", "modified_date"])
         return Response(NotificationTemplateReadSpec.serialize(instance).to_json())
+
+    @action(detail=True, methods=["get"])
+    def schema(self, request, *args, **kwargs):
+        """Browsable field schema for this template's variable_mapping, unioned across
+        every trigger that renders it. Empty groups when no trigger is linked yet."""
+        instance = self.get_object()
+        if not AuthorizationController.call("can_read_notification_template", request.user, instance):
+            raise PermissionDenied("You do not have permission to view this notification template.")
+        context_slugs = resolve_template_context_slugs(instance)
+        return Response(build_notification_schema(context_slugs))
+
+    @action(detail=True, methods=["post"])
+    def preview_variable_mapping(self, request, *args, **kwargs):
+        """Renders an unsaved variable_mapping draft against a preview stub of the linked
+        context, using the same resolve_variable() a real send uses."""
+        instance = self.get_object()
+        if not AuthorizationController.call("can_manage_notification_template", request.user, instance):
+            raise PermissionDenied("You do not have permission to manage this notification template.")
+        variable_mapping = request.data.get("variable_mapping")
+        if not isinstance(variable_mapping, dict):
+            raise ValidationError("variable_mapping must be an object.")
+
+        # Unlike schema(), which unions every context, preview uses only the first.
+        context_slugs = resolve_template_context_slugs(instance)
+        preview = build_preview(context_slugs[0]) if context_slugs else None
+        if preview is None:
+            return Response(
+                {"rendered": {}, "detail": "This template is not linked to a trigger with a known context yet."}
+            )
+
+        preview_object, extra_context = preview
+        rendered: dict[str, str] = {}
+        errors: dict[str, str] = {}
+        for key, expr in variable_mapping.items():
+            if not isinstance(expr, str):
+                errors[key] = "Expression must be a string."
+                continue
+            try:
+                rendered[key] = resolve_variable(expr, preview_object, extra_context)
+            except Exception as exc:  # surface the render error per key, not a 500
+                errors[key] = str(exc)
+
+        body: dict[str, object] = {"rendered": rendered}
+        if errors:
+            body["errors"] = errors
+        return Response(body)
 
 
 class NotificationEventViewSet(EMRCreateMixin, EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet):

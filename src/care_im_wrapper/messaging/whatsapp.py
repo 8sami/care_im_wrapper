@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*([^}]+?)\s*\}\}")
+# Full-string {{ ... }} wrap, the shape resolve_variable() evaluates.
+_DOUBLE_BRACE_EXPRESSION_RE = re.compile(r"^\{\{([\s\S]*)\}\}$")
 
 
 def _resolve_choice(
@@ -126,6 +128,21 @@ class WhatsAppClient:
     max_message_chars: int = int(plugin_settings.WHATSAPP_MESSAGE_CHAR_LIMIT)
     min_send_interval_seconds: int = int(plugin_settings.WHATSAPP_MIN_SEND_INTERVAL_SECONDS)
     interactive_body_char_limit: int = int(plugin_settings.WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT)
+
+    def validate_variable_mapping_value(self, expr: str) -> list[str]:
+        """WhatsApp/Meta rules for one variable_mapping expression -- mirrors the
+        FE's whatsappExpressionSchema."""
+        errors: list[str] = []
+        if not expr.strip():
+            return ["Expression is required."]
+        if re.search(r"[\n\r\t]", expr):
+            errors.append("Value must not contain newlines or tabs.")
+        if re.search(r" {5,}", expr):
+            errors.append("Value must not contain 5 or more consecutive spaces.")
+        match = _DOUBLE_BRACE_EXPRESSION_RE.match(expr.strip())
+        if not match or not match.group(1).strip():
+            errors.append("Value must be a Jinja2 expression wrapped in {{ ... }}.")
+        return errors
 
     def send_text(self, to: str, body: str) -> str | None:
         return self._send(

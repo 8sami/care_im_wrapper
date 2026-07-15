@@ -8,9 +8,13 @@ from django.dispatch import receiver
 
 from care_im_wrapper.handlers.dispatch import NotificationRecipientSpec, fire_notification_event
 from care_im_wrapper.models.notification import _FACILITY_RESOLVERS
+from care_im_wrapper.reports.context_builders import NOTIFICATION_CONTEXT_REGISTRY, TokenBookingContext
 from care_im_wrapper.settings import plugin_settings
 
 logger = logging.getLogger(__name__)
+
+# Slug naming the TokenBooking context; set on the appointment triggers' context_slug.
+BOOKING_CONTEXT_SLUG = "token_booking"
 
 
 def _resolve_booking_facility(booking: TokenBooking) -> Any | None:
@@ -18,6 +22,8 @@ def _resolve_booking_facility(booking: TokenBooking) -> Any | None:
 
 
 _FACILITY_RESOLVERS[TokenBooking] = _resolve_booking_facility
+# Mirrors _FACILITY_RESOLVERS above: this module owns the context for its own object.
+NOTIFICATION_CONTEXT_REGISTRY.register(BOOKING_CONTEXT_SLUG, TokenBookingContext)
 
 
 def _create_event_and_recipient(booking: TokenBooking, trigger_slug: str, title: str) -> None:
