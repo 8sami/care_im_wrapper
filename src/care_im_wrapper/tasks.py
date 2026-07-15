@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import traceback
 from typing import Any
 
 from celery import shared_task
@@ -32,6 +33,32 @@ _STATE_ORDER: dict[NotificationStatusState, int] = {
     NotificationStatusState.READ: 2,
     NotificationStatusState.FAILED: 3,
 }
+
+# Provider exceptions carry the whole upstream response body in str(exc); bounded so one
+# bad response can't bloat the JSONB row.
+_MAX_ERROR_CHARS = 2000
+_MAX_TRACEBACK_CHARS = 8000
+
+
+def _failure_payload(exc: BaseException, attempt: int) -> dict[str, Any]:
+    return {
+        "error_type": type(exc).__name__,
+        "error": str(exc)[:_MAX_ERROR_CHARS],
+        "traceback": "".join(traceback.format_exception(exc))[:_MAX_TRACEBACK_CHARS],
+        # Always 0 today: the latest_status guard in dispatch_notification_recipient makes
+        # every retry return early, so no retry reaches here. Non-zero means that changed.
+        "attempt": attempt,
+    }
+
+
+def _record_failure(recipient: NotificationRecipient, payload: dict[str, Any]) -> None:
+    NotificationStatus.objects.create(
+        recipient=recipient,
+        state=NotificationStatusState.FAILED,
+        payload=payload,
+    )
+    recipient.latest_status = NotificationStatusState.FAILED
+    recipient.save(update_fields=["latest_status"])
 
 
 @shared_task(
@@ -143,13 +170,8 @@ def dispatch_notification_recipient(self, recipient_id: int) -> None:
             recipient_variable_overrides=recipient.variable_overrides,
         )
     except Exception as exc:
-        NotificationStatus.objects.create(
-            recipient=recipient,
-            state=NotificationStatusState.FAILED,
-            payload={"error": str(exc)[:500]},
-        )
-        recipient.latest_status = NotificationStatusState.FAILED
-        recipient.save(update_fields=["latest_status"])
+        logger.exception("dispatch_notification_recipient: send failed for recipient %s", recipient_id)
+        _record_failure(recipient, _failure_payload(exc, self.request.retries))
         raise self.retry(exc=exc) from exc
 
     if tracking_id is None:
@@ -157,13 +179,14 @@ def dispatch_notification_recipient(self, recipient_id: int) -> None:
             "dispatch_notification_recipient: send_template_message returned no tracking id for recipient %s",
             recipient_id,
         )
-        NotificationStatus.objects.create(
-            recipient=recipient,
-            state=NotificationStatusState.FAILED,
-            payload=None,
+        _record_failure(
+            recipient,
+            {
+                "error_type": "MissingTrackingId",
+                "error": "Provider accepted the request but returned no message id, so delivery cannot be tracked.",
+                "attempt": self.request.retries,
+            },
         )
-        recipient.latest_status = NotificationStatusState.FAILED
-        recipient.save(update_fields=["latest_status"])
         return
 
     recipient.tracking_id = tracking_id

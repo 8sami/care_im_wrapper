@@ -91,7 +91,12 @@ class NotificationRecipientReadSpec(EMRResource):
         mapping["recipient_type"] = obj.recipient_content_type.model
         mapping["recipient_name"] = _resolve_recipient_name(obj)
         mapping["status_history"] = [
-            {"state": status.state, "created_date": status.created_date.isoformat()}
+            {
+                "state": status.state,
+                "created_date": status.created_date.isoformat(),
+                # Raw provider error body or dispatch exception on failures; null otherwise.
+                "payload": status.payload,
+            }
             for status in sorted(obj.status_events.all(), key=lambda status: status.created_date)
         ]
 
