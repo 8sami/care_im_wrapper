@@ -34,17 +34,15 @@ _STATE_ORDER: dict[NotificationStatusState, int] = {
     NotificationStatusState.FAILED: 3,
 }
 
-# Provider exceptions carry the whole upstream response body in str(exc); bounded so one
-# bad response can't bloat the JSONB row.
-_MAX_ERROR_CHARS = 2000
-_MAX_TRACEBACK_CHARS = 8000
-
 
 def _failure_payload(exc: BaseException, attempt: int) -> dict[str, Any]:
+    # Read at call time, not import time, so PLUGIN_CONFIGS overrides and reload() apply.
+    error_max = int(plugin_settings.NOTIFICATION_FAILURE_ERROR_MAX_CHARS)
+    traceback_max = int(plugin_settings.NOTIFICATION_FAILURE_TRACEBACK_MAX_CHARS)
     return {
         "error_type": type(exc).__name__,
-        "error": str(exc)[:_MAX_ERROR_CHARS],
-        "traceback": "".join(traceback.format_exception(exc))[:_MAX_TRACEBACK_CHARS],
+        "error": str(exc)[:error_max],
+        "traceback": "".join(traceback.format_exception(exc))[:traceback_max],
         # Always 0 today: the latest_status guard in dispatch_notification_recipient makes
         # every retry return early, so no retry reaches here. Non-zero means that changed.
         "attempt": attempt,
