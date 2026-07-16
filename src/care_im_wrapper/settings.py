@@ -147,6 +147,10 @@ DEFAULTS = {
     "NOTIFICATION_DISPATCH_INTERVAL_SECONDS": 120,
     # Beat sweep interval (seconds) for syncing template approval status from Meta.
     "TEMPLATE_SYNC_INTERVAL_SECONDS": 21600,
+    # Caps on the raw failure detail stored per failed NotificationStatus row. Provider
+    # exceptions carry the whole upstream response body, so these bound the JSONB row.
+    "NOTIFICATION_FAILURE_ERROR_MAX_CHARS": 2000,
+    "NOTIFICATION_FAILURE_TRACEBACK_MAX_CHARS": 8000,
     # Which NotificationTrigger.slug a booking status transition fires.
     "APPOINTMENT_TRIGGER_SLUGS": {
         "booked": "appointment_confirmed",
