@@ -27,6 +27,7 @@ class ConversationSession(models.Model):
         COOLDOWN = "cooldown", "Cooldown"  # pyright: ignore[reportAssignmentType]
         AWAITING_PATIENT_SEARCH = "awaiting_patient_search", "Awaiting Patient Search"  # pyright: ignore[reportAssignmentType]
         SELECTING_PATIENT = "selecting_patient", "Selecting Patient"  # pyright: ignore[reportAssignmentType]
+        SELECTING_DOCUMENT = "selecting_document", "Selecting Document"  # pyright: ignore[reportAssignmentType]
 
     phone_number = models.CharField(max_length=20)
     provider = models.CharField(max_length=20, choices=Provider.choices, default=Provider.WHATSAPP)
