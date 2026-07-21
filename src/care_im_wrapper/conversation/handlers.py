@@ -362,15 +362,16 @@ def _enter_document_selection(
     phone_number: str,
     channel: str,
 ) -> bool:
-    """Offers `records` as a pick-list and parks the session in SELECTING_DOCUMENT.
+    """Offers the selectable `records` as a pick-list and parks the session in
+    SELECTING_DOCUMENT.
 
     Returns False without sending or touching state when no record is selectable, so the
     caller falls back to its normal text reply rather than an empty pick-list.
 
-    `renderer` is re-run over just the offered subset rather than reusing the caller's
-    already-rendered text: send_message degrades to plain text whenever the interactive
-    send fails, and a fallback listing more records than the session holds lets the user
-    pick a number that resolves to nothing.
+    Every record is listed in the interactive body for context, but only records with an
+    external_id become tappable rows (e.g. lab reports mark only finalised results
+    selectable). The plain-text fallback lists just the selectable subset so a typed number
+    lines up with the stored candidates rather than resolving to nothing.
     """
     # One row is spent on "Back", so the provider's list limit leaves this many records.
     max_records = get_max_interactive_rows(channel) - 1
@@ -399,14 +400,18 @@ def _enter_document_selection(
     ]
     interactive_rows.append({"id": "0", "title": _msg("back")})
 
-    full_text = f"{renderer(selectable, get_max_chars(channel)).text}\n\n{prompt}"
+    max_chars = get_max_chars(channel)
+    # Interactive body lists every record (all statuses); the plain-text fallback lists only
+    # the selectable ones, so a typed number matches the stored candidates.
+    interactive_body = f"{renderer(records, max_chars).text}\n\n{prompt}"
+    fallback_text = f"{renderer(selectable, max_chars).text}\n\n{prompt}"
     # Over the body limit send_message degrades to plain text, which would drop the rows.
-    body = full_text if len(full_text) <= get_interactive_body_char_limit(channel) else prompt
+    body = interactive_body if len(interactive_body) <= get_interactive_body_char_limit(channel) else prompt
     send_message(
         channel,
         phone_number,
         OutboundMessage(
-            text=full_text,
+            text=fallback_text,
             interactive=InteractivePayload(
                 type=InteractiveType.LIST,
                 body=body,

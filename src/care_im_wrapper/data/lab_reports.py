@@ -22,9 +22,14 @@ def fetch_lab_reports(actor: Actor, session: ConversationSession) -> list[LabRep
     Raises PermissionDeniedError, NoDataError, MissingContextError.
     """
     from care.emr.models.diagnostic_report import DiagnosticReport  # type: ignore[import-untyped]
+    from care.emr.resources.diagnostic_report.spec import DiagnosticReportStatusChoices  # type: ignore[import-untyped]
 
     patient = resolve_target_patient(actor, session)
     limit = int(plugin_settings.DATA_FETCH_LIMIT)
+    # All statuses are listed so the patient sees their full history, but only finalised
+    # results are selectable for a document (external_id set below) -- a preliminary result
+    # can still change, so it must not be fetchable. Mirrors the push path, which only
+    # releases 'final' reports.
     # Newest report per service request. Bounded scan -- a long history is thousands of rows
     # and this runs on the inbound-message path.
     all_records = DiagnosticReport.objects.filter(patient=patient).order_by("-created_date")[
@@ -43,14 +48,16 @@ def fetch_lab_reports(actor: Actor, session: ConversationSession) -> list[LabRep
     if not records:
         raise NoDataError
 
+    final_status = DiagnosticReportStatusChoices.final.value
     lab_report_records = []
     for report in records:
         status = humanize_choice(getattr(report, "status", None))
         date = humanize_date(getattr(report, "created_date", None))
         name = _extract_report_name(report)
-        lab_report_records.append(
-            LabReportRecord(name=name, date=date, status=status, external_id=str(report.external_id))
-        )
+        # Only finalised reports carry an external_id, so only they become selectable rows
+        # in the document pick-list (see conversation.handlers._enter_document_selection).
+        external_id = str(report.external_id) if report.status == final_status else ""
+        lab_report_records.append(LabReportRecord(name=name, date=date, status=status, external_id=external_id))
 
     return lab_report_records
 
