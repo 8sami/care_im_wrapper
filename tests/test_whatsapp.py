@@ -216,14 +216,13 @@ class WhatsAppClientSendInteractiveTests(SimpleTestCase):
         self.assertEqual(sent["action"]["parameters"]["url"], "https://example.com")
 
     @patch("care_im_wrapper.messaging.whatsapp.httpx.post")
-    def test_header_and_footer_included_when_set(self, mock_post):
+    def test_footer_included_when_set(self, mock_post):
         mock_post.return_value = MagicMock()
         client = WhatsAppClient()
         payload = InteractivePayload(
             type=InteractiveType.REPLY_BUTTONS,
             body="Pick one",
             action_data=[{"id": "OPT_1", "title": "Option 1"}],
-            header="Header text",
             footer="Footer text",
         )
         msg = OutboundMessage(text="fallback", interactive=payload)
@@ -231,11 +230,10 @@ class WhatsAppClientSendInteractiveTests(SimpleTestCase):
 
         _, kwargs = mock_post.call_args
         sent = kwargs["json"]["interactive"]
-        self.assertEqual(sent["header"], {"type": "text", "text": "Header text"})
         self.assertEqual(sent["footer"], {"text": "Footer text"})
 
     @patch("care_im_wrapper.messaging.whatsapp.httpx.post")
-    def test_header_and_footer_omitted_when_none(self, mock_post):
+    def test_footer_omitted_when_none(self, mock_post):
         mock_post.return_value = MagicMock()
         client = WhatsAppClient()
         payload = InteractivePayload(
@@ -248,7 +246,6 @@ class WhatsAppClientSendInteractiveTests(SimpleTestCase):
 
         _, kwargs = mock_post.call_args
         sent = kwargs["json"]["interactive"]
-        self.assertNotIn("header", sent)
         self.assertNotIn("footer", sent)
 
 

@@ -5,10 +5,10 @@ from care.emr.resources.base import EMRResource  # pyright: ignore[reportMissing
 from care.utils.shortcuts import get_object_or_404  # pyright: ignore[reportMissingImports]
 from pydantic import UUID4
 
+from care_im_wrapper.core.sanitize import mask_phone_number
 from care_im_wrapper.models.notification import (
     NotificationEvent,
     NotificationRecipient,
-    NotificationStatus,
     NotificationTemplate,
     NotificationTrigger,
 )
@@ -32,15 +32,6 @@ class NotificationTemplateReadSpec(EMRResource):
     parameter_format: str
     created_date: datetime.datetime | None = None
     modified_date: datetime.datetime | None = None
-
-
-class NotificationTemplateWriteSpec(EMRResource):
-    __model__ = NotificationTemplate
-    # Only these two fields declared — de_serialize can never touch the other, sync-only fields.
-    __exclude__ = []
-
-    is_active: bool
-    variable_mapping: dict[str, Any] | None = None
 
 
 class NotificationTriggerReadSpec(EMRResource):
@@ -81,16 +72,19 @@ class NotificationRecipientReadSpec(EMRResource):
     latest_status: str | None = None
     status_history: list[dict[str, Any]] = []
     created_date: datetime.datetime | None = None
-
-    # message_payload/variable_overrides omitted: debugging-only raw payloads, not needed for a patient-facing view.
+    # Resolved values actually sent; the raw inputs in message_payload stay omitted.
+    sent_parameters: dict[str, str] = {}
 
     @classmethod
     def perform_extra_serialization(cls, mapping, obj, *args, **kwargs):
         super().perform_extra_serialization(mapping, obj, *args, **kwargs)
         mapping["event_id"] = obj.event.external_id
-        mapping["recipient_phone"] = obj.phone_number
+        # Masked to match every other surface (admin, patient lookup, patient summary);
+        # the delivery log identifies a recipient by name, not by a dialable number.
+        mapping["recipient_phone"] = mask_phone_number(obj.phone_number)
         mapping["recipient_type"] = obj.recipient_content_type.model
         mapping["recipient_name"] = _resolve_recipient_name(obj)
+        mapping["sent_parameters"] = (obj.message_payload or {}).get("sent_parameters", {})
         mapping["status_history"] = [
             {
                 "state": status.state,
@@ -100,22 +94,6 @@ class NotificationRecipientReadSpec(EMRResource):
             }
             for status in sorted(obj.status_events.all(), key=lambda status: status.created_date)
         ]
-
-
-class NotificationStatusReadSpec(EMRResource):
-    __model__ = NotificationStatus
-    __exclude__ = []
-
-    id: UUID4 | None = None
-    recipient_id: UUID4
-    state: str
-    payload: dict[str, Any] | None = None
-    created_date: datetime.datetime | None = None
-
-    @classmethod
-    def perform_extra_serialization(cls, mapping, obj, *args, **kwargs):
-        super().perform_extra_serialization(mapping, obj, *args, **kwargs)
-        mapping["recipient_id"] = obj.recipient.external_id
 
 
 class NotificationEventReadSpec(EMRResource):

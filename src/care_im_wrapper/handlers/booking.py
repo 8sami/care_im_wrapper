@@ -6,7 +6,11 @@ from care.emr.resources.scheduling.slot.spec import BookingStatusChoices  # pyri
 from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 
-from care_im_wrapper.handlers.dispatch import NotificationRecipientSpec, fire_notification_event
+from care_im_wrapper.handlers.dispatch import (
+    NotificationRecipientSpec,
+    fire_notification_event,
+    track_previous_status,
+)
 from care_im_wrapper.models.notification import _FACILITY_RESOLVERS
 from care_im_wrapper.reports.context_builders import NOTIFICATION_CONTEXT_REGISTRY, TokenBookingContext
 from care_im_wrapper.settings import plugin_settings
@@ -22,7 +26,6 @@ def _resolve_booking_facility(booking: TokenBooking) -> Any | None:
 
 
 _FACILITY_RESOLVERS[TokenBooking] = _resolve_booking_facility
-# Mirrors _FACILITY_RESOLVERS above: this module owns the context for its own object.
 NOTIFICATION_CONTEXT_REGISTRY.register(BOOKING_CONTEXT_SLUG, TokenBookingContext)
 
 
@@ -40,14 +43,7 @@ def _create_event_and_recipient(booking: TokenBooking, trigger_slug: str, title:
     )
 
 
-@receiver(pre_save, sender=TokenBooking)
-def on_booking_pre_save(sender: type[TokenBooking], instance: TokenBooking, **kwargs: Any) -> None:
-    if instance.pk is None:
-        instance._previous_status = None  # pyright: ignore[reportAttributeAccessIssue]
-    else:
-        instance._previous_status = (  # pyright: ignore[reportAttributeAccessIssue]
-            TokenBooking.objects.filter(pk=instance.pk).values_list("status", flat=True).first()
-        )
+pre_save.connect(track_previous_status, sender=TokenBooking)
 
 
 @receiver(post_save, sender=TokenBooking)

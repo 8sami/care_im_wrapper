@@ -1,5 +1,4 @@
-from datetime import datetime
-from datetime import timezone as dt_timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from django.test import SimpleTestCase, override_settings
@@ -17,8 +16,8 @@ def _make_slot(start=None, end=None, resource=None, has_start_datetime=True):
 @override_settings(TIME_ZONE="UTC")
 class ExtractBookingInfoTests(SimpleTestCase):
     def _valid_times(self):
-        start = datetime(2024, 3, 5, 9, 0, tzinfo=dt_timezone.utc)
-        end = datetime(2024, 3, 5, 9, 30, tzinfo=dt_timezone.utc)
+        start = datetime(2024, 3, 5, 9, 0, tzinfo=UTC)
+        end = datetime(2024, 3, 5, 9, 30, tzinfo=UTC)
         return start, end
 
     def test_location_resource_type_uses_location_name(self):

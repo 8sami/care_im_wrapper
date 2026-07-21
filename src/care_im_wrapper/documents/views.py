@@ -9,6 +9,7 @@ from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect
 
 from care_im_wrapper.core.rate_limit import is_rate_limited
 from care_im_wrapper.models import DocumentLink
+from care_im_wrapper.settings import plugin_settings
 
 logger = logging.getLogger(__name__)
 
@@ -16,11 +17,17 @@ logger = logging.getLogger(__name__)
 def document_redirect(request: HttpRequest, token: str) -> HttpResponse:
     """
     Missing, invalid, and expired tokens all 404 identically -- no enumeration signal.
-    Rate-limited by client IP (checked before the token is even looked up) so a burst of
-    guesses from one source can't be used to brute-force a valid token.
+
+    Rate-limited per token, not per client IP: behind a reverse proxy REMOTE_ADDR is the
+    proxy for every request, so an IP-keyed limit is really a single global one shared by
+    every patient. The token is 256 bits, so guessing is not the threat -- capping reuse
+    of one leaked/forwarded link is.
     """
-    client_ip = request.META.get("REMOTE_ADDR", "")
-    if is_rate_limited(f"doc_link:{client_ip}"):
+    if is_rate_limited(
+        f"doc_link:{token}",
+        window=int(plugin_settings.DOCUMENT_LINK_RATE_LIMIT_WINDOW_SECONDS),
+        max_hits=int(plugin_settings.DOCUMENT_LINK_RATE_LIMIT_MAX),
+    ):
         return HttpResponse(status=429)
 
     link = DocumentLink.objects.filter(token=token).first()

@@ -71,10 +71,25 @@ def humanize_time(value: datetime | str | None) -> str:
         return str(value)
 
 
+# Bump whenever a cached *Record dataclass shape changes, so entries written by the old
+# code are not served (with missing/renamed fields) for a TTL after deploy.
+_CACHE_SCHEMA_VERSION = 2
+
+
 def cached_fetch(timeout_seconds: int):
+    """Caches a patient-data fetcher's result per (function, actor, target patient).
+
+    Authorization is re-run on every call, cache hit included: the RBAC check lives in
+    resolve_target_patient, and a cache that answered without it would keep serving a
+    patient's records for a full TTL after the caller's access was revoked.
+    """
+
     def decorator(fetch_fn):
         @wraps(fetch_fn)
         def wrapper(actor: Any, session: Any) -> Any:
+            from care_im_wrapper.data.common import resolve_target_patient
+
+            resolve_target_patient(actor, session)  # authorize before the cache is consulted
             key = _build_cache_key(fetch_fn.__name__, actor, session)
             hit = django_cache.get(key)
             if hit is not None:
@@ -94,4 +109,4 @@ def _build_cache_key(fn_name: str, actor: Any, session: Any) -> str:
     A collision between two patients' data is a privacy bug.
     """
     patient_ctx = session.active_patient_external_id or "self"
-    return f"care_im:fetch:{fn_name}:{actor.user_type}:{actor.instance.id}:{patient_ctx}"
+    return f"care_im:fetch:v{_CACHE_SCHEMA_VERSION}:{fn_name}:{actor.user_type}:{actor.instance.id}:{patient_ctx}"

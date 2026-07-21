@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from care_im_wrapper.conversation.messages import InboundMessage, OutboundMessage, StatusUpdate
+from care_im_wrapper.conversation.messages import InboundMessage, OutboundMessage, SentTemplate, StatusUpdate
 from care_im_wrapper.messaging.exceptions import (
     WhatsAppBadRequestError,
     WhatsAppNetworkError,
@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*([^}]+?)\s*\}\}")
 # Full-string {{ ... }} wrap, the shape resolve_variable() evaluates.
 _DOUBLE_BRACE_EXPRESSION_RE = re.compile(r"^\{\{([\s\S]*)\}\}$")
+
+# Meta's hard cap on an interactive button/row id length; a longer id is rejected outright.
+_INTERACTIVE_ID_MAX_CHARS = 256
 
 
 def _resolve_choice(
@@ -125,9 +128,28 @@ def normalize_meta_status(payload: dict[str, Any], channel: str) -> StatusUpdate
 class WhatsAppClient:
     supports_interactive: bool = True
     supports_templates: bool = True
-    max_message_chars: int = int(plugin_settings.WHATSAPP_MESSAGE_CHAR_LIMIT)
-    min_send_interval_seconds: int = int(plugin_settings.WHATSAPP_MIN_SEND_INTERVAL_SECONDS)
-    interactive_body_char_limit: int = int(plugin_settings.WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT)
+
+    # Properties, not class attributes: the latter freeze at import, ignoring PLUGIN_CONFIGS
+    # overrides and settings.reload(). registry.py builds a fresh client per lookup anyway.
+    @property
+    def max_message_chars(self) -> int:
+        return int(plugin_settings.WHATSAPP_MESSAGE_CHAR_LIMIT)
+
+    @property
+    def min_send_interval_seconds(self) -> int:
+        return int(plugin_settings.WHATSAPP_MIN_SEND_INTERVAL_SECONDS)
+
+    @property
+    def interactive_body_char_limit(self) -> int:
+        return int(plugin_settings.WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT)
+
+    @property
+    def max_interactive_rows(self) -> int:
+        return int(plugin_settings.WHATSAPP_LIST_ROW_LIMIT)
+
+    @property
+    def max_reply_buttons(self) -> int:
+        return int(plugin_settings.WHATSAPP_REPLY_BUTTON_LIMIT)
 
     def validate_variable_mapping_value(self, expr: str) -> list[str]:
         """WhatsApp/Meta rules for one variable_mapping expression -- mirrors the
@@ -174,11 +196,11 @@ class WhatsAppClient:
                 {
                     "type": "reply",
                     "reply": {
-                        "id": str(b["id"])[:256],
+                        "id": str(b["id"])[:_INTERACTIVE_ID_MAX_CHARS],
                         "title": str(b["title"])[: int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)],
                     },
                 }
-                for b in iv.action_data[:3]  # hard cap: max 3 buttons
+                for b in iv.action_data[: self.max_reply_buttons]
             ]
             interactive_obj = {
                 "type": "button",
@@ -192,10 +214,10 @@ class WhatsAppClient:
             for section in iv.action_data:
                 rows = []
                 for row in section.get("rows", []):
-                    if total_rows >= int(plugin_settings.DATA_FETCH_LIMIT):  # hard cap: max 10 rows across all sections
+                    if total_rows >= self.max_interactive_rows:
                         break
                     entry: dict[str, Any] = {
-                        "id": str(row["id"])[:256],
+                        "id": str(row["id"])[:_INTERACTIVE_ID_MAX_CHARS],
                         "title": str(row["title"])[: int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)],
                     }
                     if row.get("description"):
@@ -239,8 +261,6 @@ class WhatsAppClient:
         else:
             return self.send_text(to, msg.as_plain_text())
 
-        if iv.header:
-            interactive_obj["header"] = {"type": "text", "text": iv.header}
         if iv.footer:
             interactive_obj["footer"] = {"text": iv.footer}
 
@@ -324,13 +344,54 @@ class WhatsAppClient:
                 parameters.append({"type": "text", "text": value})
         return parameters
 
+    def _build_button_components(
+        self,
+        buttons_component: dict[str, Any],
+        template: NotificationTemplate,
+        related_object: Any,
+        context: dict[str, Any],
+        variable_mapping: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Meta URL-button params are always positional regardless of the body's
+        parameter_format, so this never consults `is_named`. The dynamic suffix uses the
+        distinct "url_suffix" mapping key so it cannot collide with a HEADER/BODY entry.
+        """
+        button_components: list[dict[str, Any]] = []
+        for index, button in enumerate(buttons_component.get("buttons", [])):
+            if button.get("type", "").upper() != "URL":
+                continue
+            if not _PLACEHOLDER_RE.findall(button.get("url", "")):
+                continue  # static URL button, nothing dynamic to fill in
+
+            if "url_suffix" not in variable_mapping:
+                logger.error(
+                    "WhatsApp send_template: template %s has a dynamic URL button but no "
+                    "'url_suffix' in variable_mapping",
+                    template.slug,
+                )
+                raise WhatsAppTemplateNotConfiguredError(
+                    f"NotificationTemplate '{template.slug}' has a dynamic URL button with no 'url_suffix' mapping"
+                )
+
+            value = resolve_variable(variable_mapping["url_suffix"], related_object, context)
+            button_components.append(
+                {
+                    "type": "button",
+                    "sub_type": "url",
+                    "index": str(index),
+                    "parameters": [{"type": "text", "text": value}],
+                }
+            )
+        return button_components
+
     def _build_components(
         self, template: NotificationTemplate, related_object: Any, context: dict[str, Any]
     ) -> list[dict[str, Any]]:
         """
-        Builds Meta's `components` list (HEADER + BODY, TEXT only) from the synced `payload`'s
-        `{{...}}` placeholders. Each `variable_mapping` value is a `resolve_variable` expression,
-        evaluated against `related_object` and the handler-supplied `context`.
+        Builds Meta's `components` list (HEADER + BODY text placeholders, plus a dynamic
+        URL button if the synced payload has one) from the synced `payload`. Each
+        `variable_mapping` value is a `resolve_variable` expression, evaluated against
+        `related_object` and the handler-supplied `context`.
         """
         from care_im_wrapper.models.notification import TemplateParameterFormat
 
@@ -347,6 +408,13 @@ class WhatsAppClient:
         components: list[dict[str, Any]] = []
         for comp in payload_components:
             comp_type = comp.get("type", "").upper()
+
+            if comp_type == "BUTTONS":
+                components.extend(
+                    self._build_button_components(comp, template, related_object, context, variable_mapping)
+                )
+                continue
+
             if comp_type not in ("HEADER", "BODY") or comp.get("format", "TEXT").upper() != "TEXT":
                 continue
             placeholder_keys = [k for k in _PLACEHOLDER_RE.findall(comp.get("text", "")) if k in variable_mapping]
@@ -363,9 +431,25 @@ class WhatsAppClient:
             )
         return components
 
+    @staticmethod
+    def _flatten_components(components: list[dict[str, Any]]) -> dict[str, str]:
+        """Resolved values read back off the components we send, so the audit record cannot
+        drift from the payload. Named params keep their parameter_name, positional ones use
+        their 1-based index."""
+        flat: dict[str, str] = {}
+        for comp in components:
+            if comp.get("type") == "button":
+                params = comp.get("parameters", [])
+                if params:
+                    flat["url_suffix"] = params[0].get("text", "")
+                continue
+            for position, param in enumerate(comp.get("parameters", []), start=1):
+                flat[param.get("parameter_name") or str(position)] = param.get("text", "")
+        return flat
+
     def send_template(
         self, to: str, template: NotificationTemplate, related_object: Any, context: dict[str, Any]
-    ) -> str | None:
+    ) -> SentTemplate:
         components = self._build_components(template, related_object, context)
 
         language_code = template.language_code
@@ -384,7 +468,7 @@ class WhatsAppClient:
         if components:
             template_obj["components"] = components
 
-        return self._send(
+        message_id = self._send(
             {
                 "messaging_product": "whatsapp",
                 "recipient_type": "individual",
@@ -393,6 +477,7 @@ class WhatsAppClient:
                 "template": template_obj,
             }
         )
+        return SentTemplate(tracking_id=message_id, parameters=self._flatten_components(components))
 
     def list_templates(self) -> list[dict[str, Any]]:
         token = plugin_settings.WHATSAPP_ACCESS_TOKEN

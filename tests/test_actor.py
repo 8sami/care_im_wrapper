@@ -47,20 +47,14 @@ class ResolveActorTests(CareAPITestBase):
             "resolve_actor: %s id=%s not found", ConversationSession.UserType.UNKNOWN, 999
         )
 
-    def test_patient_session_with_nonexistent_id_raises_does_not_exist(self):
-        # NOTE: the docstring claims this returns None for a deleted/merged record,
-        # but the current implementation has no try/except around Patient.objects.get() —
-        # it raises Patient.DoesNotExist instead. This test documents actual behavior,
-        # not the documented intent. Flag to the team: this may be a real bug, since every
-        # caller of resolve_actor only checks `if actor is None`, not for this exception.
+    def test_patient_session_with_nonexistent_id_returns_none(self):
+        # A patient deleted or merged after authenticating: callers only check for None,
+        # so this must not surface as Patient.DoesNotExist.
         session = _make_session(ConversationSession.UserType.PATIENT, 999999)
 
-        with self.assertRaises(Patient.DoesNotExist):
-            resolve_actor(session)
+        self.assertIsNone(resolve_actor(session))
 
-    def test_staff_session_with_nonexistent_id_raises_does_not_exist(self):
-        # Same discrepancy as above, for the staff/User path.
+    def test_staff_session_with_nonexistent_id_returns_none(self):
         session = _make_session(ConversationSession.UserType.STAFF, 999999)
 
-        with self.assertRaises(User.DoesNotExist):
-            resolve_actor(session)
+        self.assertIsNone(resolve_actor(session))

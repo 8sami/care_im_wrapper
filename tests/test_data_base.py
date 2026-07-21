@@ -1,5 +1,4 @@
-from datetime import datetime
-from datetime import timezone as dt_timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from django.test import SimpleTestCase, override_settings
@@ -14,7 +13,9 @@ from care_im_wrapper.data.base import (
 from tests.utils import OverrideCache  # noqa: F401 # pyright: ignore
 
 
-def _make_actor(user_type="staff", instance_id=1):
+# Patient actors so cached_fetch's authorization step (resolve_target_patient) short-circuits
+# to actor.instance without a DB lookup -- these are caching-mechanics tests under SimpleTestCase.
+def _make_actor(user_type="patient", instance_id=1):
     return SimpleNamespace(user_type=user_type, instance=SimpleNamespace(id=instance_id))
 
 
@@ -71,7 +72,7 @@ class HumanizeDateTests(SimpleTestCase):
         self.assertEqual(humanize_date("2024-01-01"), "2024-01-01")
 
     def test_aware_datetime_formatted_as_short_date(self):
-        value = datetime(2024, 3, 5, 14, 30, tzinfo=dt_timezone.utc)
+        value = datetime(2024, 3, 5, 14, 30, tzinfo=UTC)
         self.assertEqual(humanize_date(value), "05 Mar 2024")
 
     def test_naive_datetime_falls_back_to_str(self):
@@ -88,7 +89,7 @@ class HumanizeTimeTests(SimpleTestCase):
         self.assertEqual(humanize_time("14:30"), "14:30")
 
     def test_aware_datetime_formatted_as_short_time(self):
-        value = datetime(2024, 3, 5, 14, 30, tzinfo=dt_timezone.utc)
+        value = datetime(2024, 3, 5, 14, 30, tzinfo=UTC)
         self.assertEqual(humanize_time(value), "02:30 pm")
 
     def test_naive_datetime_falls_back_to_str(self):

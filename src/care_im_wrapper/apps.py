@@ -13,6 +13,7 @@ class CareImWrapperConfig(AppConfig):
         from config.celery_app import app  # pyright: ignore[reportMissingImports]
 
         import care_im_wrapper.handlers.booking  # noqa: F401
+        import care_im_wrapper.handlers.diagnostic_report  # noqa: F401
         import care_im_wrapper.handlers.meta  # noqa: F401
         from care_im_wrapper.security.authorization import register_notification_authorization
         from care_im_wrapper.security.permission_registration import register_notification_permissions

@@ -17,14 +17,11 @@ class MetaWebhookView(ChallengeMixin, HmacVerificationMixin, WebhookView):
     mode_param: ClassVar[str] = "hub.mode"
     required_mode: ClassVar[str] = "subscribe"
     hmac_header: ClassVar[str] = "X-Hub-Signature-256"
-    hmac_algorithm: ClassVar[str] = "sha256"
     secret_setting: ClassVar[str] = "WHATSAPP_APP_SECRET"
     signature_prefix: ClassVar[str] = "sha256="
 
     _CHANNEL_MAP: ClassVar[dict[str, str]] = {
         "whatsapp_business_account": ConversationSession.Provider.WHATSAPP.value,
-        # "instagram": "instagram",
-        # "page": "messenger",
     }
 
     def handle_event(self, request: HttpRequest, payload: dict[str, Any]) -> HttpResponse:

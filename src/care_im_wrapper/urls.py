@@ -7,6 +7,7 @@ from care_im_wrapper.api.viewsets import (
     NotificationTemplateViewSet,
     NotificationTriggerViewSet,
 )
+from care_im_wrapper.documents.views import document_redirect
 from care_im_wrapper.webhooks.providers.meta import MetaWebhookView
 
 router = DefaultRouter()
@@ -18,6 +19,7 @@ router.register("notification-recipients", NotificationRecipientViewSet, basenam
 urlpatterns = [
     path("webhook/meta/", MetaWebhookView.as_view(), name="im-wrapper-webhook-meta"),
     # add providers webhook paths here
+    path("documents/<str:token>/", document_redirect, name="im-wrapper-document-redirect"),
 ]
 
 urlpatterns += router.urls

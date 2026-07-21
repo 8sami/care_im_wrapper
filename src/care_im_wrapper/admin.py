@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 from care_im_wrapper.core.sanitize import mask_phone_number
+from care_im_wrapper.models.document_link import DocumentLink
 from care_im_wrapper.models.notification import (
     NotificationEvent,
     NotificationRecipient,
@@ -132,4 +133,29 @@ class NotificationStatusAdmin(admin.ModelAdmin):
         "recipient",
         "state",
         "payload",
+    )
+
+
+@admin.register(DocumentLink)
+class DocumentLinkAdmin(admin.ModelAdmin):
+    # token stays off list_display -- it's a bearer capability.
+    list_display = (
+        "external_id",
+        "document_type",
+        "object_kind",
+        "provider",
+        "expires_at",
+        "access_count",
+    )
+    list_filter = ("object_kind", "provider", "document_type")
+    readonly_fields = (
+        *_BASE_READONLY_FIELDS,
+        "token",
+        "object_kind",
+        "object_external_id",
+        "document_type",
+        "patient_external_id",
+        "provider",
+        "expires_at",
+        "access_count",
     )

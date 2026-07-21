@@ -39,7 +39,13 @@ def fetch_encounters(actor: Actor, session: ConversationSession) -> list[Encount
         facility = fmt_facility_name(enc)
         encounter_class = humanize_encounter_class(getattr(enc, "encounter_class", None))
         encounter_records.append(
-            EncounterRecord(date=date, facility=facility, status=status, encounter_class=encounter_class)
+            EncounterRecord(
+                date=date,
+                facility=facility,
+                status=status,
+                encounter_class=encounter_class,
+                external_id=str(enc.external_id),
+            )
         )
 
     return encounter_records

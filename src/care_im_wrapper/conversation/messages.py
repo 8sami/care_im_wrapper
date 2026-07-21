@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from care_im_wrapper.models.notification import NotificationStatusState
 
 
-class InteractiveType(str, Enum):
+class InteractiveType(StrEnum):
     REPLY_BUTTONS = "button"
     LIST = "list"
     CTA_URL = "cta_url"
@@ -30,7 +30,6 @@ class InteractivePayload:
     body: str  # prompt text shown above the buttons
     action_data: list[dict[str, Any]] = field(default_factory=list)
     button_label: str = "View Options"  # list open-button label (LIST type only)
-    header: str | None = None
     footer: str | None = None
 
 
@@ -68,3 +67,12 @@ class OutboundMessage:
 
     def as_plain_text(self) -> str:
         return self.text
+
+
+@dataclass(frozen=True)
+class SentTemplate:
+    """Result of a template send: the tracking id (``None`` if the provider returned none)
+    and the resolved parameter values put on the wire, kept for auditing."""
+
+    tracking_id: str | None
+    parameters: dict[str, str] = field(default_factory=dict)

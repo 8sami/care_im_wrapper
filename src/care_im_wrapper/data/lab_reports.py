@@ -8,6 +8,11 @@ from care_im_wrapper.data.records import LabReportRecord
 from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.settings import plugin_settings
 
+# Rows scanned per row displayed, when collapsing reports to one per service request.
+# Bounds the query; a patient whose newest DATA_FETCH_LIMIT * this many reports all share
+# fewer than DATA_FETCH_LIMIT service requests simply sees fewer rows.
+DEDUPE_SCAN_FACTOR = 5
+
 
 @cached_fetch(timeout_seconds=int(plugin_settings.DATA_CACHE_TIMEOUT_SECONDS))
 def fetch_lab_reports(actor: Actor, session: ConversationSession) -> list[LabReportRecord]:
@@ -19,16 +24,22 @@ def fetch_lab_reports(actor: Actor, session: ConversationSession) -> list[LabRep
     from care.emr.models.diagnostic_report import DiagnosticReport  # type: ignore[import-untyped]
 
     patient = resolve_target_patient(actor, session)
-    queryset = DiagnosticReport.objects.filter(patient=patient)
-    all_records = queryset.order_by("-created_date")
+    limit = int(plugin_settings.DATA_FETCH_LIMIT)
+    # Newest report per service request. Bounded scan -- a long history is thousands of rows
+    # and this runs on the inbound-message path.
+    all_records = DiagnosticReport.objects.filter(patient=patient).order_by("-created_date")[
+        : limit * DEDUPE_SCAN_FACTOR
+    ]
 
     latest_by_group: dict[str, DiagnosticReport] = {}
     for r in all_records:
-        group_key = getattr(r, "service_request_id", str(r.id))
+        # service_request_id is None (not absent) on a standalone report, so a getattr default
+        # would collapse them all into one group -- use a per-row key instead.
+        group_key = str(r.service_request_id) if r.service_request_id else f"report:{r.id}"
         if group_key not in latest_by_group:
             latest_by_group[group_key] = r
 
-    records = list(latest_by_group.values())[: plugin_settings.DATA_FETCH_LIMIT]
+    records = list(latest_by_group.values())[:limit]
     if not records:
         raise NoDataError
 
@@ -37,7 +48,9 @@ def fetch_lab_reports(actor: Actor, session: ConversationSession) -> list[LabRep
         status = humanize_choice(getattr(report, "status", None))
         date = humanize_date(getattr(report, "created_date", None))
         name = _extract_report_name(report)
-        lab_report_records.append(LabReportRecord(name=name, date=date, status=status))
+        lab_report_records.append(
+            LabReportRecord(name=name, date=date, status=status, external_id=str(report.external_id))
+        )
 
     return lab_report_records
 

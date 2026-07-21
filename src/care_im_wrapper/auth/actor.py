@@ -28,16 +28,24 @@ def resolve_actor(session) -> "Actor | None":
     from care.emr.models.patient import Patient  # pyright: ignore[reportMissingImports]
     from care.users.models import User  # pyright: ignore[reportMissingImports]
 
+    # A merged/soft-deleted patient raises DoesNotExist (BaseManager hides it) -> None,
+    # which is the case callers rely on to re-authenticate.
     if session.user_type == ConversationSession.UserType.PATIENT:
-        return Actor(
-            user_type=ConversationSession.UserType.PATIENT,
-            instance=Patient.objects.get(id=session.user_id),
-        )
-    if session.user_type == ConversationSession.UserType.STAFF:
-        return Actor(
-            user_type=ConversationSession.UserType.STAFF,
-            instance=User.objects.get(id=session.user_id),
-        )
+        try:
+            return Actor(
+                user_type=ConversationSession.UserType.PATIENT,
+                instance=Patient.objects.get(id=session.user_id),
+            )
+        except Patient.DoesNotExist:
+            pass
+    elif session.user_type == ConversationSession.UserType.STAFF:
+        try:
+            return Actor(
+                user_type=ConversationSession.UserType.STAFF,
+                instance=User.objects.get(id=session.user_id),
+            )
+        except User.DoesNotExist:
+            pass
 
     logger.warning(
         "resolve_actor: %s id=%s not found",

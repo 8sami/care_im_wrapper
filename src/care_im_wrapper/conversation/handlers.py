@@ -12,6 +12,7 @@ from care_im_wrapper.conversation.messages import InteractivePayload, Interactiv
 from care_im_wrapper.conversation.renderers import render_patient_search_results
 from care_im_wrapper.conversation.templates import _msg
 from care_im_wrapper.data import patient_lookup
+from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.data.exceptions import (
     DataFetchError,
     InvalidQueryError,
@@ -19,7 +20,16 @@ from care_im_wrapper.data.exceptions import (
     NoDataError,
     PermissionDeniedError,
 )
-from care_im_wrapper.messaging.registry import get_interactive_body_char_limit, get_max_chars, send_message
+from care_im_wrapper.documents.delivery import build_document_message
+from care_im_wrapper.documents.exceptions import DocumentUnavailableError
+from care_im_wrapper.documents.service import build_document_url, get_or_create_document_link
+from care_im_wrapper.messaging.registry import (
+    get_interactive_body_char_limit,
+    get_max_chars,
+    get_max_interactive_rows,
+    get_max_reply_buttons,
+    send_message,
+)
 from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.settings import plugin_settings
 
@@ -36,6 +46,22 @@ def _menu_rows(menu: dict[str, Any]) -> list[dict[str, str]]:
 def _menu_text(rows: list[dict[str, str]]) -> str:
     """Renders menu rows as a numbered plain-text fallback for non-interactive display."""
     return "\n".join(f"{r['id']}. {r['title']}" for r in rows)
+
+
+def _parse_selection_index(choice: str, prefix: str, *, prefixed_base: int) -> int | None:
+    """Resolves a selection reply to a 0-based index into the offered list, or None if it
+    doesn't parse. Handles both an interactive id (``<prefix><n>``, where ``prefixed_base``
+    is that id's own base) and the plain-text fallback (a bare 1-based digit). Callers still
+    range-check the result against their own candidate list.
+    """
+    if choice.startswith(prefix):
+        try:
+            return int(choice.removeprefix(prefix)) - prefixed_base
+        except ValueError:
+            return None
+    if choice.isdigit():
+        return int(choice) - 1
+    return None
 
 
 def run_state_machine(phone_number: str, text: str, channel: str) -> None:
@@ -56,6 +82,7 @@ def run_state_machine(phone_number: str, text: str, channel: str) -> None:
             ConversationSession.State.AUTHENTICATED: _handle_authenticated,
             ConversationSession.State.AWAITING_PATIENT_SEARCH: _handle_awaiting_patient_search,
             ConversationSession.State.SELECTING_PATIENT: _handle_selecting_patient,
+            ConversationSession.State.SELECTING_DOCUMENT: _handle_selecting_document,
         }
         handler = dispatch.get(session.state)  # pyright: ignore[reportArgumentType]
         if handler:
@@ -109,7 +136,6 @@ def _handle_awaiting_yob(session: ConversationSession, phone_number: str, text: 
         return
 
     if len(shortlist) == 1:
-        # Exactly one match -> authenticate immediately
         match = shortlist[0]
         session.authenticate(
             user_type=match["user_type"],
@@ -129,21 +155,10 @@ def _handle_awaiting_yob(session: ConversationSession, phone_number: str, text: 
 def _handle_ambiguous(session: ConversationSession, phone_number: str, text: str, channel: str) -> None:
     choice = text.strip()
 
-    if choice.startswith("candidate_"):
-        try:
-            index = int(choice.removeprefix("candidate_")) - 1
-        except ValueError:
-            send_message(channel, phone_number, _msg("invalid_choice"))
-            return
-    elif choice.isdigit():
-        # plain-text fallback path (non-interactive provider or typed digit)
-        index = int(choice) - 1
-    else:
-        send_message(channel, phone_number, _msg("invalid_choice"))
-        return
-
+    # candidate_ ids are 1-based (candidate_1 is the first row).
+    index = _parse_selection_index(choice, "candidate_", prefixed_base=1)
     candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore[reportAssignmentType]
-    if index < 0 or index >= len(candidates):
+    if index is None or not (0 <= index < len(candidates)):
         send_message(channel, phone_number, _msg("invalid_choice"))
         return
 
@@ -178,7 +193,7 @@ def _handle_authenticated(session: ConversationSession, phone_number: str, text:
         send_message(channel, phone_number, _msg("invalid_choice"))
         return
 
-    label, fetcher, renderer = entry
+    label, fetcher, renderer, document_resolver = entry
 
     if fetcher is None:
         session.state = ConversationSession.State.AWAITING_PATIENT_SEARCH
@@ -190,11 +205,17 @@ def _handle_authenticated(session: ConversationSession, phone_number: str, text:
         data = fetcher(actor, session)
         renderer_msg = renderer(data, get_max_chars(channel))
 
+        if document_resolver is not None and _enter_document_selection(
+            session, choice, data, renderer, phone_number, channel
+        ):
+            return
+
+        summary = renderer_msg.text
         menu_rows = _menu_rows(menu)
 
         greeting = _msg("choose_option")
         menu_items_text = _menu_text(menu_rows)
-        full_text = f"{renderer_msg.text}\n\n{greeting}\n\n{menu_items_text}"
+        full_text = f"{summary}\n\n{greeting}\n\n{menu_items_text}"
 
         interactive_payload = InteractivePayload(
             type=InteractiveType.LIST,
@@ -205,18 +226,19 @@ def _handle_authenticated(session: ConversationSession, phone_number: str, text:
 
         limit = get_interactive_body_char_limit(channel)
 
-        if len(renderer_msg.text) + len(greeting) > limit:
+        if len(summary) + len(greeting) > limit:
             # Fallback: Send data as plain text, then menu separately.
-            send_message(channel, phone_number, OutboundMessage(text=renderer_msg.text))
-            send_message(channel, phone_number, OutboundMessage(text=greeting, interactive=interactive_payload))
+            send_message(channel, phone_number, OutboundMessage(text=summary))
+            send_message(
+                channel, phone_number, OutboundMessage(text=greeting, interactive=interactive_payload), pace=False
+            )
         else:
             # Single message: data + greeting in interactive body (avoiding redundant menu list)
             interactive_payload = InteractivePayload(
                 type=interactive_payload.type,
-                body=f"{renderer_msg.text}\n\n{greeting}",
+                body=f"{summary}\n\n{greeting}",
                 action_data=interactive_payload.action_data,
                 button_label=interactive_payload.button_label,
-                header=interactive_payload.header,
                 footer=interactive_payload.footer,
             )
             send_message(channel, phone_number, OutboundMessage(text=full_text, interactive=interactive_payload))
@@ -288,7 +310,7 @@ def _handle_awaiting_patient_search(session: ConversationSession, phone_number: 
     plain_options = [f"{r['name']} — {r['phone_number']}" for r in results]
     msg = render_patient_search_results(prompt, plain_options, get_max_chars(channel))
 
-    if len(results) <= 3:
+    if len(results) <= get_max_reply_buttons(channel):
         buttons = [{"id": f"patient_{i}", "title": r["name"]} for i, r in enumerate(results)]
         interactive = InteractivePayload(
             type=InteractiveType.REPLY_BUTTONS,
@@ -312,21 +334,10 @@ def _handle_awaiting_patient_search(session: ConversationSession, phone_number: 
 def _handle_selecting_patient(session: ConversationSession, phone_number: str, text: str, channel: str) -> None:
     choice = text.strip()
 
-    if choice.startswith("patient_"):
-        try:
-            index = int(choice.removeprefix("patient_"))
-        except ValueError:
-            send_message(channel, phone_number, _msg("invalid_choice"))
-            return
-    elif choice.isdigit():
-        # plain-text fallback path — numbered_list() uses 1-based display
-        index = int(choice) - 1
-    else:
-        send_message(channel, phone_number, _msg("invalid_choice"))
-        return
-
+    # patient_ ids are 0-based (patient_0 is the first row).
+    index = _parse_selection_index(choice, "patient_", prefixed_base=0)
     candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore[reportAssignmentType]
-    if index < 0 or index >= len(candidates):
+    if index is None or not (0 <= index < len(candidates)):
         send_message(channel, phone_number, _msg("invalid_choice"))
         return
 
@@ -343,8 +354,148 @@ def _handle_selecting_patient(session: ConversationSession, phone_number: str, t
     )
 
 
+def _enter_document_selection(
+    session: ConversationSession,
+    menu_key: str,
+    records: Any,
+    renderer: Any,
+    phone_number: str,
+    channel: str,
+) -> bool:
+    """Offers `records` as a pick-list and parks the session in SELECTING_DOCUMENT.
+
+    Returns False without sending or touching state when no record is selectable, so the
+    caller falls back to its normal text reply rather than an empty pick-list.
+
+    `renderer` is re-run over just the offered subset rather than reusing the caller's
+    already-rendered text: send_message degrades to plain text whenever the interactive
+    send fails, and a fallback listing more records than the session holds lets the user
+    pick a number that resolves to nothing.
+    """
+    # One row is spent on "Back", so the provider's list limit leaves this many records.
+    max_records = get_max_interactive_rows(channel) - 1
+    # Filter before slicing: slicing first would leave the surviving rows at indices that
+    # no longer line up with the positions the user sees, and pick the wrong document.
+    selectable = [record for record in records if getattr(record, "external_id", "")][:max_records]
+    rows = [
+        {
+            "external_id": record.external_id,
+            "title": record.name,
+            "description": f"{record.date} ({record.status})",
+            "menu_key": menu_key,
+        }
+        for record in selectable
+    ]
+    if not rows:
+        return False
+
+    session.candidates = rows
+    session.state = ConversationSession.State.SELECTING_DOCUMENT
+    session.save(update_fields=["state", "candidates"])
+
+    prompt = _msg("select_document_prompt")
+    interactive_rows = [
+        {"id": f"document_{i}", "title": row["title"], "description": row["description"]} for i, row in enumerate(rows)
+    ]
+    interactive_rows.append({"id": "0", "title": _msg("back")})
+
+    full_text = f"{renderer(selectable, get_max_chars(channel)).text}\n\n{prompt}"
+    # Over the body limit send_message degrades to plain text, which would drop the rows.
+    body = full_text if len(full_text) <= get_interactive_body_char_limit(channel) else prompt
+    send_message(
+        channel,
+        phone_number,
+        OutboundMessage(
+            text=full_text,
+            interactive=InteractivePayload(
+                type=InteractiveType.LIST,
+                body=body,
+                button_label=_msg("select_document"),
+                action_data=[{"title": _msg("documents_title"), "rows": interactive_rows}],
+            ),
+        ),
+    )
+    return True
+
+
+def _handle_selecting_document(session: ConversationSession, phone_number: str, text: str, channel: str) -> None:
+    choice = text.strip()
+
+    actor = resolve_actor(session)
+    if actor is None:
+        session.logout()
+        send_message(channel, phone_number, _msg("session_expired"))
+        return
+
+    def _return_to_menu(prefix: str | None = None, pace: bool = True) -> None:
+        session.state = ConversationSession.State.AUTHENTICATED
+        session.candidates = []
+        session.save(update_fields=["state", "candidates"])
+        _send_main_menu(phone_number, str(session.user_type), channel=channel, prefix=prefix, pace=pace)
+
+    if choice == "0":
+        _return_to_menu()
+        return
+
+    # document_ ids are 0-based (document_0 is the first row).
+    index = _parse_selection_index(choice, "document_", prefixed_base=0)
+    candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore[reportAssignmentType]
+    if index is None or not (0 <= index < len(candidates)):
+        send_message(channel, phone_number, _msg("invalid_choice"))
+        return
+
+    selected = candidates[index]
+    menu = _STAFF_MENU if session.user_type == ConversationSession.UserType.STAFF.value else _PATIENT_MENU
+    entry = menu.get(selected["menu_key"])
+    if entry is None:
+        logger.error("_handle_selecting_document: stale menu_key %s in session candidates", selected["menu_key"])
+        _return_to_menu(prefix=_msg("fetch_error"))
+        return
+    _label, _fetcher, _renderer, document_resolver = entry
+    if document_resolver is None:
+        logger.error("_handle_selecting_document: menu entry %s has no document resolver", selected["menu_key"])
+        _return_to_menu(prefix=_msg("fetch_error"))
+        return
+
+    try:
+        patient = resolve_target_patient(actor, session)
+        document_request = document_resolver(patient, selected["external_id"])
+        if document_request is None:
+            _return_to_menu(prefix=_msg("document_unavailable"))
+            return
+        link = get_or_create_document_link(actor, patient, document_request, provider=channel)
+    except PermissionDeniedError:
+        _return_to_menu(prefix=_msg("permission_denied"))
+        return
+    except MissingContextError as exc:
+        _return_to_menu(prefix=str(exc))
+        return
+    except DocumentUnavailableError:
+        logger.warning("_handle_selecting_document: document unavailable for %s", selected["external_id"])
+        _return_to_menu(prefix=_msg("document_unavailable"))
+        return
+
+    # Send just the document and stay in the pick-list: the user can pick another record or
+    # send "0" to go back. Re-sending the main menu here duplicates the existing Back option
+    # and is confusing right after a document.
+    send_message(
+        channel,
+        phone_number,
+        build_document_message(
+            f"{selected['title']}\n\n{_msg('document_text')}",
+            build_document_url(link),
+            footer=_msg("document_footer"),
+        ),
+    )
+
+
 def _send_main_menu(
-    phone_number: str, user_type: str, channel: str, name: str | None = None, prefix: str | None = None
+    phone_number: str,
+    user_type: str,
+    channel: str,
+    name: str | None = None,
+    prefix: str | None = None,
+    pace: bool = True,
 ) -> None:
     menu = _STAFF_MENU if user_type == ConversationSession.UserType.STAFF.value else _PATIENT_MENU
 
@@ -370,7 +521,7 @@ def _send_main_menu(
             action_data=[{"title": _msg("menu_title"), "rows": rows}],
         ),
     )
-    send_message(channel, phone_number, msg)
+    send_message(channel, phone_number, msg, pace=pace)
 
 
 def _send_candidate_menu(phone_number: str, candidates: list[dict[str, Any]], channel: str) -> None:
@@ -378,7 +529,7 @@ def _send_candidate_menu(phone_number: str, candidates: list[dict[str, Any]], ch
     plain_lines = [f"{i + 1}. {c['full_name']} ({c['user_type'].capitalize()})" for i, c in enumerate(candidates)]
     plain_text = prompt + "\n\n" + "\n".join(plain_lines)
 
-    if len(candidates) <= 3:
+    if len(candidates) <= get_max_reply_buttons(channel):
         buttons = [{"id": f"candidate_{i + 1}", "title": c["full_name"]} for i, c in enumerate(candidates)]
         interactive = InteractivePayload(
             type=InteractiveType.REPLY_BUTTONS,

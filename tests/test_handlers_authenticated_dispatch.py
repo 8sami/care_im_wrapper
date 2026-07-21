@@ -72,7 +72,7 @@ class HandleAuthenticatedMenuDispatchTests(TestCase):
     @patch("care_im_wrapper.conversation.handlers.send_message")
     def test_entry_with_none_fetcher_moves_to_awaiting_patient_search(self, mock_send, mock_resolve_actor):
         mock_resolve_actor.return_value = _make_actor()
-        fake_entry = {"7": ("Patient lookup", None, None)}
+        fake_entry = {"7": ("Patient lookup", None, None, None)}
 
         with patch.dict("care_im_wrapper.conversation.handlers._PATIENT_MENU", fake_entry, clear=True):
             _handle_authenticated(self.session, PHONE, "7", CHANNEL)
@@ -95,7 +95,7 @@ class HandleAuthenticatedExceptionBranchTests(TestCase):
     def _patch_menu_with_fetcher(self, side_effect):
         fetcher = MagicMock(side_effect=side_effect)
         renderer = MagicMock()
-        entry = {"1": ("Test Label", fetcher, renderer)}
+        entry = {"1": ("Test Label", fetcher, renderer, None)}
         return patch.dict("care_im_wrapper.conversation.handlers._PATIENT_MENU", entry, clear=True), fetcher, renderer
 
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")

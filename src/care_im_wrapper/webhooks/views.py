@@ -17,9 +17,6 @@ from care_im_wrapper.webhooks.exceptions import (
 
 @method_decorator(csrf_exempt, name="dispatch")
 class WebhookView(View):
-    def dispatch(self, *args, **kwargs):
-        return super().dispatch(*args, **kwargs)
-
     def get(self, request, *args, **kwargs) -> HttpResponse:
         return self.handle_challenge(request)
 

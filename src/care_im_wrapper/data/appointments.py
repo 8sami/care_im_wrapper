@@ -45,6 +45,11 @@ def fetch_appointments(actor: Actor, session: ConversationSession) -> list[Appoi
         if record:
             appointment_records.append(record)
 
+    # _extract_booking_info drops bookings with no usable slot, so a non-empty page can
+    # still yield nothing renderable -- without this the user gets a bare header and no rows.
+    if not appointment_records:
+        raise NoDataError
+
     return appointment_records
 
 

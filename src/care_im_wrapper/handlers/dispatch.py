@@ -28,6 +28,22 @@ class NotificationRecipientSpec:
     phone_number: str
 
 
+def track_previous_status(instance: Model, **kwargs: Any) -> None:
+    """`pre_save` receiver stashing the pre-save `status` on the instance, so the paired
+    `post_save` receiver can fire only on an actual transition. Connect it per model:
+
+        pre_save.connect(track_previous_status, sender=TokenBooking)
+
+    Reads `None` for an unsaved instance.
+    """
+    if instance.pk is None:
+        instance._previous_status = None  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
+    else:
+        instance._previous_status = (  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
+            type(instance).objects.filter(pk=instance.pk).values_list("status", flat=True).first()  # pyright: ignore[reportAttributeAccessIssue]
+        )
+
+
 def get_active_trigger(slug: str) -> NotificationTrigger | None:
     trigger = NotificationTrigger.objects.filter(slug=slug, is_active=True).first()
     if trigger is None:
@@ -64,6 +80,12 @@ def fire_notification_event(
     """Shared entry point for signal handlers: resolves trigger/channel/template, creates event + recipient."""
     trigger = get_active_trigger(trigger_slug)
     if trigger is None:
+        return None
+
+    if not recipient.phone_number:
+        # A recipient with no number can never be delivered and would only burn the dispatch
+        # retry budget failing at send time. Skip it here instead.
+        logger.info("fire_notification_event: skipping %s, recipient has no phone number", trigger_slug)
         return None
 
     channel = resolve_channel(recipient.phone_number)

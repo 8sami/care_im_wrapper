@@ -44,6 +44,8 @@ def on_meta_message(*, payload: dict[str, Any], channel: str, **kwargs: Any) -> 
         countdown=plugin_settings.DEBOUNCE_SECONDS,
     )
 
+    # Outlive the task's own debounce countdown by a small margin, so a rapid follow-up
+    # message can still find this task's id to revoke it before it fires.
     cache.set(pending_task_key, result.id, timeout=plugin_settings.DEBOUNCE_SECONDS + 2)
 
 

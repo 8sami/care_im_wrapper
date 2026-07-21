@@ -36,7 +36,22 @@ def resolve_target_patient(actor, session):
     except Patient.DoesNotExist:
         raise MissingContextError("Selected patient not found.") from None
 
-    if not AuthorizationController.call("can_view_patient_obj", actor.instance, patient):
-        raise PermissionDeniedError
+    authorize_patient_access(actor, patient)
 
     return patient
+
+
+def authorize_patient_access(actor, patient) -> None:
+    """The identity/RBAC scope resolve_target_patient enforces, for callers that already
+    have a resolved Patient rather than a session.
+
+    A patient actor is only authorized for their own record; a staff actor goes through
+    can_view_patient_obj. Raises PermissionDeniedError on either failure.
+    """
+    if actor.user_type == ConversationSession.UserType.PATIENT.value:
+        if patient.id != actor.instance.id:
+            raise PermissionDeniedError
+        return
+
+    if not AuthorizationController.call("can_view_patient_obj", actor.instance, patient):
+        raise PermissionDeniedError

@@ -106,6 +106,52 @@ class TokenBookingContext(SingleObjectContextBuilder):
     }
 
 
+class ServiceRequestContext(_NestedContext):
+    title = Field(
+        display="Service request name",
+        preview_value="Complete Blood Count",
+        description="Name of the service request the diagnostic report fulfills",
+    )
+    created_date = Field(
+        display="Service request created at",
+        field_type="datetime",
+        preview_value="2026-07-19T10:30:00+05:30",
+        description="When the service request was created (apply the |date / |time filters to format it)",
+    )
+
+
+class DiagnosticReportContext(SingleObjectContextBuilder):
+    """Context for the ``related_object`` of the document_ready_update trigger."""
+
+    __display_name__ = "Diagnostic report"
+    __description__ = "The diagnostic report that triggered the notification"
+
+    patient = Field(
+        display="Patient",
+        target_context=PatientContext,
+        description="The patient the diagnostic report is for",
+    )
+    service_request = Field(
+        display="Service request",
+        target_context=ServiceRequestContext,
+        description="The service request this diagnostic report fulfills",
+    )
+
+    # Supplied at fire time via variable_values, not derivable from the DiagnosticReport.
+    extra_context_fields: dict[str, Field] = {
+        "document_type": Field(
+            display="Document type",
+            preview_value="diagnostic_report",
+            description="Label of the document being made available",
+        ),
+        "document_url_suffix": Field(
+            display="Document URL suffix",
+            preview_value="preview-token",
+            description="Dynamic suffix filled into the WhatsApp template's URL button",
+        ),
+    }
+
+
 class NotificationContextRegistry:
     """Maps a trigger ``context_slug`` to its context class. Populated by each
     handler module (mirrors ``models.notification._FACILITY_RESOLVERS``)."""

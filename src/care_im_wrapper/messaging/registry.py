@@ -4,7 +4,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
-from care_im_wrapper.conversation.messages import OutboundMessage
+from care_im_wrapper.conversation.messages import OutboundMessage, SentTemplate
 from care_im_wrapper.conversation.template_rendering import merge_variable_values
 from care_im_wrapper.core.rate_limit import is_outbound_rate_limited
 from care_im_wrapper.messaging.exceptions import OutboundRateLimitedError
@@ -20,15 +20,25 @@ logger = logging.getLogger(__name__)
 class MessageSender(Protocol):
     supports_interactive: bool
     supports_templates: bool
-    max_message_chars: int
-    min_send_interval_seconds: int
-    interactive_body_char_limit: int
+
+    # Read-only, so an implementation is free to back these with a property and read its
+    # settings at call time rather than freezing them at import (see WhatsAppClient).
+    @property
+    def max_message_chars(self) -> int: ...
+    @property
+    def min_send_interval_seconds(self) -> int: ...
+    @property
+    def interactive_body_char_limit(self) -> int: ...
+    @property
+    def max_interactive_rows(self) -> int: ...
+    @property
+    def max_reply_buttons(self) -> int: ...
 
     def send_text(self, to: str, body: str) -> str | None: ...
     def send_interactive(self, to: str, msg: OutboundMessage) -> str | None: ...
     def send_template(
         self, to: str, template: NotificationTemplate, related_object: Any, context: dict
-    ) -> str | None: ...
+    ) -> SentTemplate: ...
     def sync_templates(self) -> None: ...
     def validate_variable_mapping_value(self, expr: str) -> list[str]:
         """Provider-specific formatting rules for one variable_mapping expression.
@@ -77,6 +87,22 @@ def get_interactive_body_char_limit(channel: str) -> float:
     return factory().interactive_body_char_limit
 
 
+def get_max_interactive_rows(channel: str) -> int:
+    """Returns the max rows allowed in one interactive list for a given provider."""
+    factory = _PROVIDERS.get(channel)
+    if factory is None:
+        return int(plugin_settings.DEFAULT_MAX_INTERACTIVE_ROWS)
+    return factory().max_interactive_rows
+
+
+def get_max_reply_buttons(channel: str) -> int:
+    """Returns the max reply buttons allowed on one interactive message for a given provider."""
+    factory = _PROVIDERS.get(channel)
+    if factory is None:
+        return int(plugin_settings.DEFAULT_MAX_REPLY_BUTTONS)
+    return factory().max_reply_buttons
+
+
 def get_template_capable_providers() -> list[tuple[str, MessageSender]]:
     """Returns (channel, client) pairs for every registered provider that supports templates."""
     return [
@@ -109,7 +135,7 @@ def resolve_channel(phone_number: str) -> str:
     return get_default_channel()
 
 
-def send_message(channel: str, to: str, msg: OutboundMessage | str) -> str | None:
+def send_message(channel: str, to: str, msg: OutboundMessage | str, *, pace: bool = True) -> str | None:
     """
     Single outbound entry point for all new code — use this for menus and navigation.
     Capability-based dispatch: if the provider supports interactive AND msg.interactive
@@ -118,6 +144,11 @@ def send_message(channel: str, to: str, msg: OutboundMessage | str) -> str | Non
     Raises OutboundRateLimitedError if the provider's minimum per-recipient send
     interval hasn't elapsed yet -- callers running as a Celery task should catch this
     and retry after get_min_send_interval_seconds(channel) rather than attempt the send.
+
+    Pass ``pace=False`` for the 2nd+ message of a single turn, where the provider's shape
+    forced one reply to be split. Throttling mid-turn aborts the turn after earlier messages
+    are already delivered, the caller's transaction rolls the session back as though they
+    weren't, and the retry replays every send.
     """
     if isinstance(msg, str):
         msg = OutboundMessage(text=msg)
@@ -126,7 +157,7 @@ def send_message(channel: str, to: str, msg: OutboundMessage | str) -> str | Non
     if factory is None:
         logger.error("messaging.send_message: no provider registered for channel %s", channel)
         return None
-    if is_outbound_rate_limited(channel, to):
+    if pace and is_outbound_rate_limited(channel, to):
         raise OutboundRateLimitedError(f"Outbound send to {to} on channel {channel} is rate-limited.")
     client = factory()
     if client.supports_interactive and msg.interactive is not None:
@@ -148,14 +179,14 @@ def send_template_message(
     related_object: Any,
     event_variable_values: dict | None,
     recipient_variable_overrides: dict | None,
-) -> str | None:
+) -> SentTemplate:
     factory = _PROVIDERS.get(channel)
     if factory is None:
         logger.error("messaging.send_template_message: no provider registered for channel %s", channel)
-        return None
+        return SentTemplate(tracking_id=None)
     client = factory()
     if not client.supports_templates:
         logger.error("messaging.send_template_message: provider %s does not support templates", channel)
-        return None
+        return SentTemplate(tracking_id=None)
     context = merge_variable_values(event_variable_values, recipient_variable_overrides)
     return client.send_template(to, template, related_object, context)

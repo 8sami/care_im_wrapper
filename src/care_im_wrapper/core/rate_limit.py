@@ -3,19 +3,18 @@ from django.core.cache import cache
 from care_im_wrapper.settings import plugin_settings
 
 
-def is_rate_limited(phone_number: str) -> bool:
+def is_rate_limited(subject: str, *, window: int | None = None, max_hits: int | None = None) -> bool:
     """
-    Returns True if phone_number has exceeded MAX_MESSAGES in the current window.
+    Returns True if `subject` has exceeded `max_hits` within `window` seconds.
     Uses a fixed-window counter in Django's cache backend.
-    Increments the counter on each call; caller should only call this once per message.
-    """
-    window = plugin_settings.RATE_LIMIT_WINDOW_SECONDS
-    max_messages = plugin_settings.RATE_LIMIT_MAX_MESSAGES
-    key = f"rate_limit:{phone_number}"
+    Increments the counter on each call; caller should only call this once per event.
 
-    # Use a simple counter with a fixed window.
-    # We use cache.incr which is atomic in Redis.
-    # For LocMemCache, it's also fine for single-process.
+    Defaults are the *inbound message* limits; callers limiting anything else must pass
+    their own, so tuning chat throughput doesn't silently retune unrelated endpoints.
+    """
+    window = int(plugin_settings.RATE_LIMIT_WINDOW_SECONDS) if window is None else window
+    max_messages = int(plugin_settings.RATE_LIMIT_MAX_MESSAGES) if max_hits is None else max_hits
+    key = f"rate_limit:{subject}"
 
     if cache.add(key, 1, timeout=window):
         return False

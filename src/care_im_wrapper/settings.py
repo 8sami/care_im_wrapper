@@ -119,6 +119,8 @@ DEFAULTS = {
     # provider -- not derived from any specific provider's actual limits.
     "DEFAULT_MAX_MESSAGE_CHARS": 4096,
     "DEFAULT_MIN_SEND_INTERVAL_SECONDS": 0,
+    "DEFAULT_MAX_INTERACTIVE_ROWS": 10,
+    "DEFAULT_MAX_REPLY_BUTTONS": 3,
     "WHATSAPP_MIN_SEND_INTERVAL_SECONDS": 6,
     "WHATSAPP_DEFAULT_LANGUAGE_CODE": "en_US",  # used when a template has no language_code set
     "WHATSAPP_HTTP_TIMEOUT_SECONDS": 10,
@@ -133,14 +135,22 @@ DEFAULTS = {
     "RATE_LIMIT_WINDOW_SECONDS": 60,  # rolling window for inbound rate limiting
     "RATE_LIMIT_MAX_MESSAGES": 10,  # max inbound messages per window per phone number
     "DEBOUNCE_SECONDS": 2,  # delay before processing; resets on each new message in the burst
-    "TASK_EXECUTION_BUFFER_SECONDS": 10,  # margin to allow network timeout before task kill
+    # Hard time limit for one inbound turn. A turn can send several messages, so this must
+    # cover multiple provider round trips -- a mid-turn kill replays already-sent messages.
+    "INBOUND_TASK_TIME_LIMIT_SECONDS": 60,
     "TASK_MAX_RETRIES": 3,  # max celery retry attempts for transient failures
     "TASK_RETRY_DELAY_SECONDS": 60,  # seconds between celery retries
+    # How long a dispatch claim is honoured before the sweep reclaims it. Must stay well above
+    # a full retry budget (TASK_MAX_RETRIES * TASK_RETRY_DELAY_SECONDS = 180s) to avoid a
+    # parallel re-dispatch of a task that is merely retrying.
+    "DISPATCH_CLAIM_STALE_SECONDS": 900,
     "MESSAGE_DEDUP_TIMEOUT_SECONDS": 300,  # how long to remember a seen raw message ID (Meta replays up to ~5 min)
     "DATA_CACHE_TIMEOUT_SECONDS": 90,
     "PHONE_NUMBER_MASK_PREFIX_LEN": 4,
     "PHONE_NUMBER_MASK_SUFFIX_LEN": 3,
     "WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT": 1024,
+    "WHATSAPP_LIST_ROW_LIMIT": 10,  # max rows across all sections of one interactive list
+    "WHATSAPP_REPLY_BUTTON_LIMIT": 3,  # max reply buttons on one interactive message
     # Fallback channel when a recipient has no prior ConversationSession to consult.
     "NOTIFICATION_DEFAULT_PROVIDER": Provider.WHATSAPP.value,
     # Beat sweep interval (seconds); real-time dispatch happens via on_commit, this is a safety net.
@@ -169,7 +179,29 @@ DEFAULTS = {
             "location_or_link": "{{ object.token_slot.resource.facility.name }}",
             "status": "{{ status }}",
         },
+        "document_ready_update": {
+            "patient_name": "{{ object.patient.name }}",
+            "document_type": "{{ document_type }}",
+            # Resolves to the link's path segment; whatsapp.py prepends the base URL.
+            "url_suffix": "{{ document_url_suffix }}",
+        },
     },
+    # How recently an encounter report must have been generated to be reused instead of
+    # rendered again. Short on purpose: the report is a clinical snapshot, so this exists to
+    # collapse repeat requests, not to cache the document.
+    "ENCOUNTER_REPORT_REUSE_SECONDS": 15 * 60,
+    # Per-token throttle on the public document redirect. Distinct from the inbound-chat
+    # limits above: a patient legitimately reopens a link several times, and these two
+    # limits must be tunable independently.
+    "DOCUMENT_LINK_RATE_LIMIT_WINDOW_SECONDS": 60,
+    "DOCUMENT_LINK_RATE_LIMIT_MAX": 30,
+    # Validity window for a DocumentLink token.
+    "DOCUMENT_LINK_TTL_SECONDS": 60 * 60 * 24 * 7,  # 7 days
+    # Presign TTL per request -- short, since the token is the durable capability.
+    "DOCUMENT_PRESIGN_TTL_SECONDS": 60 * 5,  # 5 minutes
+    # Public origin the token route is served from -- scheme + host, no path, e.g.
+    # "https://care.example.org". Empty falls back to core's BACKEND_DOMAIN.
+    "DOCUMENT_LINK_BASE_URL": "",
 }
 
 

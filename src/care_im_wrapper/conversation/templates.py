@@ -36,6 +36,15 @@ _MESSAGES: dict[str, str] = {
     "patients_title": "Patients",
     "select": "Select",
     "accounts_title": "Accounts",
+    # Document selection (pull path)
+    "select_document_prompt": "Which one would you like the document for?",
+    "select_document": "Select",
+    "documents_title": "Reports",
+    "view_document": "View document",
+    "document_footer": "To pick another or go back, reopen the list above.",
+    "document_text": "Your document is ready to view",
+    "document_unavailable": "That document isn't available yet.",
+    "back": "Back to menu",
     # Per-record line templates
     "medication_line": "*{name}* ({status})",
     "medication_dosage": "Dosage: _{dosage}_",

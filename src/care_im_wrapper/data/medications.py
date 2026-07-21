@@ -24,7 +24,6 @@ def fetch_medications(actor: Actor, session: ConversationSession) -> list[Medica
         .exclude(status=ENTERED_IN_ERROR_STATUS)
         .select_related("requested_product")
     )
-    # TODO(product): nutritional_product/consumable exposure pending mentor sign-off.
     records = queryset.order_by("-created_date")[: plugin_settings.DATA_FETCH_LIMIT]
     if not records:
         raise NoDataError
@@ -34,7 +33,6 @@ def fetch_medications(actor: Actor, session: ConversationSession) -> list[Medica
         status = humanize_choice(getattr(med, "status", None))
         name = _extract_medication_name(med)
 
-        # Extract dosage if present
         dosage = None
         if hasattr(med, "dosage_instruction") and med.dosage_instruction:
             instructions = med.dosage_instruction
@@ -42,12 +40,11 @@ def fetch_medications(actor: Actor, session: ConversationSession) -> list[Medica
                 parts = []
                 for inst in instructions:
                     if isinstance(inst, dict):
-                        # 1. Capture display/text
                         display_val = inst.get("display") or inst.get("text")
                         if display_val:
                             parts.append(display_val)
                         else:
-                            # If no text/display, check for timing/duration info
+                            # No free-text instruction; fall back to timing/duration.
                             timing = inst.get("timing", {})
                             if isinstance(timing, dict):
                                 repeat = timing.get("repeat")

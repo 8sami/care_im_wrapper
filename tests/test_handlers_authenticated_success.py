@@ -30,7 +30,7 @@ class HandleAuthenticatedSuccessPathTests(TestCase):
     def _patch_menu(self, renderer_text):
         fetcher = MagicMock(return_value="fake_data")
         renderer = MagicMock(return_value=OutboundMessage(text=renderer_text))
-        entry = {"1": ("Test Label", fetcher, renderer)}
+        entry = {"1": ("Test Label", fetcher, renderer, None)}
         return patch.dict("care_im_wrapper.conversation.handlers._PATIENT_MENU", entry, clear=True)
 
     @patch("care_im_wrapper.conversation.handlers.get_max_chars", return_value=4096)

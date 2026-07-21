@@ -26,23 +26,25 @@ from care_im_wrapper.settings import plugin_settings
 def _truncate(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
-    return text[: max_chars - plugin_settings.WHATSAPP_TRUNCATE_RESERVE_CHARS] + "\n... (truncated)"
+    # max(0, ...): a max_chars smaller than the reserve would otherwise make the slice
+    # negative and silently return the *tail* of the message instead of its head.
+    keep = max(0, max_chars - int(plugin_settings.WHATSAPP_TRUNCATE_RESERVE_CHARS))
+    return text[:keep] + "\n... (truncated)"
 
 
-def _numbered_block(header: str, lines: list[str], max_chars: int) -> str:
-    """Assembles a numbered list into a single plain-text string."""
-    parts = [header, ""]
-    for i, line in enumerate(lines, start=1):
-        parts.append(f"{i}. {line}")
+def numbered_block(header: str, lines: list[str], max_chars: int) -> str:
+    """A header, a blank line, then `lines` numbered from 1, truncated to `max_chars`.
+
+    The 1-based numbering here is the contract the handlers' plain-text fallback parsing
+    relies on (they subtract 1 from a typed digit), so don't change it in isolation.
+    """
+    parts = [header, "", *(f"{i}. {line}" for i, line in enumerate(lines, start=1))]
     return _truncate("\n".join(parts), max_chars)
 
 
 def render_patient_search_results(prompt: str, results: list[str], max_chars: int) -> OutboundMessage:
     """Assembles a numbered list for patient search fallbacks with truncation."""
-    parts = [prompt, ""]
-    for i, line in enumerate(results, start=1):
-        parts.append(f"{i}. {line}")
-    return OutboundMessage(text=_truncate("\n".join(parts), max_chars))
+    return OutboundMessage(text=numbered_block(prompt, results, max_chars))
 
 
 def render_medications(records: list[MedicationRecord], max_chars: int) -> OutboundMessage:
@@ -55,7 +57,7 @@ def render_medications(records: list[MedicationRecord], max_chars: int) -> Outbo
         if r.note:
             line += f"\n   Note: {r.note}"
         lines.append(line)
-    return OutboundMessage(text=_numbered_block(header, lines, max_chars))
+    return OutboundMessage(text=numbered_block(header, lines, max_chars))
 
 
 def render_encounters(records: list[EncounterRecord], max_chars: int) -> OutboundMessage:
@@ -64,7 +66,7 @@ def render_encounters(records: list[EncounterRecord], max_chars: int) -> Outboun
         _msg("encounter_line", date=r.date, facility=r.facility, status=r.status, encounter_class=r.encounter_class)
         for r in records
     ]
-    return OutboundMessage(text=_numbered_block(header, lines, max_chars))
+    return OutboundMessage(text=numbered_block(header, lines, max_chars))
 
 
 def render_appointments(records: list[AppointmentRecord], max_chars: int) -> OutboundMessage:
@@ -74,19 +76,19 @@ def render_appointments(records: list[AppointmentRecord], max_chars: int) -> Out
         main = _msg("appointment_line", practitioner=r.practitioner, location=r.location)
         detail = _msg("appointment_detail", status=r.status, date=r.date, time_slot=r.time_slot)
         lines.append(f"{main}\n   {detail}")
-    return OutboundMessage(text=_numbered_block(header, lines, max_chars))
+    return OutboundMessage(text=numbered_block(header, lines, max_chars))
 
 
 def render_lab_reports(records: list[LabReportRecord], max_chars: int) -> OutboundMessage:
     header = _msg("lab_reports_header")
     lines = [_msg("lab_report_line", name=r.name, date=r.date, status=r.status) for r in records]
-    return OutboundMessage(text=_numbered_block(header, lines, max_chars))
+    return OutboundMessage(text=numbered_block(header, lines, max_chars))
 
 
 def render_procedures(records: list[ProcedureRecord], max_chars: int) -> OutboundMessage:
     header = _msg("procedures_header")
     lines = [_msg("procedure_line", name=r.name, date=r.date, status=r.status) for r in records]
-    return OutboundMessage(text=_numbered_block(header, lines, max_chars))
+    return OutboundMessage(text=numbered_block(header, lines, max_chars))
 
 
 def render_summary(summary: PatientSummary, max_chars: int) -> OutboundMessage:

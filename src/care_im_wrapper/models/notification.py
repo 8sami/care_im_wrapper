@@ -191,6 +191,10 @@ class NotificationRecipient(BaseModel):
     variable_overrides = models.JSONField(null=True, blank=True)
     # Pure cache written as a side effect of inserting a NotificationStatus row; None = not dispatched.
     latest_status = models.CharField(max_length=20, null=True, blank=True, choices=NotificationStatusState.choices)
+    # Dispatch claim: set by the worker before sending so the sweep won't re-queue a recipient
+    # already in flight (latest_status is set only after success, too late to be the claim).
+    # A stale claim from a dead worker is reclaimed by the sweep.
+    dispatch_started_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         app_label = "care_im_wrapper"
@@ -198,6 +202,8 @@ class NotificationRecipient(BaseModel):
             models.Index(fields=["tracking_id"]),
             models.Index(fields=["recipient_content_type", "recipient_object_id"]),
             models.Index(fields=["event", "latest_status"]),
+            # Drives the sweep's "unsent and unclaimed (or stale)" scan.
+            models.Index(fields=["latest_status", "dispatch_started_at"]),
         ]
 
 
