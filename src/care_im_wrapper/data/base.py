@@ -9,12 +9,12 @@ from django.utils import timezone
 
 ENTERED_IN_ERROR_STATUS = "entered_in_error"
 
+ACTIVE_MEDICATION_STATUSES = ("active", "on_hold", "draft", "unknown")
+INACTIVE_MEDICATION_STATUSES = ("ended", "completed", "cancelled", "entered_in_error")
+
 
 def humanize_choice(value: str | None) -> str:
-    """
-    Converts a Django TextChoices-style value like 'in_progress' or
-    'A_positive' into 'In Progress' / 'A Positive'.
-    """
+    """Converts a Django TextChoices-style value like 'in_progress' or."""
     if not value:
         return "Not recorded"
     return value.replace("_", " ").title()
@@ -37,12 +37,31 @@ def humanize_encounter_class(value: str | None) -> str:
     return mapping.get(value, value.title())
 
 
+def describe_resource(resource: Any, default: str = "Unknown") -> str:
+    """Names a SchedulableResource for display, e.g. "Ada Lovelace", "Cardiology Location",."""
+    if resource is None:
+        return default
+
+    resource_type = getattr(resource, "resource_type", None)
+
+    if resource_type == "location":
+        name = getattr(getattr(resource, "location", None), "name", None)
+        return f"{name} Location" if name else "Location"
+
+    if resource_type == "healthcare_service":
+        name = getattr(getattr(resource, "healthcare_service", None), "name", None)
+        return f"{name} HealthcareService" if name else "HealthcareService"
+
+    user = getattr(resource, "user", None)
+    if user is None:
+        return default
+    first_name = getattr(user, "first_name", "") or ""
+    last_name = getattr(user, "last_name", "") or ""
+    return f"{first_name} {last_name}".strip() or default
+
+
 def humanize_date(value: datetime | date | str | None) -> str:
-    """
-    Converts a raw date/datetime into a short human-readable date.
-    datetimes are localized first; plain dates have no timezone to convert.
-    Never shows microseconds or UTC offset to the end user.
-    """
+    """Converts a raw date/datetime into a short human-readable date."""
     if not value:
         return "Not recorded"
     if isinstance(value, str):
@@ -56,10 +75,7 @@ def humanize_date(value: datetime | date | str | None) -> str:
 
 
 def humanize_time(value: datetime | str | None) -> str:
-    """
-    Converts a raw datetime into a short human-readable time.
-    Never shows microseconds or UTC offset to the end user.
-    """
+    """Converts a raw datetime into a short human-readable time."""
     if not value:
         return "Not recorded"
     if isinstance(value, str):
@@ -71,18 +87,11 @@ def humanize_time(value: datetime | str | None) -> str:
         return str(value)
 
 
-# Bump whenever a cached *Record dataclass shape changes, so entries written by the old
-# code are not served (with missing/renamed fields) for a TTL after deploy.
-_CACHE_SCHEMA_VERSION = 2
+_CACHE_SCHEMA_VERSION = 3
 
 
 def cached_fetch(timeout_seconds: int):
-    """Caches a patient-data fetcher's result per (function, actor, target patient).
-
-    Authorization is re-run on every call, cache hit included: the RBAC check lives in
-    resolve_target_patient, and a cache that answered without it would keep serving a
-    patient's records for a full TTL after the caller's access was revoked.
-    """
+    """Caches a patient-data fetcher's result per (function, actor, target patient)."""
 
     def decorator(fetch_fn):
         @wraps(fetch_fn)
@@ -104,9 +113,12 @@ def cached_fetch(timeout_seconds: int):
 
 
 def _build_cache_key(fn_name: str, actor: Any, session: Any) -> str:
-    """
-    Key must be unique per (function, actor type, actor id, active patient).
-    A collision between two patients' data is a privacy bug.
-    """
+    """Key must be unique per (function, actor type, actor id, active patient, record offset)."""
+    from care_im_wrapper.data.pagination import current_offset
+
     patient_ctx = session.active_patient_external_id or "self"
-    return f"care_im:fetch:v{_CACHE_SCHEMA_VERSION}:{fn_name}:{actor.user_type}:{actor.instance.id}:{patient_ctx}"
+    offset = current_offset(session)
+    return (
+        f"care_im:fetch:v{_CACHE_SCHEMA_VERSION}:{fn_name}:"
+        f"{actor.user_type}:{actor.instance.id}:{patient_ctx}:o{offset}"
+    )

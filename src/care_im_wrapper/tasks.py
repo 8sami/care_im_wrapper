@@ -7,6 +7,7 @@ from typing import Any
 
 from celery import shared_task
 from celery.exceptions import MaxRetriesExceededError
+from django.contrib.contenttypes.models import ContentType
 from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Q
@@ -36,13 +37,16 @@ from care_im_wrapper.messaging.registry import (
     resolve_channel,
     send_template_message,
 )
-from care_im_wrapper.models.notification import NotificationRecipient, NotificationStatus, NotificationStatusState
+from care_im_wrapper.models.notification import (
+    NotificationEvent,
+    NotificationRecipient,
+    NotificationStatus,
+    NotificationStatusState,
+)
 from care_im_wrapper.settings import plugin_settings
 
 logger = logging.getLogger(__name__)
 
-# latest_status only advances up this ranking, so an out-of-order webhook can't regress it.
-# FAILED ranks highest deliberately: a failure reported at any point wins over a read receipt.
 _STATE_ORDER: dict[NotificationStatusState, int] = {
     NotificationStatusState.SENT: 0,
     NotificationStatusState.DELIVERED: 1,
@@ -53,8 +57,6 @@ _STATE_ORDER: dict[NotificationStatusState, int] = {
 # Never succeed on retry -- recorded as failed immediately instead of burning the budget.
 _PERMANENT_SEND_ERRORS = (WhatsAppTemplateNotConfiguredError, WhatsAppBadRequestError)
 
-# NotificationTrigger.slug fired when a finalised diagnostic report is released to a
-# patient. Seeded by migration 0013_seed_document_ready_trigger.
 DOCUMENT_READY_TRIGGER_SLUG = "document_ready_update"
 
 
@@ -72,13 +74,7 @@ def _failure_payload(exc: BaseException, attempt: int) -> dict[str, Any]:
 
 
 def _claim_for_dispatch(recipient_id: int) -> bool:
-    """Takes exclusive ownership of sending this recipient. True if we got it.
-
-    A single conditional UPDATE, so two workers racing for the same recipient cannot both
-    win. `latest_status` cannot serve as the claim because it is only set *after* a send
-    succeeds -- the whole window between picking a recipient up and delivering it is
-    exactly when the periodic sweep used to re-queue it and send the message twice.
-    """
+    """Takes exclusive ownership of sending this recipient. True if we got it."""
     return (
         NotificationRecipient.objects.filter(pk=recipient_id, dispatch_started_at__isnull=True).update(
             dispatch_started_at=timezone.now()
@@ -88,8 +84,7 @@ def _claim_for_dispatch(recipient_id: int) -> bool:
 
 
 def _release_claim(recipient_id: int) -> None:
-    """Hands a recipient back to the sweep without waiting for the claim to go stale.
-    Only for giving up on a still-sendable recipient, never after a terminal outcome."""
+    """Hands a recipient back to the sweep without waiting for the claim to go stale."""
     NotificationRecipient.objects.filter(pk=recipient_id).update(dispatch_started_at=None)
 
 
@@ -116,9 +111,6 @@ def process_inbound_message(
     channel: str,
     raw_id: str | None = None,
 ) -> None:
-    # Only guard against Meta re-delivering the same webhook on the first attempt --
-    # self.retry() re-invokes this exact function for the *same* raw_id, and that must
-    # not be mistaken for a duplicate delivery or every retry path silently no-ops.
     if raw_id and self.request.retries == 0:
         dup_key = f"msg_seen:{raw_id}"
         if not cache.add(dup_key, True, timeout=plugin_settings.MESSAGE_DEDUP_TIMEOUT_SECONDS):
@@ -130,9 +122,6 @@ def process_inbound_message(
     try:
         run_state_machine(phone_number, text, channel)
     except OutboundRateLimitedError as exc:
-        # Proactively paced (see messaging.registry.send_message) -- retry after the
-        # provider's own minimum send interval instead of the generic 60s task delay,
-        # so a burst of inbound messages doesn't trickle out replies for minutes.
         countdown = get_min_send_interval_seconds(channel)
         logger.info("Outbound rate-limited for %s on %s. Retrying in %ss.", phone_number, channel, countdown)
         raise self.retry(exc=exc, countdown=countdown) from exc
@@ -166,9 +155,6 @@ def process_status_update(self, payload: dict[str, Any], channel: str) -> None:
             )
             return
 
-        # One unit: without it a failure after the insert but before the latest_status save
-        # retries the whole task and inserts a second identical status row (there is no
-        # uniqueness constraint on NotificationStatus).
         with transaction.atomic():
             NotificationStatus.objects.create(
                 recipient=recipient,
@@ -202,8 +188,6 @@ def dispatch_notification_recipient(self, recipient_id: int) -> None:
         )
         return
 
-    # Only on the first attempt: a retry is this same task re-entering, and it already owns
-    # the claim it took the first time round.
     if self.request.retries == 0 and not _claim_for_dispatch(recipient_id):
         logger.info(
             "dispatch_notification_recipient: recipient %s is already claimed by another worker, skipping",
@@ -215,9 +199,6 @@ def dispatch_notification_recipient(self, recipient_id: int) -> None:
         try:
             raise self.retry(countdown=get_min_send_interval_seconds(recipient.provider))
         except MaxRetriesExceededError:
-            # Paced out, not failed: hand it back so the sweep can retry it immediately once
-            # the burst clears, rather than dying with a stack trace on a recoverable
-            # condition or making it wait out the stale-claim window.
             logger.info(
                 "dispatch_notification_recipient: recipient %s still paced after %s retries, "
                 "releasing for the periodic sweep",
@@ -242,8 +223,6 @@ def dispatch_notification_recipient(self, recipient_id: int) -> None:
         return
     except Exception as exc:
         logger.exception("dispatch_notification_recipient: send failed for recipient %s", recipient_id)
-        # Record FAILED only once retries are exhausted -- marking it earlier trips the
-        # latest_status guard above, and every scheduled retry returns without sending.
         try:
             raise self.retry(exc=exc) from exc
         except MaxRetriesExceededError:
@@ -286,14 +265,7 @@ def dispatch_notification_recipient(self, recipient_id: int) -> None:
 
 @shared_task
 def notify_document_ready(report_external_id: str) -> None:
-    """Mints a document link for a finalised DiagnosticReport and fires its notification.
-
-    Runs in a worker because locating the document can mean rendering a PDF and uploading
-    it (care.emr.reports.report_utils.generate_and_upload_report). Doing that inline in the
-    post_save signal put a render plus an object-store round trip inside the clinical write
-    that completed the ServiceRequest, and under ATOMIC_REQUESTS a later failure in that
-    request rolled the DocumentLink row back while leaving the uploaded file orphaned.
-    """
+    """Mints a document link for a finalised DiagnosticReport and fires its notification."""
     from care.emr.models.diagnostic_report import DiagnosticReport  # pyright: ignore[reportMissingImports]
 
     report = DiagnosticReport.objects.filter(external_id=report_external_id).select_related("patient").first()
@@ -302,8 +274,6 @@ def notify_document_ready(report_external_id: str) -> None:
         return
 
     patient = report.patient
-    # Resolved here rather than at signal time so the channel reflects the recipient's most
-    # recent session, and so no caller has to know which providers exist.
     provider = resolve_channel(patient.phone_number)
     document_request = DocumentRequest(
         document_type=DIAGNOSTIC_REPORT_DOCUMENT_TYPE,
@@ -314,8 +284,6 @@ def notify_document_ready(report_external_id: str) -> None:
     try:
         link = get_system_document_link(patient, document_request, provider)
     except DocumentUnavailableError:
-        # No notification without a document to point at. Not retried: the usual cause is
-        # an unconfigured encounter_base Template, which a retry cannot fix.
         logger.warning(
             "notify_document_ready: document unavailable for report %s, skipping notification",
             report_external_id,
@@ -348,15 +316,63 @@ def sync_notification_templates(self) -> None:
 
 
 @shared_task
-def dispatch_pending_notification_recipients() -> None:
-    """Safety net for recipients real-time dispatch never delivered.
+def send_appointment_reminders() -> None:
+    """Reminds patients about bookings starting inside the lead window."""
+    from care.emr.models.scheduling.booking import TokenBooking  # pyright: ignore[reportMissingImports]
+    from care.emr.resources.scheduling.slot.spec import BookingStatusChoices  # pyright: ignore[reportMissingImports]
 
-    Picks up the unclaimed, plus anything whose claim has gone stale -- a worker killed
-    between claiming and sending would otherwise leave that recipient permanently
-    unsent, since it is neither claimable nor terminal. The staleness window must stay
-    comfortably longer than a full retry budget (TASK_MAX_RETRIES *
-    TASK_RETRY_DELAY_SECONDS) so a task that is merely retrying is not stolen from.
-    """
+    from care_im_wrapper.handlers.booking import describe_booking_resource
+
+    trigger_slug = plugin_settings.APPOINTMENT_REMINDER_TRIGGER_SLUG
+    now = timezone.now()
+    window_end = now + timedelta(seconds=int(plugin_settings.APPOINTMENT_REMINDER_LEAD_SECONDS))
+
+    bookings = (
+        TokenBooking.objects.filter(
+            status=BookingStatusChoices.booked,
+            token_slot__start_datetime__gte=now,
+            token_slot__start_datetime__lte=window_end,
+        )
+        .select_related(
+            "patient",
+            "token_slot__resource__user",
+            "token_slot__resource__facility",
+        )
+        .order_by("token_slot__start_datetime")
+    )
+    if not bookings:
+        return
+
+    booking_content_type = ContentType.objects.get_for_model(TokenBooking)
+    already_reminded = set(
+        NotificationEvent.objects.filter(
+            trigger__slug=trigger_slug,
+            related_object_content_type=booking_content_type,
+            related_object_id__in=[booking.pk for booking in bookings],
+        ).values_list("related_object_id", flat=True)
+    )
+
+    for booking in bookings:
+        if booking.pk in already_reminded:
+            continue
+        fire_notification_event(
+            trigger_slug=trigger_slug,
+            title=f"Appointment reminder — {booking.external_id}",
+            related_object=booking,
+            recipient=NotificationRecipientSpec(
+                content_object=booking.patient, phone_number=booking.patient.phone_number
+            ),
+            variable_values={
+                "event": "appointment",
+                "event_header": "appointment",
+                "doctor_name": describe_booking_resource(booking),
+            },
+        )
+
+
+@shared_task
+def dispatch_pending_notification_recipients() -> None:
+    """Safety net for recipients real-time dispatch never delivered."""
     stale_cutoff = timezone.now() - timedelta(seconds=int(plugin_settings.DISPATCH_CLAIM_STALE_SECONDS))
     recipients = (
         NotificationRecipient.objects.filter(

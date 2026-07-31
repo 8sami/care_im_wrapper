@@ -17,17 +17,7 @@ env = environ.Env()
 
 
 class PluginSettings:  # pragma: no cover
-    """
-    A settings object that allows plugin settings to be accessed as
-    properties. For example:
-
-        from plugin.settings import plugin_settings
-        print(plugin_settings.API_KEY)
-
-    Any setting with string import paths will be automatically resolved
-    and return the class, rather than the string literal.
-
-    """
+    """Plugin settings, accessed as attributes."""
 
     def __init__(
         self,
@@ -78,12 +68,7 @@ class PluginSettings:  # pragma: no cover
         return self._user_settings
 
     def validate(self) -> None:
-        """
-        This method handles the validation of the plugin settings.
-        It could be overridden to provide custom validation logic.
-
-        the base implementation checks if all the required settings are truthy.
-        """
+        """This method handles the validation of the plugin settings."""
         for setting in self.required_settings:
             if not getattr(self, setting):
                 raise ImproperlyConfigured(
@@ -115,8 +100,6 @@ DEFAULTS = {
     "WHATSAPP_DESCRIPTION_TRUNCATE": 72,
     "DATA_FETCH_LIMIT": 10,
     "PATIENT_SEARCH_MIN_QUERY_LENGTH": 3,  # minimum chars before staff patient lookup runs a query
-    # Fallbacks used only when messaging.registry is asked about a channel with no registered
-    # provider -- not derived from any specific provider's actual limits.
     "DEFAULT_MAX_MESSAGE_CHARS": 4096,
     "DEFAULT_MIN_SEND_INTERVAL_SECONDS": 0,
     "DEFAULT_MAX_INTERACTIVE_ROWS": 10,
@@ -132,23 +115,28 @@ DEFAULTS = {
     "WHATSAPP_APP_SECRET": "",  # Meta app secret for HMAC webhook verification
     "MAX_FAILED_ATTEMPTS": 5,  # failed YOB attempts before the session is locked
     "COOLDOWN_MINUTES": 30,  # duration of the cooldown period
+    "SESSION_IDLE_TIMEOUT_SECONDS": 30 * 60,
     "RATE_LIMIT_WINDOW_SECONDS": 60,  # rolling window for inbound rate limiting
     "RATE_LIMIT_MAX_MESSAGES": 10,  # max inbound messages per window per phone number
     "DEBOUNCE_SECONDS": 2,  # delay before processing; resets on each new message in the burst
-    # Hard time limit for one inbound turn. A turn can send several messages, so this must
-    # cover multiple provider round trips -- a mid-turn kill replays already-sent messages.
     "INBOUND_TASK_TIME_LIMIT_SECONDS": 60,
     "TASK_MAX_RETRIES": 3,  # max celery retry attempts for transient failures
     "TASK_RETRY_DELAY_SECONDS": 60,  # seconds between celery retries
-    # How long a dispatch claim is honoured before the sweep reclaims it. Must stay well above
-    # a full retry budget (TASK_MAX_RETRIES * TASK_RETRY_DELAY_SECONDS = 180s) to avoid a
-    # parallel re-dispatch of a task that is merely retrying.
     "DISPATCH_CLAIM_STALE_SECONDS": 900,
     "MESSAGE_DEDUP_TIMEOUT_SECONDS": 300,  # how long to remember a seen raw message ID (Meta replays up to ~5 min)
     "DATA_CACHE_TIMEOUT_SECONDS": 90,
     "PHONE_NUMBER_MASK_PREFIX_LEN": 4,
     "PHONE_NUMBER_MASK_SUFFIX_LEN": 3,
     "WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT": 1024,
+    "WHATSAPP_ROW_TITLE_CHAR_LIMIT": 20,
+    "WHATSAPP_SECTION_TITLE_CHAR_LIMIT": 20,
+    "WHATSAPP_HEADER_CHAR_LIMIT": 60,
+    "WHATSAPP_FOOTER_CHAR_LIMIT": 60,
+    "WHATSAPP_TEMPLATE_PARAMETER_CHAR_LIMIT": 1024,
+    "PAGING_FOOTER_RESERVE_CHARS": 160,
+    "WHATSAPP_PREVIEW_LINE_LIMIT": 20,
+    "PAGING_FOOTER_RESERVE_LINES": 4,
+    "DATA_PAGE_MIN_RECORDS": 2,
     "WHATSAPP_LIST_ROW_LIMIT": 10,  # max rows across all sections of one interactive list
     "WHATSAPP_REPLY_BUTTON_LIMIT": 3,  # max reply buttons on one interactive message
     # Fallback channel when a recipient has no prior ConversationSession to consult.
@@ -157,8 +145,6 @@ DEFAULTS = {
     "NOTIFICATION_DISPATCH_INTERVAL_SECONDS": 120,
     # Beat sweep interval (seconds) for syncing template approval status from Meta.
     "TEMPLATE_SYNC_INTERVAL_SECONDS": 21600,
-    # Caps on the raw failure detail stored per failed NotificationStatus row. Provider
-    # exceptions carry the whole upstream response body, so these bound the JSONB row.
     "NOTIFICATION_FAILURE_ERROR_MAX_CHARS": 2000,
     "NOTIFICATION_FAILURE_TRACEBACK_MAX_CHARS": 8000,
     # Which NotificationTrigger.slug a booking status transition fires.
@@ -167,40 +153,80 @@ DEFAULTS = {
         "cancelled": "appointment_cancelled",
         "rescheduled": "appointment_rescheduled",
     },
-    # NotificationTemplate.slug -> variable_mapping (Meta param name -> Jinja2 expression,
-    # rendered via messaging.variables.resolve_variable).
+    "PATIENT_TRIGGER_SLUGS": {
+        "registered": "patient_registered",
+        "discharged": "patient_discharged",
+    },
+    "BILLING_TRIGGER_SLUGS": {
+        "invoice_issued": "invoice_issued",
+        "payment_recorded": "payment_recorded",
+    },
+    "APPOINTMENT_REMINDER_TRIGGER_SLUG": "appointment_reminder",
+    "WAIT_TIME_TRIGGER_SLUG": "wait_time_update",
+    "APPOINTMENT_REMINDER_LEAD_SECONDS": 24 * 60 * 60,
+    "APPOINTMENT_REMINDER_SCAN_INTERVAL_SECONDS": 15 * 60,
+    "WAIT_TIME_MINUTES_PER_TOKEN": 5,
     "NOTIFICATION_TEMPLATE_VARIABLE_MAPPINGS": {
         "appointment_update": {
             "header_status": "{{ status }}",
             "patient_name": "{{ object.patient.name }}",
-            "doctor_name": "{{ object.token_slot.resource.user.full_name }}",
+            "doctor_name": "{{ doctor_name }}",
             "date": "{{ object.token_slot.start_datetime|date('%d %b %Y') }}",
             "time": "{{ object.token_slot.start_datetime|time }}",
             "location_or_link": "{{ object.token_slot.resource.facility.name }}",
             "status": "{{ status }}",
         },
         "document_ready_update": {
+            "header_document_type": "{{ document_type|replace('_', ' ')|title }}",
             "patient_name": "{{ object.patient.name }}",
-            "document_type": "{{ document_type }}",
+            "document_type": "{{ document_type|replace('_', ' ')|title }}",
+            "sr_name": "{{ object.service_request.title }}",
+            "sr_created_at_date": "{{ object.service_request.created_date|date('%d %b %Y') }}",
             # Resolves to the link's path segment; whatsapp.py prepends the base URL.
             "url_suffix": "{{ document_url_suffix }}",
         },
+        "patient_updates": {
+            "header_action": "{{ header_action }}",
+            "patient_name": "{{ object.name }}",
+            "patient_id": "{{ patient_id }}",
+            "action": "{{ action }}",
+            "date_and_time": "{{ date_and_time }}",
+        },
+        "payment_status": {
+            "header_status": "{{ header_status }}",
+            "patient_name": "{{ object.patient.name }}",
+            "amount": "{{ amount }}",
+            "patient_account_name": "{{ object.account.name }}",
+            "status": "{{ status }}",
+            "invoice_number": "{{ invoice_number }}",
+        },
+        # related_object: TokenBooking -- the same shape appointment_update already uses.
+        "event_reminder": {
+            "event_header": "{{ event_header }}",
+            "patient_name": "{{ object.patient.name }}",
+            "event": "{{ event }}",
+            # Handler-supplied for the same reason as appointment_update above.
+            "doctor_name": "{{ doctor_name }}",
+            "date": "{{ object.token_slot.start_datetime|date('%d %b %Y') }}",
+            "location_or_link": "{{ object.token_slot.resource.facility.name }}",
+            "time": "{{ object.token_slot.start_datetime|time }}",
+        },
+        "wait_time_update": {
+            "header_event": "{{ event }}",
+            "patient_name": "{{ object.patient.name }}",
+            "event": "{{ event }}",
+            "service_name": "{{ service_name }}",
+            "date": "{{ object.queue.date|date('%d %b %Y') }}",
+            "waiting_time": "{{ waiting_time }}",
+        },
     },
-    # How recently an encounter report must have been generated to be reused instead of
-    # rendered again. Short on purpose: the report is a clinical snapshot, so this exists to
-    # collapse repeat requests, not to cache the document.
     "ENCOUNTER_REPORT_REUSE_SECONDS": 15 * 60,
-    # Per-token throttle on the public document redirect. Distinct from the inbound-chat
-    # limits above: a patient legitimately reopens a link several times, and these two
-    # limits must be tunable independently.
     "DOCUMENT_LINK_RATE_LIMIT_WINDOW_SECONDS": 60,
     "DOCUMENT_LINK_RATE_LIMIT_MAX": 30,
     # Validity window for a DocumentLink token.
     "DOCUMENT_LINK_TTL_SECONDS": 60 * 60 * 24 * 7,  # 7 days
     # Presign TTL per request -- short, since the token is the durable capability.
     "DOCUMENT_PRESIGN_TTL_SECONDS": 60 * 5,  # 5 minutes
-    # Public origin the token route is served from -- scheme + host, no path, e.g.
-    # "https://care.example.org". Empty falls back to core's BACKEND_DOMAIN.
     "DOCUMENT_LINK_BASE_URL": "",
 }
 
