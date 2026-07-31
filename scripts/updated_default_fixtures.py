@@ -495,8 +495,6 @@ def load_scheduling(base, facility_id, created_users, patients, encounters, depa
         day=tomorrow,
     )
     slots = slots_response.get("results", [])
-    # Book every patient into their own slot; there are ~30 slots in the default
-    # 09:30-18:30 / 18-min window so all 10 patients will always get one.
     for idx, patient in enumerate(patients):
         if idx >= len(slots):
             break
@@ -509,18 +507,7 @@ def load_scheduling(base, facility_id, created_users, patients, encounters, depa
 
 
 def load_clinical_data(base, facility_id, patients, encounters, created_users):
-    """
-    Seed clinical data for every patient:
-      - MedicationRequest  (1–3 active prescriptions, random)
-      - MedicationStatement (self-reported / historical medication)
-      - MedicationAdministration (dose given, linked to the first request above)
-      - ServiceRequest via ActivityDefinition (lab order, one per patient cycling
-        through the seeded lab tests)
-      - DiagnosticReport linked to that service request (random category)
-
-    ``patients`` and ``encounters`` are parallel lists produced in load_fixtures;
-    index N of each list belongs to the same patient.
-    """
+    """Seed clinical data for every patient:"""
     from care.fixtures.constants import (
         SNOMED_AMOXICILLIN,
         SNOMED_IBUPROFEN,
@@ -555,13 +542,16 @@ def load_clinical_data(base, facility_id, patients, encounters, created_users):
         first_med_request = None
         for i in range(med_count):
             med = sample_medications[(idx + i) % len(sample_medications)]
-            freq_text = "twice" if i % 2 == 0 else "once"
+            man_pattern, doses_per_day = ("1-0-1", 2) if i % 2 == 0 else ("1-0-0", 1)
             days = 3 + i * 2
             req = base.create_medication_request(
                 patient_id=patient_id,
                 encounter_id=encounter_id,
                 medication=med,
-                dosage_text=f"1 tablet {freq_text} daily for {days} days",
+                dosage_text=man_pattern,
+                frequency=doses_per_day,
+                duration_days=days,
+                dose_value=1,
             )
             if first_med_request is None:
                 first_med_request = req
