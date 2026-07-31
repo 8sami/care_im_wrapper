@@ -1,307 +1,215 @@
 # Manual test checklist
 
-Exhaustive end-to-end pass over `care_im_wrapper`: inbound chat, authentication, data
-menus, documents, rate limiting, notifications, and the delivery pipeline.
+End-to-end pass over the plugin: chat, auth, data menus, documents, rate limiting and
+notifications. Values in brackets are the defaults from `settings.py`.
 
-Values in brackets are the shipped defaults from `settings.py` — check yours if the
-deployment overrides them via `PLUGIN_CONFIGS`.
+## 0. Setup
 
-Useful throughout:
+- [ ] backend, celery, db and redis containers healthy
+- [ ] celery beat running (reminder sweep, dispatch sweep, template sync)
+- [ ] Meta credentials set: phone number id, access token, business account id, app secret, webhook verify token
+- [ ] test number on Meta's allowed recipient list, or every send fails `131030`
+- [ ] `DOCUMENT_LINK_BASE_URL` set and publicly reachable
+- [ ] templates synced and active: `manage.py seed_notification_variable_mappings`
+- [ ] all 10 triggers present and active
+- [ ] test patient has a phone number and a year of birth
+- [ ] a staff user shares that phone number, to test the ambiguous path
 
-```bash
-# state of a conversation
-docker compose exec -T backend python manage.py shell -c "
-from care_im_wrapper.models import ConversationSession
-s = ConversationSession.objects.get(phone_number='+9199…')
-print(s.state, s.user_type, s.failed_attempts, s.cooldown_until, s.last_active_at)"
+## 1. Webhook
 
-# recent notifications and their delivery status
-docker compose exec -T backend python manage.py shell -c "
-from care_im_wrapper.models.notification import NotificationEvent, NotificationRecipient
-for e in NotificationEvent.objects.select_related('trigger').order_by('-created_date')[:10]:
-    r = NotificationRecipient.objects.filter(event=e).first()
-    print(e.created_date, e.trigger.slug, getattr(r,'latest_status',None))"
+- [ ] GET with the right `hub.verify_token` returns `hub.challenge`
+- [ ] GET with a wrong token is rejected
+- [ ] GET with `WHATSAPP_WEBHOOK_VERIFY_TOKEN` unset is rejected
+- [ ] POST with a valid `X-Hub-Signature-256` is processed
+- [ ] POST with a tampered body is rejected
+- [ ] POST with no signature header is rejected
+- [ ] POST with a malformed `changes` entry does not 500
+- [ ] POST with an unknown `field` is ignored
+- [ ] a status payload updates `NotificationRecipient.latest_status`
+- [ ] a status for an unknown `tracking_id` is dropped, not retried forever
 
-# why a send failed
-docker compose exec -T backend python manage.py shell -c "
-from care_im_wrapper.models.notification import NotificationStatus
-s = NotificationStatus.objects.filter(state='failed').latest('created_date')
-print(s.recipient.phone_number, (s.payload or {}).get('error'))"
+## 2. Auth
 
-docker compose logs -f celery backend
-```
+Unknown number
+- [ ] unmatched number gets the not-found reply, session stays `NEW`
 
----
+Happy path
+- [ ] known number gets the year-of-birth prompt, state `AWAITING_YOB`
+- [ ] correct year authenticates, menu appears, state `AUTHENTICATED`
+- [ ] `user_type`, `snapshot_name` and `snapshot_phone` are set
+- [ ] menu shows options 1–6 plus Logout, no option 7
 
-## 0. Preconditions
+Year of birth
+- [ ] `199` → invalid format, attempt counter unchanged
+- [ ] `19900` → invalid format
+- [ ] `hello` → invalid format
+- [ ] empty message → invalid format
+- [ ] wrong 4-digit year → wrong-year reply, counter incremented
 
-- [ ] `care-backend`, `care-celery`, `care-db`, `care-redis` all healthy
-- [ ] Celery **beat** is running (periodic tasks: reminder sweep, dispatch sweep, template sync)
-- [ ] Meta credentials set: `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_BUSINESS_ACCOUNT_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_WEBHOOK_VERIFY_TOKEN`
-- [ ] Your test phone number is on Meta's **allowed recipient list** (otherwise every send fails `131030`)
-- [ ] `DOCUMENT_LINK_BASE_URL` set and publicly reachable, or document links will be unopenable
-- [ ] Templates synced and `approval_status=active`: `manage.py seed_notification_variable_mappings`
-- [ ] All 10 triggers present and `is_active` (migrations through 0018 applied)
-- [ ] Test patient exists with a `phone_number` **and** a known year of birth
-- [ ] Test staff user exists with the same phone number (to exercise the ambiguous path)
+Several people on one number
+- [ ] >1 match after the correct year → candidate pick-list, state `AMBIGUOUS`
+- [ ] picking a row authenticates as that identity
+- [ ] out-of-range or free-text selection → invalid choice, still `AMBIGUOUS`
+- [ ] a number that is both patient and staff shows both; picking staff gives option 7
 
----
+Lockout
+- [ ] `[MAX_FAILED_ATTEMPTS = 5]` wrong years → `COOLDOWN` for `[COOLDOWN_MINUTES = 30]`
+- [ ] messages during cooldown get the cooldown reply, no data access
+- [ ] the remaining-minutes figure counts down
+- [ ] after expiry the next message resets to `NEW`
+- [ ] `failed_attempts` resets on success
 
-## 1. Webhook & transport
+## 3. Session
 
-- [ ] **GET challenge** — Meta's verify call with correct `hub.verify_token` returns `hub.challenge` verbatim
-- [ ] GET with wrong `hub.verify_token` is rejected
-- [ ] GET when `WHATSAPP_WEBHOOK_VERIFY_TOKEN` is unset is rejected (and logs an error)
-- [ ] **POST with valid `X-Hub-Signature-256`** is accepted and processed
-- [ ] POST with a tampered body (valid-looking signature, altered payload) is rejected
-- [ ] POST with the `X-Hub-Signature-256` header missing is rejected
-- [ ] POST with a malformed/non-dict `changes` entry does not 500 the endpoint
-- [ ] POST with an unknown `field` (not `messages`) is ignored quietly
-- [ ] A status-update payload (`sent`/`delivered`/`read`/`failed`) updates the matching `NotificationRecipient.latest_status`
-- [ ] A status update for an unknown `tracking_id` is logged and dropped, not retried forever
+- [ ] `0` logs out; `user_id`, `snapshot_*` and `candidates` cleared
+- [ ] the next message restarts at the year-of-birth prompt
+- [ ] idle past `[SESSION_IDLE_TIMEOUT_SECONDS = 30 min]` logs out on the next message
+- [ ] a session used within the window is not logged out
+- [ ] `COOLDOWN` is exempt from the idle logout
+- [ ] a session whose user was deleted gets the session-expired reply
+- [ ] two numbers have independent sessions
+- [ ] the same number on another provider is a separate session
 
----
+## 4. Patient menu
 
-## 2. Authentication
+Each option: data renders, no data gives the no-data message, menu is re-offered.
 
-### 2.1 Unknown number
-- [ ] Message from a number matching no patient and no staff → "not found" reply
-- [ ] Session stays in `NEW` (no year-of-birth prompt)
-
-### 2.2 Happy path — single match
-- [ ] Message from a known patient number → year-of-birth prompt, state `AWAITING_YOB`
-- [ ] Correct 4-digit year → authenticated, main menu appears, state `AUTHENTICATED`
-- [ ] `user_type` is `patient`, and `snapshot_name` / `snapshot_phone` are populated
-- [ ] Menu shows options 1–6 and a Logout row (no option 7)
-
-### 2.3 Year-of-birth validation
-- [ ] 3 digits (`199`) → invalid-format reply, attempt counter **not** incremented
-- [ ] 5 digits (`19900`) → invalid-format reply
-- [ ] Non-numeric (`hello`) → invalid-format reply
-- [ ] Empty / whitespace-only message → invalid-format reply
-- [ ] Correct length but wrong year (`1901`) → wrong-year reply showing remaining attempts, counter **incremented**
-
-### 2.4 Ambiguous — one number, several people
-- [ ] Number matching >1 person → after correct YOB, a candidate pick-list appears, state `AMBIGUOUS`
-- [ ] Picking a row authenticates as that identity
-- [ ] Candidate rows are 1-based (`candidate_1` is first)
-- [ ] Out-of-range selection → invalid-choice reply, still `AMBIGUOUS`
-- [ ] Free-text instead of a selection → invalid-choice reply
-- [ ] Same number registered as **both** patient and staff → both appear; picking staff yields the staff menu (option 7 present)
-
-### 2.5 Lockout
-- [ ] Wrong year `[MAX_FAILED_ATTEMPTS = 5]` times → state `COOLDOWN`, `cooldown_until` set `[COOLDOWN_MINUTES = 30]` ahead
-- [ ] Any message during cooldown → cooldown reply with remaining minutes, no data access
-- [ ] Remaining-minutes figure decreases across attempts
-- [ ] After cooldown expires, next message resets to `NEW` and restarts the flow
-- [ ] `failed_attempts` resets to 0 on successful authentication
-
----
-
-## 3. Session lifecycle
-
-- [ ] **Logout** — send `0` from the menu → logout confirmation, state `NEW`, `user_id` / `snapshot_*` / `candidates` cleared
-- [ ] After logout, next message restarts at the year-of-birth prompt
-- [ ] **Idle timeout** — authenticated session untouched for `[SESSION_IDLE_TIMEOUT_SECONDS = 30 min]`, then a new message → logged out and treated as `NEW`
-- [ ] A session active within the window is **not** logged out
-- [ ] `last_active_at` advances on **every** inbound turn, including read-only ones that change no state
-- [ ] A session in `COOLDOWN` is exempt from idle logout (cooldown runs on its own timer)
-- [ ] **Deleted/deactivated user** — authenticated session whose backing user is removed → session-expired reply and logout
-- [ ] Two different numbers have independent sessions
-- [ ] Same number on a different provider is a separate session (unique on `phone_number` + `provider`)
-
----
-
-## 4. Patient menu (options 1–6)
-
-For **each** option below: valid data renders, empty data gives the no-data message and
-returns to the menu, and the menu is re-offered afterwards.
-
-- [ ] **1 Encounter details** — renders facility, date, status, class; offers document selection
-- [ ] **2 Medications** — prescriptions, each with its prescriber, facility, note and the
-      medications on it; per medication one block per `dosage_instruction` (dosage,
-      frequency + additional instructions, duration, instructions)
-- [ ] A tapered medication shows numbered Steps, each dose beside its own duration
-- [ ] Medications with no prescription are grouped under their authored date
-- [ ] A prescription is never split or repeated across two pages
-- [ ] A PRN medication renders `SOS` (care_fe's label), with its reason if recorded
-- [ ] A `1-1-1` timing renders `1-1-1 (Thrice a day)`; a non-preset like `2-2-2` stays verbatim
-- [ ] A coded frequency (`BID`) renders `1-0-1 (Twice a day)`
-- [ ] Medication with unstructured/legacy `dosage_instruction` still renders without error
+- [ ] **1 Encounters** — facility, date, status, class; offers documents
+- [ ] **2 Medications** — prescriptions with prescriber, facility and note, medications inside
+- [ ] one block per `dosage_instruction`: dosage, frequency, duration, instructions
+- [ ] a tapered medication shows numbered steps, each dose next to its own duration
+- [ ] medications with no prescription group under their authored date
+- [ ] a prescription is never split or repeated across pages
+- [ ] PRN renders `SOS`, with its reason if recorded
+- [ ] `1-1-1` renders `1-1-1 (Thrice a day)`; `2-2-2` stays verbatim
+- [ ] `BID` renders `1-0-1 (Twice a day)`
+- [ ] legacy string `dosage_instruction` still renders
 - [ ] **3 Procedures** — name, date, status
-- [ ] **4 Appointments** — practitioner booking reads `<Practitioner> at <Facility>`
-- [ ] Location-type booking reads `<Name> Location at <Facility>`
-- [ ] Healthcare-service booking reads `<Name> HealthcareService at <Facility>`
-- [ ] **5 Lab reports** — name, date, status; offers document selection
-- [ ] **6 Patient summary** — name, DOB, blood group, gender, phone; missing fields say "not recorded"
-- [ ] Records marked `entered_in_error` are excluded everywhere
-- [ ] At most `[DATA_FETCH_LIMIT = 10]` records per list
-- [ ] `n` / `p` page forward and back on any list; `n` on the last page says so
-- [ ] Interactive providers also show Next/Previous rows, dropped when over the row cap
-- [ ] Numbering continues across pages rather than restarting at 1
-- [ ] No record is repeated or skipped when paging forward then back
-- [ ] Invalid menu choice (`9`, `abc`, emoji) → invalid-choice reply, still `AUTHENTICATED`
-- [ ] Repeating the same option twice within `[DATA_CACHE_TIMEOUT_SECONDS = 90]` serves from cache (no second DB fetch)
-- [ ] A very long list is truncated to `[WHATSAPP_MESSAGE_CHAR_LIMIT = 4096]` with a truncation marker
-- [ ] When data + greeting exceed the limit, it splits into a plain-text message **then** the menu, in that order
+- [ ] **4 Appointments** — practitioner reads `<Practitioner> at <Facility>`
+- [ ] location reads `<Name> Location at <Facility>`
+- [ ] healthcare service reads `<Name> HealthcareService at <Facility>`
+- [ ] **5 Lab reports** — name, date, status; offers documents
+- [ ] **6 Summary** — name, DOB, blood group, gender, phone; blanks say not recorded
+- [ ] `entered_in_error` records are excluded everywhere
+- [ ] at most `[DATA_FETCH_LIMIT = 10]` records per page
+- [ ] `n` and `p` page forward and back; `n` on the last page says so
+- [ ] interactive providers show Next/Previous rows, dropped when over the row cap
+- [ ] numbering continues across pages instead of restarting
+- [ ] nothing repeats or is skipped paging forward then back
+- [ ] invalid choice (`9`, `abc`, emoji) → invalid choice, still `AUTHENTICATED`
+- [ ] a long list truncates at `[WHATSAPP_MESSAGE_CHAR_LIMIT = 4096]` with a marker
 
----
+## 5. Staff lookup
 
-## 5. Staff menu (option 7 — patient lookup)
-
-- [ ] Staff sees option **7 Patient lookup**; patients do not
-- [ ] Selecting 7 → search prompt, state `AWAITING_PATIENT_SEARCH`
-- [ ] Query shorter than `[PATIENT_SEARCH_MIN_QUERY_LENGTH = 3]` → error message, stays in search state so the next message retries as a query
-- [ ] Query with no matches → no-patients-found reply
-- [ ] Query with matches → pick-list, state `SELECTING_PATIENT`
-- [ ] Result rows are 0-based (`patient_0` is first)
-- [ ] More than `[WHATSAPP_LIST_ROW_LIMIT = 10]` matches → list is capped, not rejected by Meta
-- [ ] Selecting a patient sets `active_patient_external_id` and returns to the menu with a confirmation
-- [ ] Subsequent menu options now return **that** patient's data, not the staff member's
-- [ ] Out-of-range / free-text selection → invalid-choice reply
-- [ ] Staff without lookup permission → permission-denied reply, returned to `AUTHENTICATED`
-- [ ] Staff querying a patient outside their facility scope → permission denied or no results (never another facility's data)
-
----
+- [ ] staff see option 7, patients do not
+- [ ] option 7 → search prompt, state `AWAITING_PATIENT_SEARCH`
+- [ ] query under `[PATIENT_SEARCH_MIN_QUERY_LENGTH = 3]` errors but stays in the search state
+- [ ] no matches → no-patients-found
+- [ ] matches → pick-list, state `SELECTING_PATIENT`
+- [ ] more than `[WHATSAPP_LIST_ROW_LIMIT = 10]` matches caps the list rather than failing
+- [ ] selecting sets `active_patient_external_id` and confirms
+- [ ] later menu options return that patient's data, not the staff member's
+- [ ] out-of-range or free-text selection → invalid choice
+- [ ] staff without lookup permission → permission denied, back to `AUTHENTICATED`
+- [ ] a patient outside the staff member's facility scope is never returned
 
 ## 6. Documents
 
-### 6.1 Selection flow
-- [ ] Option 1 (encounters) with selectable records → document pick-list, state `SELECTING_DOCUMENT`
-- [ ] Option 5 (lab reports) with a finalised report → document pick-list
-- [ ] Selecting a row delivers the document and **stays** in `SELECTING_DOCUMENT` (so another can be picked)
-- [ ] Sending `0` returns to the main menu, `candidates` cleared
-- [ ] Out-of-range selection → invalid-choice reply
-- [ ] Records with no retrievable document → document-unavailable message, not a crash
-- [ ] When the interactive body would exceed `[WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT = 1024]`, it falls back to the short prompt and still shows rows
+Selection
+- [ ] encounters with selectable records → pick-list, state `SELECTING_DOCUMENT`
+- [ ] lab reports with a finalised report → pick-list
+- [ ] selecting delivers the document and stays in `SELECTING_DOCUMENT`
+- [ ] `0` returns to the menu and clears `candidates`
+- [ ] out-of-range selection → invalid choice
+- [ ] a record with no document → document-unavailable, not a crash
+- [ ] over `[WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT = 1024]` it falls back to the short prompt and keeps the rows
 
-### 6.2 Link generation
-- [ ] An encounter report is generated on first request
-- [ ] Re-requesting within `[ENCOUNTER_REPORT_REUSE_SECONDS = 15 min]` reuses the existing report rather than regenerating
-- [ ] Requesting after that window regenerates
-- [ ] An already-uploaded diagnostic file is served directly (not regenerated)
-- [ ] An existing unexpired `DocumentLink` for the same object is reused rather than minting a new token
+Links
+- [ ] an encounter report generates on first request
+- [ ] within `[ENCOUNTER_REPORT_REUSE_SECONDS = 15 min]` it is reused
+- [ ] after that window it regenerates
+- [ ] an already-uploaded diagnostic file is served directly
+- [ ] an unexpired `DocumentLink` for the same object is reused
 
-### 6.3 Public redirect endpoint
-- [ ] Opening the link redirects to a working presigned file URL
-- [ ] Presigned URL stops working after `[DOCUMENT_PRESIGN_TTL_SECONDS = 5 min]`
-- [ ] Link stops working after `[DOCUMENT_LINK_TTL_SECONDS = 7 days]`
-- [ ] Unknown token → 404
-- [ ] Malformed token → 404
-- [ ] Expired token → 404 **identical** to the unknown-token 404 (no enumeration signal)
-- [ ] Hitting the endpoint more than `[DOCUMENT_LINK_RATE_LIMIT_MAX = 30]` times in `[60s]` is throttled
-- [ ] Link is not guessable and carries no patient identifiers in the URL
+Redirect endpoint
+- [ ] the link redirects to a working presigned URL
+- [ ] the presigned URL expires after `[DOCUMENT_PRESIGN_TTL_SECONDS = 5 min]`
+- [ ] the link expires after `[DOCUMENT_LINK_TTL_SECONDS = 7 days]`
+- [ ] unknown, malformed and expired tokens all 404 identically
+- [ ] over `[DOCUMENT_LINK_RATE_LIMIT_MAX = 30]` hits in 60s is throttled
+- [ ] the URL carries no patient identifiers
 
-### 6.4 Authorization
-- [ ] A patient cannot obtain a document for another patient
-- [ ] Staff without report-generation permission → permission denied
-- [ ] A link minted for patient A does not resolve to patient B's file
+Authorization
+- [ ] a patient cannot fetch another patient's document
+- [ ] staff without report permission → permission denied
+- [ ] a link for patient A never resolves to patient B's file
 
----
+## 7. Rate limiting
 
-## 7. Rate limiting, debounce, deduplication
+- [ ] over `[RATE_LIMIT_MAX_MESSAGES = 10]` in `[RATE_LIMIT_WINDOW_SECONDS = 60]` is throttled
+- [ ] throttling is per number; another number is unaffected
+- [ ] the number works again after the window
+- [ ] messages within `[DEBOUNCE_SECONDS = 2]` collapse into one turn, last one wins
+- [ ] a message during the debounce window resets the timer
+- [ ] Meta redelivering a message id within `[MESSAGE_DEDUP_TIMEOUT_SECONDS = 300]` is dropped
+- [ ] two replies in one turn are not paced against each other
+- [ ] replying within `[WHATSAPP_MIN_SEND_INTERVAL_SECONDS = 6]` defers rather than drops
 
-- [ ] **Inbound** — more than `[RATE_LIMIT_MAX_MESSAGES = 10]` messages in `[RATE_LIMIT_WINDOW_SECONDS = 60]` from one number is throttled
-- [ ] Throttling is per phone number: a second number is unaffected
-- [ ] After the window passes, the number works again
-- [ ] **Debounce** — several messages within `[DEBOUNCE_SECONDS = 2]` collapse into one processed turn (the last one wins)
-- [ ] A message arriving during the debounce window resets the timer
-- [ ] **Dedup** — Meta redelivering the same message id within `[MESSAGE_DEDUP_TIMEOUT_SECONDS = 300]` is dropped, not reprocessed
-- [ ] A celery **retry** of the same message id is *not* mistaken for a duplicate (retries must still run)
-- [ ] **Outbound pacing** — two replies in one turn are not throttled against each other (2nd+ send uses `pace=False`)
-- [ ] Replying to the bot within `[WHATSAPP_MIN_SEND_INTERVAL_SECONDS = 6]` of its last message defers rather than dropping the reply
-- [ ] ⚠️ **Known issue — verify the blast radius**: when pacing trips on the *first* queued send of a turn, the task retries with state already committed, so the turn is re-run. Reply within 6 s from `NEW` and from `AWAITING_YOB` with a wrong year, and check whether you get a wrong reply / a double-counted failed attempt. See §11.
+## 8. Notification triggers
 
----
+For each: the action creates a `NotificationEvent` and `NotificationRecipient`, and
+`latest_status` reaches sent → delivered → read.
 
-## 8. Notifications — triggers
+- [ ] `patient_registered` — register a patient with a phone number
+- [ ] a patient with no phone number is skipped, no failed recipient
+- [ ] `patient_discharged` — move an encounter to `discharged`
+- [ ] an encounter created already discharged does not fire
+- [ ] re-saving a discharged encounter does not re-fire
+- [ ] a non-discharged status change does not fire
+- [ ] `appointment_confirmed` — book
+- [ ] `appointment_cancelled` — cancel
+- [ ] `appointment_rescheduled` — reschedule
+- [ ] re-saving a booking with no status change does not re-fire
+- [ ] `appointment_reminder` — book within 24h, run the sweep
+- [ ] a booking beyond `[APPOINTMENT_REMINDER_LEAD_SECONDS = 24 h]` is not reminded
+- [ ] a started or cancelled booking is not reminded
+- [ ] running the sweep twice reminds once
+- [ ] a rescheduled booking gets its own reminder
+- [ ] `wait_time_update` — issue a queue token
+- [ ] a token with a booking counts down to the slot, not "under a minute"
+- [ ] days out reads in days, e.g. "3 days 3 hours"
+- [ ] a token whose slot already started falls back to queue position
+- [ ] a walk-in uses queue position × `[WAIT_TIME_MINUTES_PER_TOKEN = 5]`
+- [ ] a token with no patient is skipped
+- [ ] updating a token does not re-fire
+- [ ] `invoice_issued` — move an invoice to `issued`
+- [ ] a draft invoice stays silent
+- [ ] re-saving an issued invoice does not re-fire
+- [ ] an invoice with a blank number still sends, using the external id
+- [ ] `payment_recorded` — complete a payment against an invoice
+- [ ] a partial payment stays silent
+- [ ] `document_ready_update` — complete a service request with a final report
+- [ ] a service request with no final report does not fire
 
-For each: perform the action, confirm a `NotificationEvent` + `NotificationRecipient` are
-created, and that `latest_status` reaches `sent` → `delivered` → `read`.
+Resource types
+- [ ] practitioner booking → `doctor_name` is the practitioner
+- [ ] location booking → `<Name> Location`
+- [ ] healthcare service booking → `<Name> HealthcareService`
+- [ ] same three for `appointment_reminder`
 
-- [ ] **`patient_registered`** — register a new patient with a phone number
-- [ ] Patient created **without** a phone number → skipped cleanly, no failed recipient row
-- [ ] **`patient_discharged`** — move an existing encounter to `discharged`
-- [ ] Creating an encounter already `discharged` does **not** fire
-- [ ] Re-saving an already-discharged encounter (note edit) does **not** re-fire
-- [ ] Moving to a non-discharged status does **not** fire
-- [ ] **`appointment_confirmed`** — book an appointment
-- [ ] **`appointment_cancelled`** — cancel it
-- [ ] **`appointment_rescheduled`** — reschedule it
-- [ ] Re-saving a booking without a status change does **not** re-fire
-- [ ] **`appointment_reminder`** — book for ~within 24 h, then run the sweep
-- [ ] Booking beyond `[APPOINTMENT_REMINDER_LEAD_SECONDS = 24 h]` is not reminded
-- [ ] Booking already started is not reminded
-- [ ] Cancelled booking is not reminded
-- [ ] Running the sweep twice reminds only **once** per booking
-- [ ] A rescheduled booking (new row) does get its own reminder
-- [ ] **`wait_time_update`** — issue a queue token to a patient
-- [ ] Token **with** a booking counts down to the slot start (not "under a minute")
-- [ ] Token days out reads in days, e.g. "3 days 3 hours"
-- [ ] Token whose slot already started falls back to queue position
-- [ ] Walk-in token (no booking) uses queue position × `[WAIT_TIME_MINUTES_PER_TOKEN = 5]`
-- [ ] Token without a patient is skipped
-- [ ] Updating an existing token does **not** re-fire
-- [ ] **`invoice_issued`** — move an invoice to `issued`
-- [ ] Draft invoice stays silent
-- [ ] Re-saving an issued invoice does **not** re-fire
-- [ ] Invoice with a blank `number` still sends (falls back to external id)
-- [ ] **`payment_recorded`** — complete a payment against an invoice
-- [ ] Incomplete/partial payment stays silent
-- [ ] Payment with **no** target invoice is skipped — see §11, this is a known gap
-- [ ] **`document_ready_update`** — complete a service request with a finalised report
-- [ ] Service request completed with no finalised report does **not** fire
+## 9. Delivery
 
-### Resource-type coverage (appointments)
-- [ ] Practitioner booking → `doctor_name` is the practitioner
-- [ ] Location booking → `doctor_name` reads `<Name> Location`
-- [ ] Healthcare-service booking → `doctor_name` reads `<Name> HealthcareService`
-- [ ] Same three cases for `appointment_reminder`
+- [ ] every template parameter renders non-empty
+- [ ] a blank variable raises `WhatsAppTemplateNotConfiguredError` naming the template and parameter, not Meta's `131008`
+- [ ] a number off the allowlist fails `131030` and is not retried forever
+- [ ] template sync refreshes Meta fields without clobbering `variable_mapping`
 
----
+## 10. API
 
-## 9. Notification delivery pipeline
-
-- [ ] Every template parameter renders non-empty (a blank one fails the whole send)
-- [ ] A deliberately blank variable produces `WhatsAppTemplateNotConfiguredError` naming the template **and** parameter — not Meta's opaque `131008`
-- [ ] That failure is recorded immediately and **not** retried
-- [ ] A transient 5xx / network error **is** retried up to `[TASK_MAX_RETRIES = 3]`, then recorded failed
-- [ ] A permanent 400 is recorded failed without retrying
-- [ ] Sending to a number outside Meta's allowlist fails with `131030` and is not retried forever
-- [ ] Two workers cannot double-send the same recipient (dispatch claim)
-- [ ] A claim older than `[DISPATCH_CLAIM_STALE_SECONDS = 900]` is reclaimable
-- [ ] The sweep `[NOTIFICATION_DISPATCH_INTERVAL_SECONDS = 120]` picks up recipients real-time dispatch missed
-- [ ] Template sync `[TEMPLATE_SYNC_INTERVAL_SECONDS = 6 h]` refreshes Meta-sourced fields and does **not** clobber `variable_mapping`
-- [ ] Provider returning no message id records a `MissingTrackingId` failure
-- [ ] `message_payload.sent_parameters` matches what the patient actually received
-
----
-
-## 10. Admin / API
-
-- [ ] `notification-triggers` — list/retrieve/update; unauthenticated is rejected
-- [ ] `notification-templates` — list; `variable_mapping` editable via the builder
-- [ ] Variable picker offers the right fields per trigger `context_slug`
-- [ ] Saving a trigger with an unknown `context_slug` is rejected with a clear validation error
-- [ ] `notification-events` / `notification-recipients` — list and filter
-- [ ] A user without notification permissions cannot read or write any of them
-- [ ] Facility scoping: a user only sees events for facilities they belong to
-
----
-
-## 11. Known gaps — expected to fail
-
-Not bugs to file; these are open items as of this checklist.
-
-- [ ] **Account-level payments send nothing.** A `PaymentReconciliation` with no
-      `target_invoice` is skipped, because `payment_status` resolves patient/account/invoice
-      off an Invoice. Amjith asked for the invoice number "if exist", which needs a second
-      template without the invoice line.
-- [ ] **`patient_updates` needs the approved template updated** to drop the
-      `Hospital / Clinic: {{hospital_or_clinic}}` line. Until then registration and
-      discharge notifications will fail on a missing parameter.
-- [ ] **Discharge no longer names a facility** — removing that parameter cost discharge its
-      facility name too. Split discharge into its own template if that matters.
-- [ ] **Pacing retry replays a committed turn** (see §7). `_flush` re-raises
-      `OutboundRateLimitedError` on the first queued send, but session state is already
-      committed, so the retry re-runs the turn against the advanced state.
+- [ ] `notification-triggers` list/retrieve/update; unauthenticated rejected
+- [ ] `notification-templates` list; `variable_mapping` editable
+- [ ] the variable picker offers the right fields per `context_slug`
+- [ ] an unknown `context_slug` is rejected with a clear error
+- [ ] `notification-events` and `notification-recipients` list and filter
+- [ ] a user without notification permissions cannot read or write them
+- [ ] a user only sees events for their own facilities
