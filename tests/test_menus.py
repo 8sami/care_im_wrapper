@@ -23,11 +23,13 @@ class PatientMenuTests(SimpleTestCase):
         self.assertIs(renderer, renderers.render_encounters)
         self.assertIs(document_resolver, document_resolvers.resolve_encounter_document)
 
-    def test_entry_2_is_current_medications_wired_to_medications_module(self):
+    def test_entry_2_is_medications_wired_to_prescriptions(self):
+        """Lists prescriptions with their medications inside, the two-step shape care uses
+        (MedicationRequestPrescriptionRetrieveMedicationsSpec)."""
         label, fetcher, renderer, document_resolver = menus._PATIENT_MENU["2"]
-        self.assertEqual(label, "Current medications")
-        self.assertIs(fetcher, medications.fetch_medications)
-        self.assertIs(renderer, renderers.render_medications)
+        self.assertEqual(label, "Medications")
+        self.assertIs(fetcher, medications.fetch_prescriptions)
+        self.assertIs(renderer, renderers.render_prescriptions)
         self.assertIsNone(document_resolver)
 
     def test_entry_3_is_procedures_wired_to_procedures_module(self):

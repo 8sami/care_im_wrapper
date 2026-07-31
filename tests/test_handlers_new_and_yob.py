@@ -3,7 +3,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from care_im_wrapper.auth.resolver import ResolutionResult, ResolvedIdentity
-from care_im_wrapper.conversation.handlers import _handle_awaiting_yob, _handle_new
+from care_im_wrapper.conversation.handlers import Outbound, _handle_awaiting_yob, _handle_new
 from care_im_wrapper.models import ConversationSession
 
 PHONE = "+919876543210"
@@ -14,26 +14,26 @@ class HandleNewTests(TestCase):
     def setUp(self):
         self.session = ConversationSession.objects.create(phone_number=PHONE, provider=CHANNEL)
 
-    @patch("care_im_wrapper.conversation.handlers.send_message")
     @patch("care_im_wrapper.conversation.handlers.resolve_phone_number")
-    def test_not_found_sends_not_found_message_and_leaves_state_unchanged(self, mock_resolve, mock_send):
+    def test_not_found_sends_not_found_message_and_leaves_state_unchanged(self, mock_resolve):
         mock_resolve.return_value = ResolutionResult(found=False, identities=[])
 
-        _handle_new(self.session, PHONE, "hello", CHANNEL)
+        outbox: list[Outbound] = []
+        _handle_new(self.session, PHONE, "hello", CHANNEL, outbox)
 
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.NEW)
-        mock_send.assert_called_once_with(CHANNEL, PHONE, "Sorry, we couldn't find an account linked to your number.")
+        self.assertEqual(outbox, [Outbound(PHONE, "Sorry, we couldn't find an account linked to your number.")])
 
-    @patch("care_im_wrapper.conversation.handlers.send_message")
     @patch("care_im_wrapper.conversation.handlers.resolve_phone_number")
-    def test_found_stores_candidates_and_moves_to_awaiting_yob(self, mock_resolve, mock_send):
+    def test_found_stores_candidates_and_moves_to_awaiting_yob(self, mock_resolve):
         identity = ResolvedIdentity(
             user_type="patient", user_id=42, year_of_birth=1990, full_name="Jane Doe", phone_number=PHONE
         )
         mock_resolve.return_value = ResolutionResult(found=True, identities=[identity])
 
-        _handle_new(self.session, PHONE, "hello", CHANNEL)
+        outbox: list[Outbound] = []
+        _handle_new(self.session, PHONE, "hello", CHANNEL, outbox)
 
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.AWAITING_YOB)
@@ -49,7 +49,7 @@ class HandleNewTests(TestCase):
                 }
             ],
         )
-        mock_send.assert_called_once_with(CHANNEL, PHONE, "Please reply with your year of birth (e.g. 1990).")
+        self.assertEqual(outbox, [Outbound(PHONE, "Please reply with your year of birth (e.g. 1990).")])
 
 
 class HandleAwaitingYobTests(TestCase):
@@ -68,50 +68,48 @@ class HandleAwaitingYobTests(TestCase):
             candidates=[self.candidate],
         )
 
-    @patch("care_im_wrapper.conversation.handlers.send_message")
-    def test_non_four_digit_input_sends_yob_invalid(self, mock_send):
-        _handle_awaiting_yob(self.session, PHONE, "abc", CHANNEL)
+    def test_non_four_digit_input_sends_yob_invalid(self):
+        outbox: list[Outbound] = []
+        _handle_awaiting_yob(self.session, PHONE, "abc", CHANNEL, outbox)
 
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.AWAITING_YOB)
-        mock_send.assert_called_once_with(CHANNEL, PHONE, "Please enter a valid 4-digit year (e.g. 1990).")
+        self.assertEqual(outbox, [Outbound(PHONE, "Please enter a valid 4-digit year (e.g. 1990).")])
 
-    @patch("care_im_wrapper.conversation.handlers.send_message")
-    def test_three_digit_input_sends_yob_invalid(self, mock_send):
-        _handle_awaiting_yob(self.session, PHONE, "199", CHANNEL)
+    def test_three_digit_input_sends_yob_invalid(self):
+        outbox: list[Outbound] = []
+        _handle_awaiting_yob(self.session, PHONE, "199", CHANNEL, outbox)
 
-        mock_send.assert_called_once_with(CHANNEL, PHONE, "Please enter a valid 4-digit year (e.g. 1990).")
+        self.assertEqual(outbox, [Outbound(PHONE, "Please enter a valid 4-digit year (e.g. 1990).")])
 
-    @patch("care_im_wrapper.conversation.handlers.send_message")
-    def test_wrong_year_increments_failed_attempts_and_sends_remaining_count(self, mock_send):
-        _handle_awaiting_yob(self.session, PHONE, "1985", CHANNEL)
+    def test_wrong_year_increments_failed_attempts_and_sends_remaining_count(self):
+        outbox: list[Outbound] = []
+        _handle_awaiting_yob(self.session, PHONE, "1985", CHANNEL, outbox)
 
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.AWAITING_YOB)
         self.assertEqual(self.session.failed_attempts, 1)
-        mock_send.assert_called_once_with(CHANNEL, PHONE, "That doesn't match. You have *2* attempt(s) remaining.")
+        self.assertEqual(outbox, [Outbound(PHONE, "That doesn't match. You have *2* attempt(s) remaining.")])
 
-    @patch("care_im_wrapper.conversation.handlers.send_message")
-    def test_fifth_wrong_attempt_triggers_cooldown(self, mock_send):
+    def test_fifth_wrong_attempt_triggers_cooldown(self):
         self.session.failed_attempts = 4
         self.session.save(update_fields=["failed_attempts"])
 
-        _handle_awaiting_yob(self.session, PHONE, "1985", CHANNEL)
+        outbox: list[Outbound] = []
+        _handle_awaiting_yob(self.session, PHONE, "1985", CHANNEL, outbox)
 
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.COOLDOWN)
         self.assertIsNotNone(self.session.cooldown_until)
-        mock_send.assert_called_once()
-        call_args = mock_send.call_args[0]
-        self.assertEqual(call_args[0], CHANNEL)
-        self.assertEqual(call_args[1], PHONE)
-        self.assertTrue(call_args[2].startswith("Your account is locked. Please try again in"))
-        self.assertTrue(call_args[2].endswith("minutes."))
+        self.assertEqual(len(outbox), 1)
+        self.assertEqual(outbox[0].phone_number, PHONE)
+        self.assertTrue(outbox[0].message.startswith("Your account is locked. Please try again in"))
+        self.assertTrue(outbox[0].message.endswith("minutes."))
 
     @patch("care_im_wrapper.conversation.handlers._send_main_menu")
-    @patch("care_im_wrapper.conversation.handlers.send_message")
-    def test_single_matching_candidate_authenticates_and_sends_main_menu(self, mock_send, mock_send_menu):
-        _handle_awaiting_yob(self.session, PHONE, "1990", CHANNEL)
+    def test_single_matching_candidate_authenticates_and_sends_main_menu(self, mock_send_menu):
+        outbox: list[Outbound] = []
+        _handle_awaiting_yob(self.session, PHONE, "1990", CHANNEL, outbox)
 
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.AUTHENTICATED)
@@ -120,12 +118,11 @@ class HandleAwaitingYobTests(TestCase):
         self.assertEqual(self.session.snapshot_name, "Jane Doe")
         self.assertEqual(self.session.snapshot_phone, PHONE)
         self.assertEqual(self.session.failed_attempts, 0)
-        mock_send_menu.assert_called_once_with(PHONE, "patient", name="Jane Doe", channel=CHANNEL)
-        mock_send.assert_not_called()
+        mock_send_menu.assert_called_once_with(PHONE, "patient", CHANNEL, outbox, name="Jane Doe")
+        self.assertEqual(outbox, [])
 
     @patch("care_im_wrapper.conversation.handlers._send_candidate_menu")
-    @patch("care_im_wrapper.conversation.handlers.send_message")
-    def test_multiple_matching_candidates_moves_to_ambiguous_state(self, mock_send, mock_send_candidate_menu):
+    def test_multiple_matching_candidates_moves_to_ambiguous_state(self, mock_send_candidate_menu):
         second_candidate = {
             "user_type": "staff",
             "user_id": 99,
@@ -136,10 +133,11 @@ class HandleAwaitingYobTests(TestCase):
         self.session.candidates = [self.candidate, second_candidate]
         self.session.save(update_fields=["candidates"])
 
-        _handle_awaiting_yob(self.session, PHONE, "1990", CHANNEL)
+        outbox: list[Outbound] = []
+        _handle_awaiting_yob(self.session, PHONE, "1990", CHANNEL, outbox)
 
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.AMBIGUOUS)
         self.assertEqual(self.session.candidates, [self.candidate, second_candidate])
-        mock_send_candidate_menu.assert_called_once_with(PHONE, [self.candidate, second_candidate], CHANNEL)
-        mock_send.assert_not_called()
+        mock_send_candidate_menu.assert_called_once_with(PHONE, [self.candidate, second_candidate], CHANNEL, outbox)
+        self.assertEqual(outbox, [])

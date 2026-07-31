@@ -5,19 +5,58 @@ from care_im_wrapper.conversation.renderers import (
     render_appointments,
     render_encounters,
     render_lab_reports,
-    render_medications,
     render_patient_search_results,
+    render_prescriptions,
     render_procedures,
     render_summary,
 )
 from care_im_wrapper.data.records import (
     AppointmentRecord,
+    DosageLine,
     EncounterRecord,
     LabReportRecord,
     MedicationRecord,
     PatientSummary,
+    PrescriptionRecord,
     ProcedureRecord,
 )
+
+
+def _line(dosage="1 tablets", frequency="1-0-1 (Twice a day)", duration="5 days", sig="Via Oral route", additional=()):
+    return DosageLine(
+        dosage=dosage,
+        frequency=frequency,
+        additional_instructions=tuple(additional),
+        duration=duration,
+        sig=sig,
+        is_non_unit_dose=False,
+    )
+
+
+def _medication(name="Amoxicillin", status="Active", lines=None, note=None, is_inactive=False):
+    return MedicationRecord(
+        name=name,
+        status=status,
+        is_inactive=is_inactive,
+        lines=(_line(),) if lines is None else tuple(lines),
+        note=note,
+    )
+
+
+def _prescription(name="Discharge medications", medications=None, **kwargs):
+    defaults = dict(
+        status="Active",
+        prescribed_by="Dr. Ada Lovelace",
+        prescribed_on="30 Jul 2026",
+        facility="City Care Hospital",
+        note=None,
+    )
+    defaults.update(kwargs)
+    return PrescriptionRecord(
+        name=name,
+        medications=(_medication(),) if medications is None else tuple(medications),
+        **defaults,
+    )
 
 
 class TruncateTests(SimpleTestCase):
@@ -34,34 +73,98 @@ class TruncateTests(SimpleTestCase):
         self.assertEqual(_truncate(text, 4096), expected)
 
 
-class RenderMedicationsTests(SimpleTestCase):
-    def test_single_record_without_dosage_or_note(self):
-        records = [MedicationRecord(name="Paracetamol", status="Active")]
+class RenderPrescriptionsTests(SimpleTestCase):
+    """Two levels: a prescription, then the medications on it. Mirrors care's own read."""
 
-        result = render_medications(records, 4096)
+    def test_prescription_header_carries_prescriber_and_facility(self):
+        result = render_prescriptions([_prescription()], 4096)
 
-        expected = "Your recent medications:\n\n1. *Paracetamol* (Active)"
-        self.assertEqual(result.text, expected)
+        self.assertIn("*Discharge medications* (_Active_)", result.text)
+        self.assertIn("Prescribed on: _30 Jul 2026_", result.text)
+        self.assertIn("Prescribed by: _Dr. Ada Lovelace_", result.text)
+        self.assertIn("Facility: _City Care Hospital_", result.text)
         self.assertIsNone(result.interactive)
 
-    def test_record_with_dosage_and_note_appends_both_lines(self):
-        records = [MedicationRecord(name="Med2", status="Stopped", dosage="1 tab daily", note="After food")]
+    def test_untitled_prescription_still_has_a_label(self):
+        result = render_prescriptions([_prescription(name=None)], 4096)
 
-        result = render_medications(records, 4096)
+        self.assertIn("*Prescription* (_Active_)", result.text)
 
-        expected = "Your recent medications:\n\n1. *Med2* (Stopped)\n   Dosage: _1 tab daily_\n   Note: After food"
-        self.assertEqual(result.text, expected)
+    def test_missing_prescriber_is_marked_not_recorded_rather_than_omitted(self):
+        """care_fe prints "-" for an absent value; silence would read as if there were."""
+        result = render_prescriptions([_prescription(prescribed_by=None)], 4096)
 
-    def test_multiple_records_are_numbered_sequentially(self):
-        records = [
-            MedicationRecord(name="Med A", status="Active"),
-            MedicationRecord(name="Med B", status="Active"),
-        ]
+        self.assertIn("Prescribed by: _-_", result.text)
 
-        result = render_medications(records, 4096)
+    def test_medication_renders_all_four_care_fe_columns(self):
+        result = render_prescriptions([_prescription()], 4096)
 
-        expected = "Your recent medications:\n\n1. *Med A* (Active)\n2. *Med B* (Active)"
-        self.assertEqual(result.text, expected)
+        self.assertIn("*Amoxicillin* (_Active_)", result.text)
+        self.assertIn("Dosage: _1 tablets_", result.text)
+        self.assertIn("Frequency: _1-0-1 (Twice a day)_", result.text)
+        self.assertIn("Duration: _5 days_", result.text)
+        self.assertIn("Instructions: _Via Oral route_", result.text)
+
+    def test_missing_column_values_render_as_not_recorded(self):
+        line = _line(dosage="", frequency="", duration="", sig="")
+        result = render_prescriptions([_prescription(medications=[_medication(lines=[line])])], 4096)
+
+        self.assertIn("Dosage: _-_", result.text)
+        self.assertIn("Frequency: _-_", result.text)
+        self.assertIn("Duration: _-_", result.text)
+        self.assertIn("Instructions: _-_", result.text)
+
+    def test_additional_instructions_are_listed_under_the_frequency(self):
+        line = _line(additional=("Take with food", "Avoid alcohol"))
+        result = render_prescriptions([_prescription(medications=[_medication(lines=[line])])], 4096)
+
+        self.assertIn("Take with food", result.text)
+        self.assertIn("Avoid alcohol", result.text)
+
+    def test_a_tapered_course_numbers_each_step(self):
+        """The safety case: without per-step blocks a reader cannot tell which dose lasts."""
+        lines = [_line(dosage="2 tablets", duration="3 days"), _line(dosage="1 tablets", duration="4 days")]
+        result = render_prescriptions([_prescription(medications=[_medication(lines=lines)])], 4096)
+
+        self.assertIn("Step 1:", result.text)
+        self.assertIn("Step 2:", result.text)
+        step1 = result.text.index("Step 1:")
+        step2 = result.text.index("Step 2:")
+        self.assertIn("2 tablets", result.text[step1:step2])
+        self.assertIn("3 days", result.text[step1:step2])
+        self.assertIn("1 tablets", result.text[step2:])
+        self.assertIn("4 days", result.text[step2:])
+
+    def test_a_single_instruction_is_not_numbered(self):
+        result = render_prescriptions([_prescription()], 4096)
+
+        self.assertNotIn("Step 1:", result.text)
+
+    def test_medication_without_dosage_instructions_says_so(self):
+        result = render_prescriptions([_prescription(medications=[_medication(lines=[])])], 4096)
+
+        self.assertIn("No dosage instructions recorded.", result.text)
+
+    def test_medication_note_is_shown(self):
+        result = render_prescriptions([_prescription(medications=[_medication(note="After food")])], 4096)
+
+        self.assertIn("After food", result.text)
+
+    def test_prescription_note_is_shown(self):
+        result = render_prescriptions([_prescription(note="Complete the full course")], 4096)
+
+        self.assertIn("Complete the full course", result.text)
+
+    def test_prescription_with_no_medications_says_so(self):
+        result = render_prescriptions([_prescription(medications=[])], 4096)
+
+        self.assertIn("No medications on this prescription.", result.text)
+
+    def test_multiple_prescriptions_are_numbered_sequentially(self):
+        result = render_prescriptions([_prescription(name="First"), _prescription(name="Second")], 4096)
+
+        self.assertIn("1.  *First*", result.text)
+        self.assertIn("2.  *Second*", result.text)
 
 
 class RenderEncountersTests(SimpleTestCase):
@@ -74,16 +177,21 @@ class RenderEncountersTests(SimpleTestCase):
 
         result = render_encounters(records, 4096)
 
-        expected = "Your recent encounters:\n\n1. *City Hospital* — 05 Mar 2024 (In Progress, Inpatient)"
+        expected = (
+            "Your recent encounters:\n\n"
+            "1.  *City Hospital* (_In Progress_)\n"
+            "       Date: _05 Mar 2024_\n"
+            "       Type: _Inpatient_"
+        )
         self.assertEqual(result.text, expected)
 
 
 class RenderAppointmentsTests(SimpleTestCase):
-    def test_single_record_formats_practitioner_location_and_detail_line(self):
+    def test_single_record_formats_subject_facility_and_detail_line(self):
         records = [
             AppointmentRecord(
-                practitioner="Jane Doe",
-                location="Ward A",
+                subject="Jane Doe",
+                facility="Ward A",
                 status="Booked",
                 date="05 Mar 2024",
                 time_slot="09:00 am - 09:30 am",
@@ -93,7 +201,11 @@ class RenderAppointmentsTests(SimpleTestCase):
         result = render_appointments(records, 4096)
 
         expected = (
-            "Your recent appointments:\n\n1. *Jane Doe* at *Ward A*\n   05 Mar 2024 — 09:00 am - 09:30 am (Booked)"
+            "Your recent appointments:\n\n"
+            "1.  *Jane Doe* (_Booked_)\n"
+            "       Facility: _Ward A_\n"
+            "       Date: _05 Mar 2024_\n"
+            "       Time: _09:00 am - 09:30 am_"
         )
         self.assertEqual(result.text, expected)
 
@@ -104,7 +216,7 @@ class RenderLabReportsTests(SimpleTestCase):
 
         result = render_lab_reports(records, 4096)
 
-        expected = "Your recent lab reports:\n\n1. *CBC* — 05 Mar 2024 (Completed)"
+        expected = "Your recent lab reports:\n\n1.  *CBC* (_Completed_)\n       Date: _05 Mar 2024_"
         self.assertEqual(result.text, expected)
 
 
@@ -114,7 +226,7 @@ class RenderProceduresTests(SimpleTestCase):
 
         result = render_procedures(records, 4096)
 
-        expected = "Your recent procedures:\n\n1. *Blood Test* — 05 Mar 2024 (Completed)"
+        expected = "Your recent procedures:\n\n1.  *Blood Test* (_Completed_)\n       Date: _05 Mar 2024_"
         self.assertEqual(result.text, expected)
 
 
@@ -132,11 +244,11 @@ class RenderSummaryTests(SimpleTestCase):
 
         expected = (
             "Patient Summary\n\n"
-            "*Name:* Jane Doe\n"
-            "*Date of Birth:* 15 Jun 1990\n"
-            "*Blood Group:* A Positive\n"
-            "*Gender:* Female\n"
-            "*Phone:* +919876543210"
+            "Name: _Jane Doe_\n"
+            "Date of Birth: _15 Jun 1990_\n"
+            "Blood Group: _A Positive_\n"
+            "Gender: _Female_\n"
+            "Phone: _+919876543210_"
         )
         self.assertEqual(result.text, expected)
 
@@ -147,11 +259,11 @@ class RenderSummaryTests(SimpleTestCase):
 
         expected = (
             "Patient Summary\n\n"
-            "*Name:* Not recorded\n"
-            "*Date of Birth:* Not recorded\n"
-            "*Blood Group:* Not recorded\n"
-            "*Gender:* Not recorded\n"
-            "*Phone:* Not recorded"
+            "Name: _Not recorded_\n"
+            "Date of Birth: _Not recorded_\n"
+            "Blood Group: _Not recorded_\n"
+            "Gender: _Not recorded_\n"
+            "Phone: _Not recorded_"
         )
         self.assertEqual(result.text, expected)
 
@@ -166,8 +278,8 @@ class RenderPatientSearchResultsTests(SimpleTestCase):
 
         expected = (
             "Search results. Reply with the number to select:\n\n"
-            "1. Jane Doe (+919876543210)\n"
-            "2. John Roe (+911111111111)"
+            "1.  Jane Doe (+919876543210)\n"
+            "2.  John Roe (+911111111111)"
         )
         self.assertEqual(result.text, expected)
 
