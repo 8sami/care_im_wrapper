@@ -5,8 +5,10 @@ import re
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from jinja2 import UndefinedError
 
 from care_im_wrapper.conversation.messages import InboundMessage, OutboundMessage, SentTemplate, StatusUpdate
+from care_im_wrapper.core.choices import Provider
 from care_im_wrapper.messaging.exceptions import (
     WhatsAppBadRequestError,
     WhatsAppNetworkError,
@@ -14,6 +16,7 @@ from care_im_wrapper.messaging.exceptions import (
     WhatsAppServerError,
     WhatsAppTemplateNotConfiguredError,
 )
+from care_im_wrapper.messaging.limits import ChannelLimits, clamp, limits_for
 from care_im_wrapper.messaging.variables import resolve_variable
 from care_im_wrapper.models.notification import NotificationStatusState
 from care_im_wrapper.settings import plugin_settings
@@ -44,18 +47,7 @@ def _resolve_choice(
 
 
 def normalize_meta_message(payload: dict[str, Any], channel: str) -> InboundMessage | None:
-    """
-    Normalizes a WhatsApp Cloud API (Meta) message payload.
-
-    Handles:
-      - type "text"        → text = payload["text"]["body"]
-      - type "interactive" / "button_reply" → text = interactive["button_reply"]["id"]
-      - type "interactive" / "list_reply"   → text = interactive["list_reply"]["id"]
-
-    Returns None for stickers, images, audio, unhandled types — caller drops them.
-    The `text` field carries the button/row id string for interactive replies,
-    which the state machine in handlers.py dispatches on directly.
-    """
+    """Normalizes a WhatsApp Cloud API (Meta) message payload."""
     raw_phone = payload.get("from")
     if not raw_phone:
         return None
@@ -104,13 +96,7 @@ _META_STATUS_MAP: dict[str, NotificationStatusState] = {
 
 
 def normalize_meta_status(payload: dict[str, Any], channel: str) -> StatusUpdate | None:
-    """
-    Normalizes a WhatsApp Cloud API (Meta) status webhook entry.
-
-    Meta's documented, stable fields: payload["id"] (the wamid),
-    payload["status"] (one of "sent"/"delivered"/"read"/"failed"),
-    payload.get("timestamp"), payload.get("errors").
-    """
+    """Normalizes a WhatsApp Cloud API (Meta) status webhook entry."""
     tracking_id = payload.get("id")
     if not tracking_id:
         logger.warning("normalize_meta_status: missing id, dropping")
@@ -129,8 +115,6 @@ class WhatsAppClient:
     supports_interactive: bool = True
     supports_templates: bool = True
 
-    # Properties, not class attributes: the latter freeze at import, ignoring PLUGIN_CONFIGS
-    # overrides and settings.reload(). registry.py builds a fresh client per lookup anyway.
     @property
     def max_message_chars(self) -> int:
         return int(plugin_settings.WHATSAPP_MESSAGE_CHAR_LIMIT)
@@ -151,9 +135,13 @@ class WhatsAppClient:
     def max_reply_buttons(self) -> int:
         return int(plugin_settings.WHATSAPP_REPLY_BUTTON_LIMIT)
 
+    @property
+    def _limits(self) -> ChannelLimits:
+        """Every field cap in one object, read fresh so overrides apply."""
+        return limits_for(Provider.WHATSAPP.value)
+
     def validate_variable_mapping_value(self, expr: str) -> list[str]:
-        """WhatsApp/Meta rules for one variable_mapping expression -- mirrors the
-        FE's whatsappExpressionSchema."""
+        """Validates one variable_mapping expression against Meta's rules."""
         errors: list[str] = []
         if not expr.strip():
             return ["Expression is required."]
@@ -173,22 +161,19 @@ class WhatsAppClient:
                 "recipient_type": "individual",
                 "to": to,
                 "type": "text",
-                "text": {"body": body},
+                "text": {"body": clamp(body, self._limits.text_body)},
             }
         )
 
     def send_interactive(self, to: str, msg: OutboundMessage) -> str | None:
-        """
-        Renders OutboundMessage.interactive as the exact Meta Cloud API JSON shape and sends it.
-        Silently falls back to send_text() if msg.interactive is None.
-        All field truncation happens here — callers must not pre-truncate.
-        """
+        """Renders OutboundMessage.interactive as the exact Meta Cloud API JSON shape and sends it."""
         from care_im_wrapper.conversation.messages import InteractiveType
 
         if msg.interactive is None:
             return self.send_text(to, msg.as_plain_text())
 
         iv = msg.interactive
+        limits = self._limits
         interactive_obj: dict[str, Any]
 
         if iv.type == InteractiveType.REPLY_BUTTONS:
@@ -197,14 +182,14 @@ class WhatsAppClient:
                     "type": "reply",
                     "reply": {
                         "id": str(b["id"])[:_INTERACTIVE_ID_MAX_CHARS],
-                        "title": str(b["title"])[: int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)],
+                        "title": clamp(b["title"], limits.button_title),
                     },
                 }
                 for b in iv.action_data[: self.max_reply_buttons]
             ]
             interactive_obj = {
                 "type": "button",
-                "body": {"text": iv.body},
+                "body": {"text": clamp(iv.body, limits.interactive_body)},
                 "action": {"buttons": buttons},
             }
 
@@ -218,26 +203,24 @@ class WhatsAppClient:
                         break
                     entry: dict[str, Any] = {
                         "id": str(row["id"])[:_INTERACTIVE_ID_MAX_CHARS],
-                        "title": str(row["title"])[: int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)],
+                        "title": clamp(row["title"], limits.row_title),
                     }
                     if row.get("description"):
-                        entry["description"] = str(row["description"])[
-                            : int(plugin_settings.WHATSAPP_DESCRIPTION_TRUNCATE)
-                        ]
+                        entry["description"] = clamp(row["description"], limits.row_description)
                     rows.append(entry)
                     total_rows += 1
                 if rows:
                     sections.append(
                         {
-                            "title": str(section.get("title", ""))[: int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)],
+                            "title": clamp(section.get("title", ""), limits.section_title),
                             "rows": rows,
                         }
                     )
             interactive_obj = {
                 "type": "list",
-                "body": {"text": iv.body},
+                "body": {"text": clamp(iv.body, limits.interactive_body)},
                 "action": {
-                    "button": str(iv.button_label)[: int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)],
+                    "button": clamp(iv.button_label, limits.list_button_label),
                     "sections": sections,
                 },
             }
@@ -246,13 +229,11 @@ class WhatsAppClient:
             params = iv.action_data[0] if iv.action_data else {}
             interactive_obj = {
                 "type": "cta_url",
-                "body": {"text": iv.body},
+                "body": {"text": clamp(iv.body, limits.interactive_body)},
                 "action": {
                     "name": "cta_url",
                     "parameters": {
-                        "display_text": str(params.get("display_text", "Open"))[
-                            : int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)
-                        ],
+                        "display_text": clamp(params.get("display_text", "Open"), limits.button_title),
                         "url": str(params.get("url", "")),
                     },
                 },
@@ -262,7 +243,7 @@ class WhatsAppClient:
             return self.send_text(to, msg.as_plain_text())
 
         if iv.footer:
-            interactive_obj["footer"] = {"text": iv.footer}
+            interactive_obj["footer"] = {"text": clamp(iv.footer, limits.interactive_footer)}
 
         return self._send(
             {
@@ -337,11 +318,36 @@ class WhatsAppClient:
         variable_mapping: dict[str, str] = template.variable_mapping  # pyright: ignore[reportAssignmentType]
         parameters: list[dict[str, Any]] = []
         for meta_key in meta_keys:
-            value = resolve_variable(variable_mapping[meta_key], related_object, context)
+            try:
+                value = resolve_variable(variable_mapping[meta_key], related_object, context)
+            except UndefinedError as exc:
+                logger.error(
+                    "WhatsApp send_template: template %s parameter %r references an undefined value in mapping %r: %s",
+                    template.slug,
+                    meta_key,
+                    variable_mapping[meta_key],
+                    exc,
+                )
+                raise WhatsAppTemplateNotConfiguredError(
+                    f"NotificationTemplate '{template.slug}' parameter '{meta_key}' references an undefined "
+                    f"value in mapping '{variable_mapping[meta_key]}': {exc}"
+                ) from exc
+            text = clamp(value, self._limits.template_parameter)
+            if not text.strip():
+                logger.error(
+                    "WhatsApp send_template: template %s parameter %r resolved to an empty value from mapping %r",
+                    template.slug,
+                    meta_key,
+                    variable_mapping[meta_key],
+                )
+                raise WhatsAppTemplateNotConfiguredError(
+                    f"NotificationTemplate '{template.slug}' parameter '{meta_key}' resolved to an empty "
+                    f"value from mapping '{variable_mapping[meta_key]}'; WhatsApp rejects blank parameters."
+                )
             if is_named:
-                parameters.append({"type": "text", "parameter_name": meta_key, "text": value})
+                parameters.append({"type": "text", "parameter_name": meta_key, "text": text})
             else:
-                parameters.append({"type": "text", "text": value})
+                parameters.append({"type": "text", "text": text})
         return parameters
 
     def _build_button_components(
@@ -352,10 +358,7 @@ class WhatsAppClient:
         context: dict[str, Any],
         variable_mapping: dict[str, str],
     ) -> list[dict[str, Any]]:
-        """Meta URL-button params are always positional regardless of the body's
-        parameter_format, so this never consults `is_named`. The dynamic suffix uses the
-        distinct "url_suffix" mapping key so it cannot collide with a HEADER/BODY entry.
-        """
+        """Meta URL-button params are always positional, whatever the body's parameter_format."""
         button_components: list[dict[str, Any]] = []
         for index, button in enumerate(buttons_component.get("buttons", [])):
             if button.get("type", "").upper() != "URL":
@@ -387,12 +390,7 @@ class WhatsAppClient:
     def _build_components(
         self, template: NotificationTemplate, related_object: Any, context: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        """
-        Builds Meta's `components` list (HEADER + BODY text placeholders, plus a dynamic
-        URL button if the synced payload has one) from the synced `payload`. Each
-        `variable_mapping` value is a `resolve_variable` expression, evaluated against
-        `related_object` and the handler-supplied `context`.
-        """
+        """Builds Meta's `components` list (HEADER + BODY text placeholders, plus a dynamic."""
         from care_im_wrapper.models.notification import TemplateParameterFormat
 
         if not template.variable_mapping:
@@ -433,9 +431,7 @@ class WhatsAppClient:
 
     @staticmethod
     def _flatten_components(components: list[dict[str, Any]]) -> dict[str, str]:
-        """Resolved values read back off the components we send, so the audit record cannot
-        drift from the payload. Named params keep their parameter_name, positional ones use
-        their 1-based index."""
+        """Resolved values read back off the components we send, so the audit record cannot."""
         flat: dict[str, str] = {}
         for comp in components:
             if comp.get("type") == "button":

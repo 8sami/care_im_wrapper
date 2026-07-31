@@ -137,7 +137,7 @@ class WhatsAppClientSendInteractiveTests(SimpleTestCase):
 
         _, kwargs = mock_post.call_args
         button = kwargs["json"]["interactive"]["action"]["buttons"][0]
-        self.assertEqual(button["reply"]["title"], "A" * 20)
+        self.assertEqual(button["reply"]["title"], "A" * 19 + "\u2026")
 
     @patch("care_im_wrapper.messaging.whatsapp.httpx.post")
     def test_list_type_caps_rows_at_ten_across_sections(self, mock_post):
@@ -179,7 +179,7 @@ class WhatsAppClientSendInteractiveTests(SimpleTestCase):
 
         _, kwargs = mock_post.call_args
         row = kwargs["json"]["interactive"]["action"]["sections"][0]["rows"][0]
-        self.assertEqual(row["description"], "B" * 72)
+        self.assertEqual(row["description"], "B" * 71 + "\u2026")
 
     @patch("care_im_wrapper.messaging.whatsapp.httpx.post")
     def test_list_row_without_description_key_omits_it(self, mock_post):
