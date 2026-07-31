@@ -15,8 +15,6 @@ class ConversationSession(models.Model):
         PATIENT = "patient", "Patient"  # pyright: ignore[reportAssignmentType]
         STAFF = "staff", "Staff"  # pyright: ignore[reportAssignmentType]
 
-    # Re-exported so existing callers can keep using ConversationSession.Provider.WHATSAPP;
-    # lives in core.choices so settings.py can reference it without a circular import.
     Provider = Provider
 
     class State(models.TextChoices):
@@ -41,8 +39,15 @@ class ConversationSession(models.Model):
     state = models.CharField(max_length=30, choices=State.choices, default=State.NEW)
     failed_attempts = models.PositiveSmallIntegerField(default=0)  # pyright: ignore[reportArgumentType]
     cooldown_until = models.DateTimeField(null=True, blank=True)
+    data_menu_choice = models.CharField(max_length=8, blank=True, default="")
+    data_offsets = models.JSONField(default=list, blank=True)
+    # Records the current page displayed after trimming, so "next" knows where it ended.
+    data_shown = models.PositiveIntegerField(default=0)  # pyright: ignore[reportArgumentType]
+    # The staff lookup query, so its results can be re-run a page along without retyping.
+    search_query = models.CharField(max_length=255, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    last_active_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
         app_label = "care_im_wrapper"
@@ -69,6 +74,15 @@ class ConversationSession(models.Model):
         self.cooldown_until = None
         self.save(update_fields=["state", "failed_attempts", "cooldown_until"])
         return False
+
+    def record_activity(self) -> None:
+        """Call once per inbound turn, before dispatch. Logs out a session idle past."""
+        if self.state != self.State.COOLDOWN:
+            idle_for = timezone.now() - self.last_active_at
+            if idle_for.total_seconds() > int(plugin_settings.SESSION_IDLE_TIMEOUT_SECONDS):
+                self.logout()
+        self.last_active_at = timezone.now()
+        self.save(update_fields=["last_active_at"])
 
     def get_cooldown_remaining_minutes(self) -> int | None:
         if self.state == self.State.COOLDOWN and self.cooldown_until:
@@ -117,8 +131,12 @@ class ConversationSession(models.Model):
         self.failed_attempts = 0
         self.cooldown_until = None
         self.candidates = []
+        self.data_menu_choice = ""
+        self.data_offsets = []
+        self.search_query = ""
         self.save(
             update_fields=[
+                "search_query",
                 "state",
                 "user_type",
                 "user_id",
@@ -128,5 +146,55 @@ class ConversationSession(models.Model):
                 "failed_attempts",
                 "cooldown_until",
                 "candidates",
+                "data_menu_choice",
+                "data_offsets",
             ],
         )
+
+    def open_data_list(self, menu_choice: str) -> None:
+        """Start reading a menu option from the top."""
+        self.data_menu_choice = menu_choice
+        self.data_offsets = []
+        self.data_shown = 0
+        self.save(update_fields=["data_menu_choice", "data_offsets", "data_shown"])
+
+    def record_shown(self, shown: int) -> None:
+        """Remember the size of the page just rendered, so `advance_page` can step exactly."""
+        shown = max(0, int(shown))
+        if self.data_shown != shown:
+            self.data_shown = shown
+            self.save(update_fields=["data_shown"])
+
+    def next_offset(self) -> int:
+        """Where the page after the current one begins."""
+        from care_im_wrapper.data.pagination import current_offset
+
+        return current_offset(self) + int(self.data_shown or 0)
+
+    def advance_page(self, next_offset: int) -> None:
+        """Move forward to the page starting at `next_offset`, remembering where this one."""
+        self.data_offsets = [*(self.data_offsets or []), max(0, int(next_offset))]
+        self.save(update_fields=["data_offsets"])
+
+    def back_page(self) -> None:
+        self.data_offsets = (self.data_offsets or [])[:-1]
+        self.save(update_fields=["data_offsets"])
+
+    @property
+    def data_page(self) -> int:
+        """0-based index of the current page, for display."""
+        return len(self.data_offsets or [])
+
+    def reset_data_page(self) -> None:
+        """Clears paging state -- on logout, on switching patient, or on leaving a list."""
+        if self.data_menu_choice or self.data_offsets:
+            self.data_menu_choice = ""
+            self.data_offsets = []
+            self.save(update_fields=["data_menu_choice", "data_offsets"])
+
+    def open_search(self, query: str) -> None:
+        """Records the patient-lookup query and restarts its results from the top."""
+        self.search_query = query
+        self.data_offsets = []
+        self.data_shown = 0
+        self.save(update_fields=["search_query", "data_offsets", "data_shown"])

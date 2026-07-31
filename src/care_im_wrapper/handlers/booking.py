@@ -6,19 +6,25 @@ from care.emr.resources.scheduling.slot.spec import BookingStatusChoices  # pyri
 from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 
+from care_im_wrapper.data.base import describe_resource
 from care_im_wrapper.handlers.dispatch import (
     NotificationRecipientSpec,
     fire_notification_event,
     track_previous_status,
 )
 from care_im_wrapper.models.notification import _FACILITY_RESOLVERS
-from care_im_wrapper.reports.context_builders import NOTIFICATION_CONTEXT_REGISTRY, TokenBookingContext
+from care_im_wrapper.reports.context_builders import (
+    NOTIFICATION_CONTEXT_REGISTRY,
+    AppointmentReminderContext,
+    TokenBookingContext,
+)
 from care_im_wrapper.settings import plugin_settings
 
 logger = logging.getLogger(__name__)
 
 # Slug naming the TokenBooking context; set on the appointment triggers' context_slug.
 BOOKING_CONTEXT_SLUG = "token_booking"
+APPOINTMENT_REMINDER_CONTEXT_SLUG = "appointment_reminder"
 
 
 def _resolve_booking_facility(booking: TokenBooking) -> Any | None:
@@ -27,10 +33,15 @@ def _resolve_booking_facility(booking: TokenBooking) -> Any | None:
 
 _FACILITY_RESOLVERS[TokenBooking] = _resolve_booking_facility
 NOTIFICATION_CONTEXT_REGISTRY.register(BOOKING_CONTEXT_SLUG, TokenBookingContext)
+NOTIFICATION_CONTEXT_REGISTRY.register(APPOINTMENT_REMINDER_CONTEXT_SLUG, AppointmentReminderContext)
+
+
+def describe_booking_resource(booking: TokenBooking) -> str:
+    """Who or what the appointment is with. Supplied as a flat value rather than read off."""
+    return describe_resource(getattr(booking.token_slot, "resource", None))
 
 
 def _create_event_and_recipient(booking: TokenBooking, trigger_slug: str, title: str) -> None:
-    # Field values are resolved from trigger.default_variable_values and booking at send time.
     fire_notification_event(
         trigger_slug=trigger_slug,
         title=title,
@@ -39,7 +50,7 @@ def _create_event_and_recipient(booking: TokenBooking, trigger_slug: str, title:
             content_object=booking.patient,
             phone_number=booking.patient.phone_number,
         ),
-        variable_values={},
+        variable_values={"doctor_name": describe_booking_resource(booking)},
     )
 
 

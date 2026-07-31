@@ -70,10 +70,7 @@ def slugify(text, max_length=36):
 
 
 class CareFixtureBase:
-    """
-    Simple class with helper functions to create fixtures.
-    Inspired by CareAPITestBase (We should merge these in future)
-    """
+    """Simple class with helper functions to create fixtures."""
 
     fake = Faker("en_IN")
 
@@ -637,27 +634,30 @@ class CareFixtureBase:
                 pass
         return results
 
-    # ------------------------------------------------------------------
-    # Medication requests, dispenses & administrations
-    # ------------------------------------------------------------------
+    TABLET_UNIT = {
+        "code": "{tbl}",
+        "display": "tablets",
+        "system": "http://unitsofmeasure.org",
+    }
+    ORAL_ROUTE = {
+        "code": "26643006",
+        "system": "http://snomed.info/sct",
+        "display": "Oral route",
+    }
 
     def create_medication_request(self, patient_id, encounter_id, medication, **kwargs):
-        """
-        Create a MedicationRequest for a patient inside an encounter.
-
-        ``medication`` — a FHIR coding dict, e.g.::
-
-            {"code": "27658006", "system": "http://snomed.info/sct",
-             "display": "Amoxicillin-containing product"}
-
-        ``encounter_id`` — external_id (UUID) of the encounter.
-        """
+        """Create a MedicationRequest for a patient inside an encounter."""
         from django.utils import timezone
 
         url = reverse(
             "medication-request-list",
             kwargs={"patient_external_id": patient_id},
         )
+        dosage_text = kwargs.pop("dosage_text", "1-0-1")
+        frequency = kwargs.pop("frequency", 2)
+        duration_days = kwargs.pop("duration_days", 5)
+        dose_value = kwargs.pop("dose_value", 1)
+        dose_unit = kwargs.pop("dose_unit", None) or self.TABLET_UNIT
         data = {
             "encounter": encounter_id,
             "status": "active",
@@ -669,21 +669,21 @@ class CareFixtureBase:
             "medication": medication,
             "dosage_instruction": [
                 {
-                    "text": kwargs.pop("dosage_text", "As directed by physician"),
+                    "text": dosage_text,
                     "as_needed_boolean": False,
+                    "dose_and_rate": {
+                        "type": "ordered",
+                        "dose_quantity": {"value": dose_value, "unit": dose_unit},
+                    },
                     "timing": {
                         "repeat": {
-                            "frequency": 2,
+                            "frequency": frequency,
                             "period": 1,
                             "period_unit": "d",
-                            "bounds_duration": {"value": 5, "unit": "d"},
+                            "bounds_duration": {"value": duration_days, "unit": "d"},
                         }
                     },
-                    "route": {
-                        "code": "26643006",
-                        "system": "http://snomed.info/sct",
-                        "display": "Oral route",
-                    },
+                    "route": self.ORAL_ROUTE,
                 }
             ],
             **kwargs,
@@ -691,11 +691,7 @@ class CareFixtureBase:
         return self.post(url, data)
 
     def create_medication_statement(self, patient_id, encounter_id, medication, **kwargs):
-        """
-        Create a MedicationStatement (current/historical medication) for a patient.
-
-        ``medication`` — a FHIR coding dict.
-        """
+        """Create a MedicationStatement (current/historical medication) for a patient."""
         url = reverse(
             "medication-statement-list",
             kwargs={"patient_external_id": patient_id},
@@ -704,21 +700,13 @@ class CareFixtureBase:
             "encounter": encounter_id,
             "status": "active",
             "medication": medication,
-            "dosage": [
-                {
-                    "text": kwargs.pop("dosage_text", "As directed"),
-                }
-            ],
+            "dosage_text": kwargs.pop("dosage_text", "As directed"),
             **kwargs,
         }
         return self.post(url, data)
 
     def create_medication_administration(self, patient_id, encounter_id, medication, request_id=None, **kwargs):
-        """
-        Record that a medication dose was administered to a patient.
-
-        ``request_id`` — optional external_id of the originating MedicationRequest.
-        """
+        """Record that a medication dose was administered to a patient."""
         from django.utils import timezone
 
         url = reverse(
@@ -734,13 +722,10 @@ class CareFixtureBase:
             "occurrence_period_end": now.isoformat(),
             "dosage": {
                 "text": kwargs.pop("dosage_text", "As directed"),
+                "route": kwargs.pop("route", None) or self.ORAL_ROUTE,
                 "dose": {
                     "value": kwargs.pop("dose_value", 1),
-                    "unit": {
-                        "code": "{tbl}",
-                        "system": "http://unitsofmeasure.org",
-                        "display": "tablets",
-                    },
+                    "unit": kwargs.pop("dose_unit", None) or self.TABLET_UNIT,
                 },
             },
             **kwargs,
@@ -748,10 +733,6 @@ class CareFixtureBase:
         if request_id:
             data["request"] = request_id
         return self.post(url, data)
-
-    # ------------------------------------------------------------------
-    # Service requests (procedure / lab orders) & diagnostic reports
-    # ------------------------------------------------------------------
 
     def create_service_request(
         self,
@@ -762,14 +743,7 @@ class CareFixtureBase:
         code,
         **kwargs,
     ):
-        """
-        Create a ServiceRequest (procedure or lab order) tied to an encounter.
-
-        ``code``        — FHIR coding dict identifying the requested service.
-        ``requester_id``— external_id of the requesting practitioner (must be a
-                          member of the facility).
-        ``locations``   — optional list of location external_ids; defaults to [].
-        """
+        """Create a ServiceRequest (procedure or lab order) tied to an encounter."""
         url = reverse(
             "service_request-list",
             kwargs={"facility_external_id": facility_id},
@@ -797,18 +771,7 @@ class CareFixtureBase:
         requester_id=None,
         **kwargs,
     ):
-        """
-        Create a ServiceRequest from an ActivityDefinition.
-
-        The apply_activity_definition API action has a server-side serialization
-        bug (ResourceCategory ORM objects are not JSON-serializable in the response
-        path). Both the action endpoint and the activity_definition list/detail API
-        endpoints share the same bug via ActivityDefinitionReadSpec → ResourceCategoryReadSpec.
-
-        Instead we read the ActivityDefinition directly from the ORM (safe inside
-        fixture context which runs in the same Django process) and POST to the
-        plain service_request-list endpoint, which has no such issue.
-        """
+        """Create a ServiceRequest from an ActivityDefinition."""
         from care.emr.models import ActivityDefinition
         from care.facility.models.facility import Facility
 
@@ -844,12 +807,7 @@ class CareFixtureBase:
         service_request_id,
         **kwargs,
     ):
-        """
-        Create a DiagnosticReport linked to a ServiceRequest.
-
-        ``service_request_id`` — external_id of the parent ServiceRequest.
-        ``status``             — defaults to ``"preliminary"``.
-        """
+        """Create a DiagnosticReport linked to a ServiceRequest."""
         url = reverse(
             "diagnostic_report-list",
             kwargs={"patient_external_id": patient_id},

@@ -11,14 +11,20 @@ from care_im_wrapper.messaging.exceptions import (
     WhatsAppServerError,
 )
 from care_im_wrapper.tasks import process_inbound_message
-from tests.utils import OverrideCache  # noqa: F401 # pyright: ignore
+from tests.utils import override_test_cache
 
 PHONE = "+919876543210"
 CHANNEL = "whatsapp"
 
 
-@OverrideCache
+@override_test_cache()
 class ProcessInboundMessageDedupTests(SimpleTestCase):
+    def setUp(self):
+        # override_test_cache isolates per class, not per method -- two methods below reuse
+        # "wamid-1", so without this a dedup key set by one leaks into the other depending
+        # on run order.
+        cache.clear()
+
     @patch("care_im_wrapper.tasks.run_state_machine")
     def test_duplicate_raw_id_is_dropped_without_calling_state_machine(self, mock_run):
         process_inbound_message(PHONE, "hello", CHANNEL, raw_id="wamid-1")
@@ -41,7 +47,7 @@ class ProcessInboundMessageDedupTests(SimpleTestCase):
         self.assertEqual(mock_run.call_count, 2)
 
 
-@OverrideCache
+@override_test_cache()
 class ProcessInboundMessagePendingTaskCleanupTests(SimpleTestCase):
     @patch("care_im_wrapper.tasks.run_state_machine")
     def test_pending_task_cache_key_is_deleted_on_processing(self, mock_run):
@@ -53,7 +59,7 @@ class ProcessInboundMessagePendingTaskCleanupTests(SimpleTestCase):
         mock_run.assert_called_once_with(PHONE, "hello", CHANNEL)
 
 
-@OverrideCache
+@override_test_cache()
 class ProcessInboundMessageRetryDedupTests(SimpleTestCase):
     """
     A Celery retry re-invokes this exact task with the same raw_id. The dedup guard
@@ -76,7 +82,7 @@ class ProcessInboundMessageRetryDedupTests(SimpleTestCase):
         mock_run.assert_called_once()
 
 
-@OverrideCache
+@override_test_cache()
 class ProcessInboundMessageErrorHandlingTests(SimpleTestCase):
     def _patch_retry(self):
         return patch.object(process_inbound_message, "retry", side_effect=lambda exc, countdown=None: exc)

@@ -12,13 +12,20 @@ class CareImWrapperConfig(AppConfig):
         # ready() must import handlers or @receiver decorators never register
         from config.celery_app import app  # pyright: ignore[reportMissingImports]
 
+        import care_im_wrapper.handlers.billing  # noqa: F401
         import care_im_wrapper.handlers.booking  # noqa: F401
         import care_im_wrapper.handlers.diagnostic_report  # noqa: F401
         import care_im_wrapper.handlers.meta  # noqa: F401
+        import care_im_wrapper.handlers.patient  # noqa: F401
+        import care_im_wrapper.handlers.token  # noqa: F401
         from care_im_wrapper.security.authorization import register_notification_authorization
         from care_im_wrapper.security.permission_registration import register_notification_permissions
         from care_im_wrapper.settings import plugin_settings
-        from care_im_wrapper.tasks import dispatch_pending_notification_recipients, sync_notification_templates
+        from care_im_wrapper.tasks import (
+            dispatch_pending_notification_recipients,
+            send_appointment_reminders,
+            sync_notification_templates,
+        )
 
         register_notification_permissions()
         register_notification_authorization()
@@ -34,4 +41,9 @@ class CareImWrapperConfig(AppConfig):
                 plugin_settings.TEMPLATE_SYNC_INTERVAL_SECONDS,
                 sync_notification_templates.s(),  # pyright: ignore[reportCallIssue]
                 name="care_im_wrapper: sync notification templates",
+            )
+            sender.add_periodic_task(
+                plugin_settings.APPOINTMENT_REMINDER_SCAN_INTERVAL_SECONDS,
+                send_appointment_reminders.s(),  # pyright: ignore[reportFunctionMemberAccess]
+                name="care_im_wrapper: send appointment reminders",
             )

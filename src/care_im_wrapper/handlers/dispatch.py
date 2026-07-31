@@ -28,14 +28,28 @@ class NotificationRecipientSpec:
     phone_number: str
 
 
-def track_previous_status(instance: Model, **kwargs: Any) -> None:
-    """`pre_save` receiver stashing the pre-save `status` on the instance, so the paired
-    `post_save` receiver can fire only on an actual transition. Connect it per model:
+def track_previous_field(field_name: str):
+    """Builds a pre_save receiver stashing the old value as `_previous_<field_name>`.
 
-        pre_save.connect(track_previous_status, sender=TokenBooking)
-
-    Reads `None` for an unsaved instance.
+    Connect with weak=False; the closure has no other reference.
     """
+
+    def _track(instance: Model, **kwargs: Any) -> None:
+        attribute = f"_previous_{field_name}"
+        if instance.pk is None:
+            setattr(instance, attribute, None)
+        else:
+            setattr(
+                instance,
+                attribute,
+                type(instance).objects.filter(pk=instance.pk).values_list(field_name, flat=True).first(),  # pyright: ignore[reportAttributeAccessIssue]
+            )
+
+    return _track
+
+
+def track_previous_status(instance: Model, **kwargs: Any) -> None:
+    """`pre_save` receiver stashing the pre-save `status` on the instance, so the paired."""
     if instance.pk is None:
         instance._previous_status = None  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
     else:
@@ -83,8 +97,6 @@ def fire_notification_event(
         return None
 
     if not recipient.phone_number:
-        # A recipient with no number can never be delivered and would only burn the dispatch
-        # retry budget failing at send time. Skip it here instead.
         logger.info("fire_notification_event: skipping %s, recipient has no phone number", trigger_slug)
         return None
 

@@ -9,9 +9,6 @@ from care_im_wrapper.data import (
 )
 from care_im_wrapper.documents import resolvers as document_resolvers
 
-# Each entry: (display_label, fetcher_fn, renderer_fn, document_resolver_fn), where fetcher_fn
-# and renderer_fn are None for entries that don't fetch data, and document_resolver_fn is set
-# only where the item's records map to distinct documents.
 _PATIENT_MENU = {
     "1": (
         "Encounter details",
@@ -19,7 +16,7 @@ _PATIENT_MENU = {
         renderers.render_encounters,
         document_resolvers.resolve_encounter_document,
     ),
-    "2": ("Current medications", medications.fetch_medications, renderers.render_medications, None),
+    "2": ("Medications", medications.fetch_prescriptions, renderers.render_prescriptions, None),
     "3": ("Procedures", procedures.fetch_procedures, renderers.render_procedures, None),
     "4": ("Appointments", appointments.fetch_appointments, renderers.render_appointments, None),
     "5": (
