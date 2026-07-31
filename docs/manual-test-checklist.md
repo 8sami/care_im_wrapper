@@ -3,6 +3,29 @@
 End-to-end pass over the plugin: chat, auth, data menus, documents, rate limiting and
 notifications. Values in brackets are the defaults from `settings.py`.
 
+```bash
+# session state
+docker compose exec -T backend python manage.py shell -c "
+from care_im_wrapper.models import ConversationSession
+s = ConversationSession.objects.get(phone_number='+919876543210')
+print(s.state, s.user_type, s.failed_attempts, s.cooldown_until, s.last_active_at)"
+
+# recent notifications
+docker compose exec -T backend python manage.py shell -c "
+from care_im_wrapper.models.notification import NotificationEvent, NotificationRecipient
+for e in NotificationEvent.objects.select_related('trigger').order_by('-created_date')[:10]:
+    r = NotificationRecipient.objects.filter(event=e).first()
+    print(e.created_date, e.trigger.slug, getattr(r,'latest_status',None))"
+
+# why a send failed
+docker compose exec -T backend python manage.py shell -c "
+from care_im_wrapper.models.notification import NotificationStatus
+s = NotificationStatus.objects.filter(state='failed').latest('created_date')
+print(s.recipient.phone_number, (s.payload or {}).get('error'))"
+
+docker compose logs -f celery backend
+```
+
 ## 0. Setup
 
 - [ ] backend, celery, db and redis containers healthy
@@ -49,6 +72,7 @@ Year of birth
 Several people on one number
 - [ ] >1 match after the correct year → candidate pick-list, state `AMBIGUOUS`
 - [ ] picking a row authenticates as that identity
+- [ ] candidate rows are 1-based
 - [ ] out-of-range or free-text selection → invalid choice, still `AMBIGUOUS`
 - [ ] a number that is both patient and staff shows both; picking staff gives option 7
 
@@ -65,6 +89,7 @@ Lockout
 - [ ] the next message restarts at the year-of-birth prompt
 - [ ] idle past `[SESSION_IDLE_TIMEOUT_SECONDS = 30 min]` logs out on the next message
 - [ ] a session used within the window is not logged out
+- [ ] `last_active_at` moves on every turn, including read-only ones
 - [ ] `COOLDOWN` is exempt from the idle logout
 - [ ] a session whose user was deleted gets the session-expired reply
 - [ ] two numbers have independent sessions
@@ -97,7 +122,9 @@ Each option: data renders, no data gives the no-data message, menu is re-offered
 - [ ] numbering continues across pages instead of restarting
 - [ ] nothing repeats or is skipped paging forward then back
 - [ ] invalid choice (`9`, `abc`, emoji) → invalid choice, still `AUTHENTICATED`
+- [ ] the same option twice within `[DATA_CACHE_TIMEOUT_SECONDS = 90]` serves from cache
 - [ ] a long list truncates at `[WHATSAPP_MESSAGE_CHAR_LIMIT = 4096]` with a marker
+- [ ] over the limit it splits into text then menu, in that order
 
 ## 5. Staff lookup
 
@@ -106,6 +133,7 @@ Each option: data renders, no data gives the no-data message, menu is re-offered
 - [ ] query under `[PATIENT_SEARCH_MIN_QUERY_LENGTH = 3]` errors but stays in the search state
 - [ ] no matches → no-patients-found
 - [ ] matches → pick-list, state `SELECTING_PATIENT`
+- [ ] result rows are 0-based
 - [ ] more than `[WHATSAPP_LIST_ROW_LIMIT = 10]` matches caps the list rather than failing
 - [ ] selecting sets `active_patient_external_id` and confirms
 - [ ] later menu options return that patient's data, not the staff member's
@@ -152,6 +180,7 @@ Authorization
 - [ ] messages within `[DEBOUNCE_SECONDS = 2]` collapse into one turn, last one wins
 - [ ] a message during the debounce window resets the timer
 - [ ] Meta redelivering a message id within `[MESSAGE_DEDUP_TIMEOUT_SECONDS = 300]` is dropped
+- [ ] a celery retry of the same id still runs, not treated as a duplicate
 - [ ] two replies in one turn are not paced against each other
 - [ ] replying within `[WHATSAPP_MIN_SEND_INTERVAL_SECONDS = 6]` defers rather than drops
 
@@ -188,6 +217,7 @@ For each: the action creates a `NotificationEvent` and `NotificationRecipient`, 
 - [ ] an invoice with a blank number still sends, using the external id
 - [ ] `payment_recorded` — complete a payment against an invoice
 - [ ] a partial payment stays silent
+- [ ] a payment with no target invoice is skipped (see §11)
 - [ ] `document_ready_update` — complete a service request with a final report
 - [ ] a service request with no final report does not fire
 
@@ -201,8 +231,16 @@ Resource types
 
 - [ ] every template parameter renders non-empty
 - [ ] a blank variable raises `WhatsAppTemplateNotConfiguredError` naming the template and parameter, not Meta's `131008`
+- [ ] that failure is recorded at once and not retried
+- [ ] a 5xx or network error retries up to `[TASK_MAX_RETRIES = 3]`, then fails
+- [ ] a 400 fails without retrying
 - [ ] a number off the allowlist fails `131030` and is not retried forever
+- [ ] two workers cannot double-send the same recipient
+- [ ] a claim older than `[DISPATCH_CLAIM_STALE_SECONDS = 900]` is reclaimable
+- [ ] the sweep every `[NOTIFICATION_DISPATCH_INTERVAL_SECONDS = 120]` picks up missed recipients
 - [ ] template sync refreshes Meta fields without clobbering `variable_mapping`
+- [ ] no message id records a `MissingTrackingId` failure
+- [ ] `message_payload.sent_parameters` matches what was received
 
 ## 10. API
 
@@ -213,3 +251,19 @@ Resource types
 - [ ] `notification-events` and `notification-recipients` list and filter
 - [ ] a user without notification permissions cannot read or write them
 - [ ] a user only sees events for their own facilities
+
+## 11. Known gaps
+
+Open items, not bugs to file.
+
+- [ ] account-level payments send nothing: a `PaymentReconciliation` with no
+      `target_invoice` is skipped because `payment_status` reads patient, account and
+      invoice off an Invoice. Needs a second template without the invoice line.
+- [ ] `patient_updates` needs the approved template updated to drop the
+      `Hospital / Clinic: {{hospital_or_clinic}}` line, or registration and discharge
+      fail on a missing parameter.
+- [ ] discharge no longer names a facility, since that parameter went with it. Split
+      discharge into its own template if it matters.
+- [ ] pacing retry replays a committed turn: `_flush` re-raises
+      `OutboundRateLimitedError` on the first send, but state is already committed, so
+      the retry re-runs the turn against the advanced state.
