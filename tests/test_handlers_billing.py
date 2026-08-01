@@ -50,7 +50,7 @@ class BillingSignalTestBase(CareAPITestBase):
     def setUp(self):
         super().setUp()
         self.user = self.create_user()
-        self.patient = self.create_patient(phone_number=PATIENT_PHONE)
+        self.patient = self.create_patient(phone_number=PATIENT_PHONE, name="Jane Doe")
         self.facility = self.create_facility(user=self.user)
         self.account = self._create_account()
 
@@ -159,6 +159,7 @@ class PaymentRecordedSignalTests(BillingSignalTestBase):
         self.assertEqual(kwargs["related_object"], invoice)
         self.assertEqual(kwargs["variable_values"]["status"], "confirmed")
         self.assertEqual(kwargs["variable_values"]["amount"], "5,000.00")
+        self.assertEqual(kwargs["variable_values"]["patient_name"], self.patient.name)
 
     @patch("care_im_wrapper.handlers.billing.fire_notification_event")
     def test_incomplete_payment_stays_silent(self, mock_fire):
@@ -170,10 +171,27 @@ class PaymentRecordedSignalTests(BillingSignalTestBase):
         mock_fire.assert_not_called()
 
     @patch("care_im_wrapper.handlers.billing.fire_notification_event")
-    def test_complete_payment_without_a_target_invoice_is_skipped(self, mock_fire):
+    def test_complete_payment_without_a_target_invoice_still_notifies(self, mock_fire):
+        """A deposit against the account has no invoice to quote, but the patient should
+        still hear that the payment went through."""
+        payment = self._create_payment(outcome="complete", target_invoice=None)
+
+        mock_fire.assert_called_once()
+        kwargs = mock_fire.call_args.kwargs
+        self.assertEqual(kwargs["related_object"], payment)
+        self.assertEqual(kwargs["recipient"].phone_number, PATIENT_PHONE)
+        values = kwargs["variable_values"]
+        self.assertEqual(values["invoice_number"], "Not applicable")
+        self.assertEqual(values["patient_name"], self.patient.name)
+        self.assertEqual(values["patient_account_name"], self.account.name)
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_no_variable_value_is_blank_without_an_invoice(self, mock_fire):
+        """A blank parameter makes Meta reject the whole send."""
         self._create_payment(outcome="complete", target_invoice=None)
 
-        mock_fire.assert_not_called()
+        values = mock_fire.call_args.kwargs["variable_values"]
+        self.assertEqual([k for k, v in values.items() if not str(v).strip()], [])
 
     @patch("care_im_wrapper.handlers.billing.fire_notification_event")
     def test_resaving_a_complete_payment_does_not_re_fire(self, mock_fire):

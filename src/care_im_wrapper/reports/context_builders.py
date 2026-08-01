@@ -229,18 +229,17 @@ class InvoiceContext(SingleObjectContextBuilder):
             "which never resolves to an empty value."
         ),
     )
-    patient = Field(
-        display="Patient",
-        target_context=PatientContext,
-        description="The patient the invoice is for",
-    )
-    account = Field(
-        display="Account",
-        target_context=AccountContext,
-        description="The billing account the invoice belongs to",
-    )
-
     extra_context_fields: dict[str, Field] = {
+        "patient_name": Field(
+            display="Patient name",
+            preview_value="Jane Doe",
+            description="Handler-supplied: a payment carries no patient of its own",
+        ),
+        "patient_account_name": Field(
+            display="Account name",
+            preview_value="Jane Doe",
+            description="Name on the billing account",
+        ),
         "amount": Field(
             display="Amount",
             preview_value="14,000.00",

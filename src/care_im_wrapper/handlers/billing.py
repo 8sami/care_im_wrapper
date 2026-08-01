@@ -31,11 +31,20 @@ logger = logging.getLogger(__name__)
 INVOICE_CONTEXT_SLUG = "invoice"
 
 
+# Shown when a payment is against the account rather than a specific invoice.
+NO_INVOICE = "Not applicable"
+
+
 def _resolve_invoice_facility(invoice: Invoice) -> Any | None:
     return invoice.facility
 
 
+def _resolve_payment_facility(payment: PaymentReconciliation) -> Any | None:
+    return payment.facility
+
+
 _FACILITY_RESOLVERS[Invoice] = _resolve_invoice_facility
+_FACILITY_RESOLVERS[PaymentReconciliation] = _resolve_payment_facility
 NOTIFICATION_CONTEXT_REGISTRY.register(INVOICE_CONTEXT_SLUG, InvoiceContext)
 
 
@@ -51,19 +60,32 @@ def describe_invoice_number(invoice: Invoice) -> str:
     return str(invoice.number or invoice.external_id)
 
 
-def _fire_billing_event(invoice: Invoice, *, trigger_slug: str, status: str, amount: Decimal | float | None) -> None:
-    patient = invoice.patient
-    invoice_number = describe_invoice_number(invoice)
+def _fire_billing_event(
+    related_object: Any,
+    *,
+    trigger_slug: str,
+    status: str,
+    amount: Decimal | float | None,
+    account: Any,
+    invoice: Invoice | None,
+) -> None:
+    """Patient and account are handler-supplied so a payment with no invoice can still
+    send: PaymentReconciliation has an account but no patient, so the template cannot
+    read them off the object."""
+    patient = account.patient
+    invoice_number = describe_invoice_number(invoice) if invoice is not None else NO_INVOICE
     fire_notification_event(
         trigger_slug=trigger_slug,
-        title=f"Payment {status} — invoice {invoice_number}",
-        related_object=invoice,
+        title=f"Payment {status} — {invoice_number}",
+        related_object=related_object,
         recipient=NotificationRecipientSpec(content_object=patient, phone_number=patient.phone_number),
         variable_values={
             "status": status,
             "header_status": status.capitalize(),
             "amount": format_amount(amount),
             "invoice_number": invoice_number,
+            "patient_name": patient.name,
+            "patient_account_name": account.name,
         },
     )
 
@@ -85,6 +107,8 @@ def on_invoice_post_save(sender: type[Invoice], instance: Invoice, created: bool
         trigger_slug=plugin_settings.BILLING_TRIGGER_SLUGS["invoice_issued"],
         status="issued",
         amount=instance.total_gross,
+        account=instance.account,
+        invoice=instance,
     )
 
 
@@ -102,17 +126,14 @@ def on_payment_post_save(
     if not created and getattr(instance, "_previous_outcome", None) == instance.outcome:
         return
 
+    # A payment against the account rather than an invoice still notifies; it fires with
+    # itself as the related object and quotes no invoice number.
     invoice = instance.target_invoice
-    if invoice is None:
-        logger.info(
-            "on_payment_post_save: payment %s has no target invoice, skipping notification",
-            instance.external_id,
-        )
-        return
-
     _fire_billing_event(
-        invoice,
+        invoice if invoice is not None else instance,
         trigger_slug=plugin_settings.BILLING_TRIGGER_SLUGS["payment_recorded"],
         status="confirmed",
         amount=instance.amount,
+        account=instance.account,
+        invoice=invoice,
     )

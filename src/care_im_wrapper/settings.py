@@ -194,9 +194,9 @@ DEFAULTS = {
         },
         "payment_status": {
             "header_status": "{{ header_status }}",
-            "patient_name": "{{ object.patient.name }}",
+            "patient_name": "{{ patient_name }}",
             "amount": "{{ amount }}",
-            "patient_account_name": "{{ object.account.name }}",
+            "patient_account_name": "{{ patient_account_name }}",
             "status": "{{ status }}",
             "invoice_number": "{{ invoice_number }}",
         },
