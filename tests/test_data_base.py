@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
 
 from care_im_wrapper.data.base import (
@@ -10,7 +11,7 @@ from care_im_wrapper.data.base import (
     humanize_encounter_class,
     humanize_time,
 )
-from tests.utils import OverrideCache  # noqa: F401 # pyright: ignore
+from tests.utils import override_test_cache
 
 
 # Patient actors so cached_fetch's authorization step (resolve_target_patient) short-circuits
@@ -19,8 +20,12 @@ def _make_actor(user_type="patient", instance_id=1):
     return SimpleNamespace(user_type=user_type, instance=SimpleNamespace(id=instance_id))
 
 
-def _make_session(patient_id="patient-1"):
-    return SimpleNamespace(active_patient_external_id=patient_id)
+def _make_session(patient_id="patient-1", encounter_id="", prescription_id=""):
+    return SimpleNamespace(
+        active_patient_external_id=patient_id,
+        active_encounter_external_id=encounter_id,
+        active_prescription_external_id=prescription_id,
+    )
 
 
 class HumanizeChoiceTests(SimpleTestCase):
@@ -97,8 +102,14 @@ class HumanizeTimeTests(SimpleTestCase):
         self.assertEqual(humanize_time(value), str(value))
 
 
-@OverrideCache
+@override_test_cache()
 class CachedFetchTests(SimpleTestCase):
+    # override_test_cache isolates per class, not per method, and every test here reuses the
+    # name "fetch_fn" -- which is part of the cache key. Clear between methods.
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+
     def test_calls_underlying_function_once_and_returns_cached_result_on_second_call(self):
         call_count = []
 
@@ -133,6 +144,38 @@ class CachedFetchTests(SimpleTestCase):
         fetch_fn(actor, session_b)
 
         self.assertEqual(len(call_count), 2)
+
+    def test_separate_cache_entry_per_active_encounter(self):
+        """Without the encounter in the key, switching encounters would be served the
+        previous one's page at the same offset."""
+        call_count = []
+
+        @cached_fetch(timeout_seconds=60)
+        def fetch_fn(actor, session):
+            call_count.append(1)
+            return "result"
+
+        actor = _make_actor()
+        fetch_fn(actor, _make_session(encounter_id="encounter-a"))
+        fetch_fn(actor, _make_session(encounter_id="encounter-b"))
+
+        self.assertEqual(len(call_count), 2)
+
+    def test_separate_cache_entry_per_active_prescription(self):
+        call_count = []
+
+        @cached_fetch(timeout_seconds=60)
+        def fetch_fn(actor, session):
+            call_count.append(1)
+            return "result"
+
+        actor = _make_actor()
+        session = _make_session(encounter_id="encounter-a")
+        fetch_fn(actor, _make_session(encounter_id="encounter-a", prescription_id="rx-a"))
+        fetch_fn(actor, _make_session(encounter_id="encounter-a", prescription_id="rx-b"))
+        fetch_fn(actor, session)
+
+        self.assertEqual(len(call_count), 3)
 
     def test_separate_cache_entry_per_actor_instance_id(self):
         call_count = []

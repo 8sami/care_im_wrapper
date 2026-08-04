@@ -3,12 +3,12 @@ from unittest.mock import patch
 
 from care.emr.resources.encounter.constants import ClassChoices, StatusChoices
 from care.utils.tests.base import CareAPITestBase
+from django.core.cache import cache
 
 from care_im_wrapper.auth.actor import Actor
 from care_im_wrapper.data.encounters import fetch_encounters, fmt_facility_name
 from care_im_wrapper.data.exceptions import NoDataError
 from care_im_wrapper.models import ConversationSession
-from tests.utils import OverrideCache  # noqa: F401 # pyright: ignore
 
 
 class FmtFacilityNameTests(CareAPITestBase):
@@ -25,10 +25,10 @@ class FmtFacilityNameTests(CareAPITestBase):
         self.assertEqual(fmt_facility_name(enc), "Unknown facility")
 
 
-@OverrideCache
 class FetchEncountersTests(CareAPITestBase):
     def setUp(self):
         super().setUp()
+        cache.clear()
         self.user = self.create_user()
         self.patient = self.create_patient()
         self.facility = self.create_facility(user=self.user)

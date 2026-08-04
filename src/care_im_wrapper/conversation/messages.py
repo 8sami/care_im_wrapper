@@ -70,6 +70,19 @@ class OutboundMessage:
 
 
 @dataclass(frozen=True)
+class Outbound:
+    """A message a handler wants delivered, held back until the transaction commits.
+
+    `pace` is dropped for a follow-up message: the reader is owed the second half of a reply
+    they are already reading, so it should not wait behind the rate limiter.
+    """
+
+    phone_number: str
+    message: OutboundMessage | str
+    pace: bool = True
+
+
+@dataclass(frozen=True)
 class SentTemplate:
     """Result of a template send: the tracking id (``None`` if the provider returned none)
     and the resolved parameter values put on the wire, kept for auditing."""

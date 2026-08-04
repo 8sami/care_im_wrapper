@@ -3,11 +3,14 @@
 import logging
 
 from care.security.authorization.base import AuthorizationController  # type: ignore[import-untyped]
+from django.core.exceptions import ValidationError
 
 from care_im_wrapper.data.exceptions import MissingContextError, PermissionDeniedError
 from care_im_wrapper.models import ConversationSession
 
 logger = logging.getLogger(__name__)
+
+ALL_PRESCRIPTIONS = "__all__"
 
 
 def resolve_target_patient(actor, session):
@@ -39,6 +42,34 @@ def resolve_target_patient(actor, session):
     authorize_patient_access(actor, patient)
 
     return patient
+
+
+def resolve_target_encounter(actor, session):
+    """
+    Resolves the encounter an encounter-scoped fetcher should filter on.
+
+    The lookup is filtered by the resolved patient, so a stale or forged external_id cannot
+    reach another patient's encounter -- the same defence resolve_target_patient applies.
+
+    Raises MissingContextError if no encounter is open, or the open one no longer resolves
+    against this patient.
+    """
+    from care.emr.models.encounter import Encounter  # type: ignore[import-untyped]
+
+    patient = resolve_target_patient(actor, session)
+
+    external_id = getattr(session, "active_encounter_external_id", "")
+    if not external_id:
+        raise MissingContextError("No encounter selected. Choose an encounter first.")
+
+    try:
+        encounter = Encounter.objects.filter(patient=patient, external_id=external_id).first()
+    except (ValidationError, ValueError):
+        encounter = None
+    if encounter is None:
+        raise MissingContextError("That encounter is no longer available. Choose another one.")
+
+    return encounter
 
 
 def authorize_patient_access(actor, patient) -> None:

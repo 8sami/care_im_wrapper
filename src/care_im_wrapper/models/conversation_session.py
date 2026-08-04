@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Any
 
 from django.db import models
 from django.utils import timezone
@@ -26,22 +27,39 @@ class ConversationSession(models.Model):
         AWAITING_PATIENT_SEARCH = "awaiting_patient_search", "Awaiting Patient Search"  # pyright: ignore[reportAssignmentType]
         SELECTING_PATIENT = "selecting_patient", "Selecting Patient"  # pyright: ignore[reportAssignmentType]
         SELECTING_DOCUMENT = "selecting_document", "Selecting Document"  # pyright: ignore[reportAssignmentType]
+        SELECTING_ENCOUNTER = "selecting_encounter", "Selecting Encounter"  # pyright: ignore[reportAssignmentType]
+        SELECTING_PRESCRIPTION = "selecting_prescription", "Selecting Prescription"  # pyright: ignore[reportAssignmentType]
+
+    class MenuContext(models.TextChoices):
+        """Which of the two menus AUTHENTICATED is currently showing."""
+
+        MAIN = "main", "Main"  # pyright: ignore[reportAssignmentType]
+        ENCOUNTER = "encounter", "Encounter"  # pyright: ignore[reportAssignmentType]
 
     phone_number = models.CharField(max_length=20)
     provider = models.CharField(max_length=20, choices=Provider.choices, default=Provider.WHATSAPP)
     user_type = models.CharField(max_length=10, choices=UserType.choices, default=UserType.UNKNOWN)
-    # IntegerField not FK — cross-package FK causes migration dependency issues
+    # IntegerField not FK — a cross-package FK drags this app into CARE's migration graph.
     user_id = models.IntegerField(null=True, blank=True)
     active_patient_external_id = models.CharField(max_length=255, blank=True, null=True)
+    active_patient_label = models.CharField(max_length=255, blank=True, default="")
     snapshot_name = models.CharField(max_length=255, blank=True, default="")
     snapshot_phone = models.CharField(max_length=20, blank=True, default="")
+    # Whatever is currently selectable: search results, encounters, prescriptions, documents.
+    # Each entry carries the row id and the typed number that pick it — see `offer`.
     candidates = models.JSONField(default=list, blank=True)
     state = models.CharField(max_length=30, choices=State.choices, default=State.NEW)
     failed_attempts = models.PositiveSmallIntegerField(default=0)  # pyright: ignore[reportArgumentType]
     cooldown_until = models.DateTimeField(null=True, blank=True)
+    menu_context = models.CharField(max_length=16, choices=MenuContext.choices, default=MenuContext.MAIN)
+    active_encounter_external_id = models.CharField(max_length=255, blank=True, default="")
+    active_encounter_label = models.CharField(max_length=255, blank=True, default="")
+    active_encounter_has_alternatives = models.BooleanField(default=False)  # pyright: ignore[reportArgumentType]
+    active_prescription_external_id = models.CharField(max_length=255, blank=True, default="")
+    active_prescription_label = models.CharField(max_length=255, blank=True, default="")
     data_menu_choice = models.CharField(max_length=8, blank=True, default="")
     data_offsets = models.JSONField(default=list, blank=True)
-    # Records the current page displayed after trimming, so "next" knows where it ended.
+    # The page size after trimming, so "next" knows where the current page ended.
     data_shown = models.PositiveIntegerField(default=0)  # pyright: ignore[reportArgumentType]
     # The staff lookup query, so its results can be re-run a page along without retyping.
     search_query = models.CharField(max_length=255, blank=True, default="")
@@ -68,7 +86,7 @@ class ConversationSession(models.Model):
         if self.cooldown_until and self.cooldown_until > timezone.now():
             return True
 
-        # Expired
+        # Served its time; let the next message start a fresh attempt.
         self.state = self.State.NEW
         self.failed_attempts = 0
         self.cooldown_until = None
@@ -121,35 +139,130 @@ class ConversationSession(models.Model):
             ]
         )
 
+    def _assign(self, **values) -> list[str]:
+        """Sets each field and returns their names, so `update_fields` can never drift
+        out of step with what was actually assigned."""
+        for field, value in values.items():
+            setattr(self, field, value)
+        return list(values)
+
+    def _reset_paging(self) -> dict[str, object]:
+        """Paging state for a list that has not been opened yet."""
+        return {"data_menu_choice": "", "data_offsets": [], "data_shown": 0}
+
+    def _encounter_scope(
+        self, external_id: str = "", label: str = "", has_alternatives: bool = False
+    ) -> dict[str, object]:
+        """The encounter scope, and the prescription filter that only makes sense inside it.
+
+        A new (or absent) encounter invalidates the prescription chosen in the old one --
+        the same reset care_fe's MedicationRequestTable does on encounterId change.
+        """
+        return {
+            "menu_context": self.MenuContext.ENCOUNTER if external_id else self.MenuContext.MAIN,
+            "active_encounter_external_id": external_id,
+            "active_encounter_label": label,
+            "active_encounter_has_alternatives": has_alternatives,
+            "active_prescription_external_id": "",
+            "active_prescription_label": "",
+        }
+
     def logout(self) -> None:
-        self.state = self.State.NEW
-        self.user_type = self.UserType.UNKNOWN
-        self.user_id = None
-        self.active_patient_external_id = None
-        self.snapshot_name = ""
-        self.snapshot_phone = ""
-        self.failed_attempts = 0
-        self.cooldown_until = None
-        self.candidates = []
-        self.data_menu_choice = ""
-        self.data_offsets = []
-        self.search_query = ""
-        self.save(
-            update_fields=[
-                "search_query",
-                "state",
-                "user_type",
-                "user_id",
-                "active_patient_external_id",
-                "snapshot_name",
-                "snapshot_phone",
-                "failed_attempts",
-                "cooldown_until",
-                "candidates",
-                "data_menu_choice",
-                "data_offsets",
-            ],
+        fields = self._assign(
+            state=self.State.NEW,
+            user_type=self.UserType.UNKNOWN,
+            user_id=None,
+            active_patient_external_id=None,
+            snapshot_name="",
+            snapshot_phone="",
+            failed_attempts=0,
+            cooldown_until=None,
+            candidates=[],
+            search_query="",
+            active_patient_label="",
+            **self._reset_paging(),
+            **self._encounter_scope(),
         )
+        self.save(update_fields=fields)
+
+    def switch_patient(self, external_id: str, label: str = "") -> None:
+        """Points the session at another patient. Nothing scoped to the old one survives."""
+        fields = self._assign(
+            state=self.State.AUTHENTICATED,
+            active_patient_external_id=external_id,
+            active_patient_label=label,
+            candidates=[],
+            search_query="",
+            **self._reset_paging(),
+            **self._encounter_scope(),
+        )
+        self.save(update_fields=fields)
+
+    def open_encounter(self, external_id: str, label: str, has_alternatives: bool = False) -> None:
+        """Makes `external_id` the sticky scope and moves into the encounter sub-menu.
+
+        `has_alternatives` says whether the patient has other encounters to switch to, so the
+        sub-menu can drop "Change encounter" when there is nothing to change to.
+        """
+        fields = self._assign(
+            state=self.State.AUTHENTICATED,
+            candidates=[],
+            **self._reset_paging(),
+            **self._encounter_scope(external_id, label, has_alternatives),
+        )
+        self.save(update_fields=fields)
+
+    def clear_encounter_scope(self) -> None:
+        """Leaves the encounter sub-menu and drops everything scoped to it."""
+        fields = self._assign(**self._reset_paging(), **self._encounter_scope())
+        self.save(update_fields=fields)
+
+    def set_prescription_scope(self, external_id: str, label: str) -> None:
+        """Records the prescription filter for the medication list about to be shown."""
+        fields = self._assign(active_prescription_external_id=external_id, active_prescription_label=label)
+        self.save(update_fields=fields)
+
+    def clear_prescription_scope(self) -> None:
+        """Drops the filter so re-entering Medications asks again."""
+        self.set_prescription_scope("", "")
+
+    def offer(self, candidates: list[dict[str, Any]], state: str) -> None:
+        """Parks the session on a list of things the reader can pick from.
+
+        Each candidate records both ways it can be chosen -- the row id the provider posts
+        back, and the number printed beside it -- fixed at the moment it was offered. A reply
+        is then resolved by lookup, never by recomputing the number from paging state that may
+        have moved on to a different list since.
+        """
+        fields = self._assign(state=state, candidates=candidates)
+        self.save(update_fields=fields)
+
+    def select(self, reply: str) -> dict[str, Any] | None:
+        """The offered candidate a reply picks, by row id or by its printed number."""
+        wanted = reply.strip().lower()
+        for candidate in self.candidates or []:  # pyright: ignore[reportGeneralTypeIssues]
+            if wanted in (str(candidate.get("row_id", "")).lower(), str(candidate.get("token", ""))):
+                return candidate
+        return None
+
+    def start_patient_search(self) -> None:
+        """Asks for a search term. The list the reader was on is closed, not paged."""
+        fields = self._assign(state=self.State.AWAITING_PATIENT_SEARCH, **self._reset_paging())
+        self.save(update_fields=fields)
+
+    def close_selection(self) -> None:
+        """Drops what was on offer but leaves the list underneath open.
+
+        The document pick-list is drawn from the data page still on screen, so backing out of
+        it has to leave that page pageable.
+        """
+        fields = self._assign(state=self.State.AUTHENTICATED, candidates=[])
+        self.save(update_fields=fields)
+
+    def return_to_menu(self) -> None:
+        """Leaves a picker for the menu, closing the list the picker itself was paging."""
+        fields = self._assign(state=self.State.AUTHENTICATED, candidates=[], **self._reset_paging())
+        self.save(update_fields=fields)
 
     def open_data_list(self, menu_choice: str) -> None:
         """Start reading a menu option from the top."""

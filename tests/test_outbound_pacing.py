@@ -12,10 +12,11 @@ from django.core.cache import cache
 from django.test import TestCase
 
 from care_im_wrapper.conversation.handlers import run_state_machine
+from care_im_wrapper.conversation.menus import MenuOption
 from care_im_wrapper.messaging.exceptions import OutboundRateLimitedError
 from care_im_wrapper.messaging.registry import send_message
 from care_im_wrapper.models import ConversationSession
-from tests.utils import override_test_cache
+from tests.utils import channel_limits, override_test_cache
 
 PHONE = "+919876543210"
 CHANNEL = "whatsapp"
@@ -71,14 +72,20 @@ class DocumentSelectionSendTests(TestCase):
             user_type="patient",
             user_id=42,
             candidates=[
-                {"external_id": "uuid-1", "title": "Urine", "description": "20 Jul 2026 (Final)", "menu_key": "5"},
+                {
+                    "external_id": "uuid-1",
+                    "title": "Urine",
+                    "description": "20 Jul 2026 (Final)",
+                    "menu_key": "5",
+                    "row_id": "document_0",
+                    "token": "1",
+                },
             ],
         )
-        self.client_mock = MagicMock(supports_interactive=True, min_send_interval_seconds=6, max_interactive_rows=10)
+        self.client_mock = MagicMock(supports_interactive=True, min_send_interval_seconds=6)
         self.client_mock.send_interactive.return_value = "wamid.1"
         self.client_mock.send_text.return_value = "wamid.1"
-        self.client_mock.max_message_chars = 4096
-        self.client_mock.interactive_body_char_limit = 1024
+        self.client_mock.limits = channel_limits()
         patcher = patch.dict(
             "care_im_wrapper.messaging.registry._PROVIDERS", {CHANNEL: lambda: self.client_mock}, clear=True
         )
@@ -93,9 +100,16 @@ class DocumentSelectionSendTests(TestCase):
         self, mock_url, mock_link, mock_patient, mock_resolve_actor
     ):
         mock_resolve_actor.return_value = SimpleNamespace(user_type="patient", instance=SimpleNamespace(id=1))
-        entry = {"5": ("Lab reports", MagicMock(), MagicMock(), MagicMock(return_value=object()))}
+        entry = {
+            "5": MenuOption(
+                label="Lab reports",
+                fetcher=MagicMock(),
+                renderer=MagicMock(),
+                document_resolver=MagicMock(return_value=object()),
+            )
+        }
 
-        with patch.dict("care_im_wrapper.conversation.handlers._PATIENT_MENU", entry, clear=True):
+        with patch.dict("care_im_wrapper.conversation.menus._MAIN_MENU", entry, clear=True):
             # Through run_state_machine (not the handler directly) so the send actually
             # flushes through the real throttle/provider after the turn commits.
             run_state_machine(PHONE, "document_0", CHANNEL)

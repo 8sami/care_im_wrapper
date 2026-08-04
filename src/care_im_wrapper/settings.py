@@ -104,6 +104,7 @@ DEFAULTS = {
     "DEFAULT_MIN_SEND_INTERVAL_SECONDS": 0,
     "DEFAULT_MAX_INTERACTIVE_ROWS": 10,
     "DEFAULT_MAX_REPLY_BUTTONS": 3,
+    "DEFAULT_PREVIEW_LINE_LIMIT": 20,  # lines a client shows before folding behind "Read more"
     "WHATSAPP_MIN_SEND_INTERVAL_SECONDS": 6,
     "WHATSAPP_DEFAULT_LANGUAGE_CODE": "en_US",  # used when a template has no language_code set
     "WHATSAPP_HTTP_TIMEOUT_SECONDS": 10,

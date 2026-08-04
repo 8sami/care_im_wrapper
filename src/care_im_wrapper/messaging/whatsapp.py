@@ -8,7 +8,6 @@ import httpx
 from jinja2 import UndefinedError
 
 from care_im_wrapper.conversation.messages import InboundMessage, OutboundMessage, SentTemplate, StatusUpdate
-from care_im_wrapper.core.choices import Provider
 from care_im_wrapper.messaging.exceptions import (
     WhatsAppBadRequestError,
     WhatsAppNetworkError,
@@ -16,7 +15,7 @@ from care_im_wrapper.messaging.exceptions import (
     WhatsAppServerError,
     WhatsAppTemplateNotConfiguredError,
 )
-from care_im_wrapper.messaging.limits import ChannelLimits, clamp, limits_for
+from care_im_wrapper.messaging.limits import ChannelLimits, clamp, whatsapp_limits
 from care_im_wrapper.messaging.variables import resolve_variable
 from care_im_wrapper.models.notification import NotificationStatusState
 from care_im_wrapper.settings import plugin_settings
@@ -136,9 +135,9 @@ class WhatsAppClient:
         return int(plugin_settings.WHATSAPP_REPLY_BUTTON_LIMIT)
 
     @property
-    def _limits(self) -> ChannelLimits:
+    def limits(self) -> ChannelLimits:
         """Every field cap in one object, read fresh so overrides apply."""
-        return limits_for(Provider.WHATSAPP.value)
+        return whatsapp_limits()
 
     def validate_variable_mapping_value(self, expr: str) -> list[str]:
         """Validates one variable_mapping expression against Meta's rules."""
@@ -161,7 +160,7 @@ class WhatsAppClient:
                 "recipient_type": "individual",
                 "to": to,
                 "type": "text",
-                "text": {"body": clamp(body, self._limits.text_body)},
+                "text": {"body": clamp(body, self.limits.text_body)},
             }
         )
 
@@ -173,7 +172,7 @@ class WhatsAppClient:
             return self.send_text(to, msg.as_plain_text())
 
         iv = msg.interactive
-        limits = self._limits
+        limits = self.limits
         interactive_obj: dict[str, Any]
 
         if iv.type == InteractiveType.REPLY_BUTTONS:
@@ -332,7 +331,7 @@ class WhatsAppClient:
                     f"NotificationTemplate '{template.slug}' parameter '{meta_key}' references an undefined "
                     f"value in mapping '{variable_mapping[meta_key]}': {exc}"
                 ) from exc
-            text = clamp(value, self._limits.template_parameter)
+            text = clamp(value, self.limits.template_parameter)
             if not text.strip():
                 logger.error(
                     "WhatsApp send_template: template %s parameter %r resolved to an empty value from mapping %r",

@@ -2,6 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
+# Formatting convention (WhatsApp markdown), applied uniformly across every message:
+#   *bold*   -> the entity a line is about: a record's name/subject in its header
+#               (`*{name}* (_{status}_)`), a name addressed in prose (`Hello, *{name}*`),
+#               and a command the reader types (`Reply *a* for all`).
+#   _italic_ -> a value being reported: the detail after a label (`Dosage: _{dosage}_`),
+#               the status in a header, and standalone note phrases (`_No dosage..._`).
+#   plain    -> chrome that names nothing: headers ("Your medications:"), menu labels,
+#               titles, prompts, and status/help lines.
+# Keep new messages in step with this; the renderers and pickers all read from here.
 _MESSAGES: dict[str, str] = {
     "not_found": "Sorry, we couldn't find an account linked to your number.",
     "yob_prompt": "Please reply with your year of birth (e.g. 1990).",
@@ -19,10 +28,33 @@ _MESSAGES: dict[str, str] = {
     "patient_search_prompt": "Enter the patient's phone number or name to search.",
     "patient_search_results": "Search results. Reply with the number to select:",
     "no_patients_found": "No patients found matching that search.",
-    "patient_selected": "Viewing records for *{name}*. What would you like to see?",
     "greeting": "Hello, *{name}*! How can I help you today?",
+    # Scope line. Built from clauses because either half can be absent: a patient reading
+    # their own records has no patient clause, the main menu has no encounter clause.
+    # Bold falls on the subject -- the line titles the records under it, and what they are is
+    # what the reader is scanning for. The encounter and patient qualify that, so they stay
+    # plain rather than competing with it.
+    "viewing": "Viewing *{subject}*",
+    "viewing_encounter": "for encounter {encounter}",
+    "viewing_patient": "for patient {patient}",
+    "subject_records": "records",
+    "select_encounter_prompt": "Which encounter would you like to open?",
+    "select_encounter": "Select encounter",
+    "encounters_title": "Encounters",
+    "encounter_label": "{facility} — {date} ({status})",
+    "encounter_menu_title": "Encounter",
+    "back_to_main_menu": "Back to main menu",
+    "back_to_main_menu_hint": "Leave this encounter",
+    "logout_hint": "End this session",
+    "select_prescription_prompt": "Which prescription would you like to see? Reply *a* for all.",
+    "select_prescription": "Select prescription",
+    "prescriptions_title": "Prescriptions",
+    # Plain, unlike the prescription block's italic version below: this one is a list-row
+    # description, and providers show row text verbatim rather than rendering markdown.
+    "prescription_choice_by": "Prescribed by: {prescribed_by}",
+    "all_prescriptions": "All prescriptions",
+    "view_all_medications": "View all medications",
     # Data fetcher headers
-    "encounters_header": "Your recent encounters:",
     "prescriptions_header": "Your medications:",
     "procedures_header": "Your recent procedures:",
     "appointments_header": "Your recent appointments:",
@@ -51,6 +83,8 @@ _MESSAGES: dict[str, str] = {
     "page_hint_prev": "Send *p* for the previous page",
     "next_page": "Next page",
     "prev_page": "Previous page",
+    "menu_button": "Menu",
+    "nav_prompt": "What next?",
     "page_last": "You're already on the last page.",
     "page_first": "You're already on the first page.",
     "page_nothing_open": "Pick something from the menu first, then use *n* and *p* to page through it.",
@@ -70,9 +104,6 @@ _MESSAGES: dict[str, str] = {
     "medication_instructions": "Instructions: _{instructions}_",
     "medication_note": "Note: _{note}_",
     "medication_no_dosage": "_No dosage instructions recorded._",
-    "encounter_line": "*{facility}* (_{status}_)",
-    "encounter_date": "Date: _{date}_",
-    "encounter_type": "Type: _{encounter_class}_",
     "appointment_line": "*{subject}* (_{status}_)",
     "appointment_facility": "Facility: _{facility}_",
     "appointment_date": "Date: _{date}_",

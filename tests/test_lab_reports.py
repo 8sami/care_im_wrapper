@@ -56,9 +56,16 @@ class FetchLabReportsTests(CareAPITestBase):
             patient=self.patient, facility=self.facility, organization=self.organization
         )
 
-    def _actor_session(self):
+    def _actor_session(self, encounter=None):
         actor = Actor(user_type=ConversationSession.UserType.PATIENT.value, instance=self.patient)
-        return actor, SimpleNamespace(active_patient_external_id=None)
+        # Lab reports are encounter-scoped, as care_fe's diagnostic_reports tab is.
+        target = self.encounter if encounter is None else encounter
+        session = SimpleNamespace(
+            active_patient_external_id=None,
+            active_encounter_external_id=str(target.external_id),
+            active_prescription_external_id="",
+        )
+        return actor, session
 
     def _create_report(self, status):
         from care.emr.models.diagnostic_report import DiagnosticReport
@@ -97,3 +104,25 @@ class FetchLabReportsTests(CareAPITestBase):
 
         self.assertEqual(len(records), 2)
         self.assertEqual(len([r for r in records if r.external_id]), 1)
+
+    def test_another_encounters_reports_are_not_returned(self):
+        other_encounter = self.create_encounter(
+            patient=self.patient, facility=self.facility, organization=self.organization
+        )
+        self._create_report("final")
+        other_service_request = self.create_service_request(
+            patient=self.patient, facility=self.facility, encounter=other_encounter
+        )
+        from care.emr.models.diagnostic_report import DiagnosticReport
+
+        DiagnosticReport.objects.create(
+            patient=self.patient,
+            encounter=other_encounter,
+            service_request=other_service_request,
+            status="final",
+        )
+        actor, session = self._actor_session()
+
+        records = fetch_lab_reports(actor, session)
+
+        self.assertEqual(len(records), 1)

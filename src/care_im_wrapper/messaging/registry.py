@@ -8,6 +8,7 @@ from care_im_wrapper.conversation.messages import OutboundMessage, SentTemplate
 from care_im_wrapper.conversation.template_rendering import merge_variable_values
 from care_im_wrapper.core.rate_limit import is_outbound_rate_limited
 from care_im_wrapper.messaging.exceptions import OutboundRateLimitedError
+from care_im_wrapper.messaging.limits import ChannelLimits, default_limits
 from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.settings import plugin_settings
 
@@ -28,11 +29,9 @@ class MessageSender(Protocol):
     @property
     def min_send_interval_seconds(self) -> int: ...
     @property
-    def interactive_body_char_limit(self) -> int: ...
-    @property
-    def max_interactive_rows(self) -> int: ...
-    @property
-    def max_reply_buttons(self) -> int: ...
+    def limits(self) -> ChannelLimits:
+        """Every field cap this provider imposes, in one object."""
+        ...
 
     def send_text(self, to: str, body: str) -> str | None: ...
     def send_interactive(self, to: str, msg: OutboundMessage) -> str | None: ...
@@ -59,12 +58,14 @@ _PROVIDERS: dict[str, Callable[[], MessageSender]] = {
 }
 
 
-def get_max_chars(channel: str) -> int:
-    """Returns the maximum allowed characters for a given provider."""
+def get_channel_limits(channel: str) -> ChannelLimits:
+    """Every cap the channel imposes, so a caller composing a message never has to name a
+    provider. A registered provider describes itself; anything else gets the generic
+    defaults, which are deliberately the most restrictive reading of them."""
     factory = _PROVIDERS.get(channel)
     if factory is None:
-        return int(plugin_settings.DEFAULT_MAX_MESSAGE_CHARS)
-    return factory().max_message_chars
+        return default_limits()
+    return factory().limits
 
 
 def get_min_send_interval_seconds(channel: str) -> int:
@@ -73,34 +74,6 @@ def get_min_send_interval_seconds(channel: str) -> int:
     if factory is None:
         return int(plugin_settings.DEFAULT_MIN_SEND_INTERVAL_SECONDS)
     return factory().min_send_interval_seconds
-
-
-def get_interactive_body_char_limit(channel: str) -> float:
-    """Returns the max chars allowed in an interactive message body for a given provider.
-
-    A capability of the provider itself (like max_message_chars), not something inferred
-    from the channel name -- an unregistered channel has no limit to enforce.
-    """
-    factory = _PROVIDERS.get(channel)
-    if factory is None:
-        return float("inf")
-    return factory().interactive_body_char_limit
-
-
-def get_max_interactive_rows(channel: str) -> int:
-    """Returns the max rows allowed in one interactive list for a given provider."""
-    factory = _PROVIDERS.get(channel)
-    if factory is None:
-        return int(plugin_settings.DEFAULT_MAX_INTERACTIVE_ROWS)
-    return factory().max_interactive_rows
-
-
-def get_max_reply_buttons(channel: str) -> int:
-    """Returns the max reply buttons allowed on one interactive message for a given provider."""
-    factory = _PROVIDERS.get(channel)
-    if factory is None:
-        return int(plugin_settings.DEFAULT_MAX_REPLY_BUTTONS)
-    return factory().max_reply_buttons
 
 
 def get_template_capable_providers() -> list[tuple[str, MessageSender]]:

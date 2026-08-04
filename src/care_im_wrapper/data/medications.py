@@ -13,10 +13,11 @@ from care_im_wrapper.data.base import (
     cached_fetch,
     humanize_choice,
     humanize_date,
+    humanize_datetime,
 )
-from care_im_wrapper.data.common import resolve_target_patient
-from care_im_wrapper.data.pagination import Page, paginate_or_raise
-from care_im_wrapper.data.records import DosageLine, MedicationRecord, PrescriptionRecord
+from care_im_wrapper.data.common import ALL_PRESCRIPTIONS, resolve_target_encounter
+from care_im_wrapper.data.pagination import Page, map_page, paginate_or_raise
+from care_im_wrapper.data.records import DosageLine, MedicationRecord, PrescriptionChoiceRecord, PrescriptionRecord
 from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.settings import plugin_settings
 
@@ -67,12 +68,16 @@ _DURATION_UNIT_LABELS: dict[str, tuple[str, str]] = {
 
 @cached_fetch(timeout_seconds=int(plugin_settings.DATA_CACHE_TIMEOUT_SECONDS))
 def fetch_prescriptions(actor: Actor, session: ConversationSession) -> Page:
-    """One page of the patient's medications, newest first, grouped as care_fe groups them."""
+    """One page of the open encounter's medications, newest first, grouped as care_fe groups them.
+
+    Narrowed further to one prescription when the reader picked one; the sentinel (or an
+    unset scope) means all of them.
+    """
     from care.emr.models.medication_request import MedicationRequest  # type: ignore[import-untyped]
 
-    patient = resolve_target_patient(actor, session)
+    encounter = resolve_target_encounter(actor, session)
     queryset = (
-        MedicationRequest.objects.filter(patient=patient)
+        MedicationRequest.objects.filter(patient=encounter.patient, encounter=encounter)
         .exclude(status=ENTERED_IN_ERROR_STATUS)
         # Also gone if the prescription above it was entered in error.
         .exclude(prescription__status=ENTERED_IN_ERROR_STATUS)
@@ -84,10 +89,40 @@ def fetch_prescriptions(actor: Actor, session: ConversationSession) -> Page:
             "prescription__encounter__facility",
         )
     )
+
+    selected = getattr(session, "active_prescription_external_id", "") or ""
+    if selected and selected != ALL_PRESCRIPTIONS:
+        queryset = queryset.filter(prescription__external_id=selected)
+
     page = paginate_or_raise(queryset.order_by("-created_date", "-id"), session)
 
     groups, weights = group_medications(page.records, page.next_record)
     return map_page_to_groups(page, groups, weights)
+
+
+@cached_fetch(timeout_seconds=int(plugin_settings.DATA_CACHE_TIMEOUT_SECONDS))
+def fetch_prescription_choices(actor: Actor, session: ConversationSession) -> Page:
+    """One page of the open encounter's prescriptions, as care_fe's sidebar lists them."""
+    from care.emr.models.medication_request import MedicationRequestPrescription  # type: ignore[import-untyped]
+
+    encounter = resolve_target_encounter(actor, session)
+    queryset = (
+        MedicationRequestPrescription.objects.filter(patient=encounter.patient, encounter=encounter)
+        .exclude(status=ENTERED_IN_ERROR_STATUS)
+        .select_related("prescribed_by")
+    )
+    page = paginate_or_raise(queryset.order_by("-created_date", "-id"), session)
+
+    def build(prescription) -> PrescriptionChoiceRecord:
+        # care_fe's card: formatDateTime(created_date) over "Prescribed by: <name>".
+        return PrescriptionChoiceRecord(
+            prescribed_on=humanize_datetime(getattr(prescription, "created_date", None)),
+            prescribed_by=format_user_name(getattr(prescription, "prescribed_by", None)),
+            name=getattr(prescription, "name", None) or None,
+            external_id=str(prescription.external_id),
+        )
+
+    return map_page(page, build)
 
 
 def group_medications(medications: list[Any], next_record: Any = None) -> tuple[list[PrescriptionRecord], list[int]]:
@@ -106,7 +141,7 @@ def group_medications(medications: list[Any], next_record: Any = None) -> tuple[
     records: list[PrescriptionRecord] = []
     weights: list[int] = []
     for (kind, _identity), unordered in groups.items():
-        # Groups are newest-first, but a prescription reads top-down.
+        # Groups come newest-first, but a prescription reads top-down.
         members = sorted(unordered, key=lambda m: (getattr(m, "created_date", None), getattr(m, "id", 0)))
         first = members[0]
         weights.append(len(members))
@@ -125,7 +160,7 @@ def group_medications(medications: list[Any], next_record: Any = None) -> tuple[
                 )
             )
         else:
-            # No prescription: the group is its authored date, prescriber the requester.
+            # No prescription: the group is its authored date, the prescriber its requester.
             records.append(
                 PrescriptionRecord(
                     name=None,
@@ -361,7 +396,7 @@ def _bound_date(value: Any) -> str | None:
 def _format_duration_label(duration: Any) -> str | None:
     """care_fe formatDurationLabel: "5 days", not "5 d". "0" counts as no duration."""
     if not isinstance(duration, dict):
-        # JSONField enforces no schema, so tolerate raw prose.
+        # A JSONField enforces no schema, so tolerate raw prose.
         return str(duration) if duration else None
 
     value = duration.get("value")

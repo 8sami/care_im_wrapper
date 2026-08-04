@@ -87,7 +87,18 @@ def humanize_time(value: datetime | str | None) -> str:
         return str(value)
 
 
-_CACHE_SCHEMA_VERSION = 3
+def humanize_datetime(value: datetime | str | None) -> str:
+    """Date and time together, as care_fe's prescription cards show them."""
+    if not value:
+        return "Not recorded"
+    if isinstance(value, str):
+        return value
+    date_part = humanize_date(value)
+    time_part = humanize_time(value)
+    return f"{date_part}, {time_part}" if time_part != "Not recorded" else date_part
+
+
+_CACHE_SCHEMA_VERSION = 4
 
 
 def cached_fetch(timeout_seconds: int):
@@ -113,12 +124,21 @@ def cached_fetch(timeout_seconds: int):
 
 
 def _build_cache_key(fn_name: str, actor: Any, session: Any) -> str:
-    """Key must be unique per (function, actor type, actor id, active patient, record offset)."""
+    """Key must be unique per (function, actor type, actor id, patient, encounter,
+    prescription, record offset).
+
+    Encounter and prescription are as much part of what was fetched as the offset is:
+    without them, narrowing to a different prescription would be served the previous one's
+    cached page at the same offset.
+    """
     from care_im_wrapper.data.pagination import current_offset
 
     patient_ctx = session.active_patient_external_id or "self"
+    encounter_ctx = getattr(session, "active_encounter_external_id", "") or "-"
+    prescription_ctx = getattr(session, "active_prescription_external_id", "") or "-"
     offset = current_offset(session)
     return (
         f"care_im:fetch:v{_CACHE_SCHEMA_VERSION}:{fn_name}:"
-        f"{actor.user_type}:{actor.instance.id}:{patient_ctx}:o{offset}"
+        f"{actor.user_type}:{actor.instance.id}:{patient_ctx}:"
+        f"e{encounter_ctx}:r{prescription_ctx}:o{offset}"
     )

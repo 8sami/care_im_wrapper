@@ -1,19 +1,38 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any
 
 from django.db import transaction
 
 from care_im_wrapper.auth.actor import resolve_actor
 from care_im_wrapper.auth.resolver import resolve_phone_number
-from care_im_wrapper.conversation.menus import _PATIENT_MENU, _STAFF_MENU
-from care_im_wrapper.conversation.messages import InteractivePayload, InteractiveType, OutboundMessage
-from care_im_wrapper.conversation.renderers import numbered_block, render_patient_search_results
+from care_im_wrapper.conversation.menus import ENCOUNTERS_LABEL, Action, MenuOption, Scope, menu_for
+from care_im_wrapper.conversation.messages import (
+    InteractivePayload,
+    InteractiveType,
+    Outbound,
+    OutboundMessage,
+)
+from care_im_wrapper.conversation.renderers import NOT_RECORDED, numbered_block
+from care_im_wrapper.conversation.replies import (
+    BACK_ID,
+    Choice,
+    choices_as_text,
+    enumerate_choices,
+    join,
+    menu_reply,
+    picker_reply,
+    row,
+)
 from care_im_wrapper.conversation.templates import _msg
+from care_im_wrapper.data import encounters as encounters_data
+from care_im_wrapper.data import medications as medications_data
 from care_im_wrapper.data import patient_lookup
-from care_im_wrapper.data.common import resolve_target_patient
+from care_im_wrapper.data.common import ALL_PRESCRIPTIONS, resolve_target_encounter, resolve_target_patient
 from care_im_wrapper.data.exceptions import (
     DataFetchError,
     InvalidQueryError,
@@ -21,35 +40,25 @@ from care_im_wrapper.data.exceptions import (
     NoDataError,
     PermissionDeniedError,
 )
-from care_im_wrapper.data.pagination import Page, current_offset, fit_to_budget
+from care_im_wrapper.data.pagination import Page, fit_to_budget
 from care_im_wrapper.documents.delivery import build_document_message
 from care_im_wrapper.documents.exceptions import DocumentUnavailableError
 from care_im_wrapper.documents.service import build_document_url, get_or_create_document_link
 from care_im_wrapper.messaging.exceptions import OutboundRateLimitedError
-from care_im_wrapper.messaging.registry import (
-    get_interactive_body_char_limit,
-    get_max_chars,
-    get_max_interactive_rows,
-    get_max_reply_buttons,
-    send_message,
-)
+from care_im_wrapper.messaging.limits import ChannelLimits
+from care_im_wrapper.messaging.registry import get_channel_limits, send_message
 from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.settings import plugin_settings
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass(frozen=True)
-class Outbound:
-    """A message a handler wants delivered, sent after the transaction commits."""
-
-    phone_number: str
-    message: OutboundMessage | str
-    pace: bool = True
-
-
 _PAGE_NEXT_TOKENS = frozenset({"n", "next", "page_next"})
 _PAGE_PREV_TOKENS = frozenset({"p", "prev", "previous", "page_prev"})
+_MENU_TOKENS = frozenset({"menu", "page_menu"})
+_ALL_TOKENS = frozenset({"a", "all", "prescription_all"})
+_ENCOUNTER_PICKER_KEY = "enc"
+_PRESCRIPTION_PICKER_KEY = "rx"
+_MEDICATIONS_LIST_KEY = "meds"
 
 
 def _paging_step(choice: str) -> int:
@@ -65,65 +74,82 @@ def _paging_step(choice: str) -> int:
 _UNBOUNDED_CHARS = 10**9
 
 
-def _list_line_budget(channel: str) -> int:
+def _list_line_budget(limits: ChannelLimits) -> int:
     """Lines a paged list may occupy before the client folds it behind a "Read more"."""
-    del channel  # single-provider today; kept in the signature so a second one can differ
     reserve = int(plugin_settings.PAGING_FOOTER_RESERVE_LINES)
-    return max(1, int(plugin_settings.WHATSAPP_PREVIEW_LINE_LIMIT) - reserve)
+    return max(1, limits.preview_lines - reserve)
 
 
-def _list_budget(channel: str) -> int:
+def _list_budget(limits: ChannelLimits) -> int:
     """Characters a paged list may occupy, less the paging footer."""
     reserve = int(plugin_settings.PAGING_FOOTER_RESERVE_CHARS)
-    return max(1, get_max_chars(channel) - reserve)
+    return max(1, limits.text_body - reserve)
 
 
-def _paging_text(page: Page) -> str:
-    """Textual affordance; works on every provider."""
-    parts = [_msg("page_indicator", page=page.display_number)]
-    if page.has_next:
-        parts.append(_msg("page_hint_next"))
-    if page.has_previous:
-        parts.append(_msg("page_hint_prev"))
-    return "\n".join(parts)
+#: The blank line a page and the prompt below it are joined by.
+_BODY_SEPARATOR_CHARS = 4
 
 
-def _rows_with_paging(page: Page, menu_rows: list[dict[str, str]], channel: str) -> list[dict[str, str]]:
-    """Menu rows with Next/Previous in front, when the provider has room for them."""
-    paging_rows = []
-    if page.has_next:
-        paging_rows.append({"id": "page_next", "title": _msg("next_page")})
-    if page.has_previous:
-        paging_rows.append({"id": "page_prev", "title": _msg("prev_page")})
-    if not paging_rows:
-        return menu_rows
+def _body_budget(limits: ChannelLimits, alongside: str) -> int:
+    """Characters one data page may use and still share an interactive body with `alongside`.
 
-    combined = paging_rows + menu_rows
-    return combined if len(combined) <= get_max_interactive_rows(channel) else menu_rows
+    The interactive body is much smaller than a whole message, so pages are trimmed to it and
+    not to the message limit -- otherwise a medium list is "one page" that then cannot fit
+    beside its prompt and spills into a second message.
+    """
+    return max(1, limits.interactive_body - len(alongside) - _BODY_SEPARATOR_CHARS)
 
 
-def _menu_rows(menu: dict[str, Any]) -> list[dict[str, str]]:
-    """Builds interactive list rows from a menu dict, plus the trailing Logout row."""
-    rows = [{"id": key, "title": entry[0]} for key, entry in menu.items()]
-    rows.append({"id": "0", "title": _msg("logout")})
+def _menu_rows(menu: dict[str, MenuOption], in_encounter: bool) -> list[dict[str, str]]:
+    """Menu rows, each with a description of what it holds, plus the trailing 0 row:
+    Logout on the main menu, Back in the sub-menu."""
+    rows = [row(key, option.label, option.description) for key, option in menu.items()]
+    if in_encounter:
+        rows.append(row(BACK_ID, _msg("back_to_main_menu"), _msg("back_to_main_menu_hint")))
+    else:
+        rows.append(row(BACK_ID, _msg("logout"), _msg("logout_hint")))
     return rows
 
 
-def _menu_text(rows: list[dict[str, str]]) -> str:
-    """Renders menu rows as a numbered plain-text fallback for non-interactive display."""
-    return "\n".join(f"{r['id']}. {r['title']}" for r in rows)
+def _in_encounter(session: ConversationSession) -> bool:
+    return session.menu_context == ConversationSession.MenuContext.ENCOUNTER
 
 
-def _parse_selection_index(choice: str, prefix: str, *, prefixed_base: int, display_start: int = 1) -> int | None:
-    """Resolves a selection reply to a 0-based index, or None if it doesn't parse."""
-    if choice.startswith(prefix):
-        try:
-            return int(choice.removeprefix(prefix)) - prefixed_base
-        except ValueError:
-            return None
-    if choice.isdigit():
-        return int(choice) - display_start
-    return None
+#: How one record of a picker reads: its row title, the line under it, and what selecting it
+#: has to hand back. Every other form the record takes is derived from this one.
+Describe = Callable[[Any], tuple[str, str, dict[str, Any]]]
+
+
+def _choices_for(records: Sequence[Any], describe: Describe, start: int, *, prefix: str = "") -> list[Choice]:
+    return enumerate_choices((describe(record) for record in records), prefix=prefix, start=start)
+
+
+def _scope_line(session: ConversationSession, subject: str = "") -> str:
+    """What the reader is looking at, and whose it is.
+
+    Both halves are optional -- a patient reading their own records has no patient clause, the
+    main menu has no encounter clause -- so the line is built from whichever apply. On a
+    text-only medical channel the scope is what makes the data below it trustworthy, so it is
+    never left implicit; with neither half there is nothing to say and the line is dropped.
+    """
+    clauses = []
+    if _in_encounter(session) and session.active_encounter_label:
+        clauses.append(_msg("viewing_encounter", encounter=session.active_encounter_label))
+    if session.active_patient_label:
+        clauses.append(_msg("viewing_patient", patient=session.active_patient_label))
+    if not clauses:
+        return ""
+    return " ".join([_msg("viewing", subject=subject or _msg("subject_records")), *clauses])
+
+
+def _menu_prompt(session: ConversationSession, name: str | None = None) -> str:
+    """The scope the reader is in, then the invitation to choose.
+
+    Only a bare menu carries the scope here. A reply with records under it heads them with the
+    scope line instead, where it reads as their title rather than as a note underneath.
+    """
+    invitation = _msg("greeting", name=name) if name else _msg("choose_option")
+    return join(_scope_line(session), invitation)
 
 
 def run_state_machine(phone_number: str, text: str, channel: str) -> None:
@@ -146,6 +172,8 @@ def run_state_machine(phone_number: str, text: str, channel: str) -> None:
                 ConversationSession.State.AWAITING_PATIENT_SEARCH: _handle_awaiting_patient_search,
                 ConversationSession.State.SELECTING_PATIENT: _handle_selecting_patient,
                 ConversationSession.State.SELECTING_DOCUMENT: _handle_selecting_document,
+                ConversationSession.State.SELECTING_ENCOUNTER: _handle_selecting_encounter,
+                ConversationSession.State.SELECTING_PRESCRIPTION: _handle_selecting_prescription,
             }
             handler = dispatch.get(session.state)  # pyright: ignore[reportArgumentType]
             if handler:
@@ -191,8 +219,8 @@ def _handle_new(
         outbox.append(Outbound(phone_number, _msg("not_found")))
         return
 
-    # Serialise all candidates to JSON-safe dicts for storage between turns
-    candidates_list: list[dict[str, Any]] = [
+    # Serialise every identity to JSON-safe dicts; the year of birth narrows them next turn.
+    identities: list[dict[str, Any]] = [
         {
             "user_type": i.user_type,
             "user_id": i.user_id,
@@ -202,9 +230,7 @@ def _handle_new(
         }
         for i in result.identities
     ]
-    session.candidates = candidates_list
-    session.state = ConversationSession.State.AWAITING_YOB
-    session.save(update_fields=["state", "candidates"])
+    session.offer(identities, ConversationSession.State.AWAITING_YOB)
     outbox.append(Outbound(phone_number, _msg("yob_prompt")))
 
 
@@ -239,13 +265,14 @@ def _handle_awaiting_yob(
             name=match["full_name"],
             phone=match["phone_number"],
         )
-        _send_main_menu(phone_number, match["user_type"], channel, outbox, name=match["full_name"])
+        _send_menu(session, phone_number, channel, outbox, name=match["full_name"])
         return
 
-    session.candidates = shortlist
-    session.state = ConversationSession.State.AMBIGUOUS
-    session.save(update_fields=["state", "candidates"])
-    _send_candidate_menu(phone_number, shortlist, channel, outbox)
+    choices = enumerate_choices(
+        ((c["full_name"], c["user_type"].capitalize(), c) for c in shortlist), prefix="candidate", start=1
+    )
+    session.offer([choice.candidate for choice in choices], ConversationSession.State.AMBIGUOUS)
+    _send_candidate_menu(phone_number, choices, channel, outbox)
 
 
 def _handle_ambiguous(
@@ -253,21 +280,54 @@ def _handle_ambiguous(
 ) -> None:
     choice = text.strip()
 
-    # candidate_ ids are 1-based (candidate_1 is the first row).
-    index = _parse_selection_index(choice, "candidate_", prefixed_base=1)
-    candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore[reportAssignmentType]
-    if index is None or not (0 <= index < len(candidates)):
+    match = session.select(choice)
+    if match is None:
         outbox.append(Outbound(phone_number, _msg("invalid_choice")))
         return
 
-    match = candidates[index]
     session.authenticate(
         user_type=match["user_type"],
         user_id=match["user_id"],
         name=match["full_name"],
         phone=match["phone_number"],
     )
-    _send_main_menu(phone_number, str(match["user_type"]), channel, outbox, name=match["full_name"])
+    _send_menu(session, phone_number, channel, outbox, name=match["full_name"])
+
+
+@contextmanager
+def _reporting_data_errors(
+    session: ConversationSession,
+    actor: Any,
+    phone_number: str,
+    channel: str,
+    outbox: list[Outbound],
+    *,
+    label: str,
+    scope: Scope,
+):
+    """Turns any fetcher failure into a menu with an explanation on top.
+
+    Every data path reports these four identically, so the clauses live here once rather
+    than once per option and picker.
+    """
+    try:
+        yield
+    except PermissionDeniedError:
+        logger.warning("PermissionDenied: %s id=%s action=%s", actor.user_type, actor.instance.id, label)
+        prefix = _msg("permission_denied")
+    except MissingContextError as exc:
+        if scope is not Scope.PATIENT and _in_encounter(session):
+            session.clear_encounter_scope()
+        prefix = str(exc)
+    except NoDataError:
+        prefix = _msg("no_data", label=label.lower())
+    except DataFetchError as exc:
+        logger.error("DataFetchError %s: %s", label, exc)
+        prefix = _msg("fetch_error")
+    else:
+        return
+
+    _send_menu(session, phone_number, channel, outbox, prefix=prefix)
 
 
 def _handle_authenticated(
@@ -275,7 +335,11 @@ def _handle_authenticated(
 ) -> None:
     choice = text.strip()
 
-    if choice == "0":
+    if choice == BACK_ID:
+        if _in_encounter(session):
+            session.clear_encounter_scope()
+            _send_menu(session, phone_number, channel, outbox)
+            return
         session.logout()
         outbox.append(Outbound(phone_number, _msg("logout_confirm")))
         return
@@ -286,9 +350,12 @@ def _handle_authenticated(
         outbox.append(Outbound(phone_number, _msg("session_expired")))
         return
 
-    menu = _STAFF_MENU if session.user_type == ConversationSession.UserType.STAFF.value else _PATIENT_MENU
+    if choice.lower() in _MENU_TOKENS:
+        _send_menu(session, phone_number, channel, outbox)
+        return
 
-    # A paging command re-runs the open option one page along.
+    menu = menu_for(session)
+
     step = _paging_step(choice)
     pending_advance = False
     if step:
@@ -304,135 +371,104 @@ def _handle_authenticated(
         else:
             pending_advance = True
 
-    entry = menu.get(choice)
+    option = menu.get(choice)
 
-    if not entry:
+    if option is None:
         outbox.append(Outbound(phone_number, _msg("invalid_choice")))
         return
 
-    label, fetcher, renderer, document_resolver = entry
-
-    if fetcher is None:
-        session.reset_data_page()
-        session.state = ConversationSession.State.AWAITING_PATIENT_SEARCH
-        session.save(update_fields=["state"])
+    if option.action is Action.PATIENT_SEARCH:
+        session.start_patient_search()
         outbox.append(Outbound(phone_number, _msg("patient_search_prompt")))
         return
 
-    if not step:
-        # Picking an option from the menu restarts at the first page.
-        session.open_data_list(choice)
+    if option.action is Action.OPEN_ENCOUNTER:
+        _enter_encounter_selection(session, actor, phone_number, channel, outbox)
+        return
 
-    try:
-        if pending_advance:
+    if option.action is Action.ENCOUNTER_DOCUMENT:
+        _send_encounter_document(session, actor, option, phone_number, channel, outbox)
+        return
+
+    if option.scope is Scope.PRESCRIPTION and not step:
+        session.clear_prescription_scope()
+        _enter_prescription_selection(session, actor, choice, option, phone_number, channel, outbox)
+        return
+
+    _run_option(session, actor, choice, option, phone_number, channel, outbox, advance=pending_advance)
+
+
+def _run_option(
+    session: ConversationSession,
+    actor: Any,
+    menu_key: str,
+    option: MenuOption,
+    phone_number: str,
+    channel: str,
+    outbox: list[Outbound],
+    advance: bool = False,
+) -> None:
+    """Runs one menu option's fetcher and sends its page, with the menu or paging buttons."""
+    fetcher, renderer = option.fetcher, option.renderer
+    if fetcher is None or renderer is None:
+        logger.error("_run_option: option %s has no fetcher/renderer", menu_key)
+        _send_menu(session, phone_number, channel, outbox, prefix=_msg("fetch_error"))
+        return
+
+    if not advance:
+        session.open_data_list(menu_key)
+
+    limits = get_channel_limits(channel)
+    with _reporting_data_errors(session, actor, phone_number, channel, outbox, label=option.label, scope=option.scope):
+        if advance:
             session.advance_page(session.next_offset())
 
+        # The scope heads the records instead of the fetcher's own "Your recent X:" line --
+        # it says the same thing and more. With nothing scoped, the fetcher's line stands.
+        header = _scope_line(session, option.label.lower())
+        prompt = _msg("choose_option")
+        budget = _body_budget(limits, prompt)
         data = fetcher(actor, session)
         page = data if isinstance(data, Page) else None
         if page is not None:
             page = fit_to_budget(
                 page,
-                lambda rows: renderer(rows, _UNBOUNDED_CHARS, page.offset + 1).text,
-                _list_budget(channel),
-                _list_line_budget(channel),
+                lambda rows: renderer(rows, _UNBOUNDED_CHARS, page.offset + 1, header=header).text,
+                budget,
+                _list_line_budget(limits),
                 int(plugin_settings.DATA_PAGE_MIN_RECORDS),
             )
-            # Source rows, not records: a grouped fetcher folds several rows into one.
             session.record_shown(page.consumed())
         records = page.records if page is not None else data
 
         if page is not None and not records and page.number > 0:
-            # Paged past the end; step back to a page that exists.
             session.back_page()
             outbox.append(Outbound(phone_number, _msg("page_last")))
             return
 
         if page is None:
             start = 1
-            renderer_msg = renderer(records, get_max_chars(channel))
+            renderer_msg = renderer(records, limits.text_body, header=header)
         else:
             start = page.offset + 1
-            renderer_msg = renderer(records, _list_budget(channel), start)
+            renderer_msg = renderer(records, budget, start, header=header)
 
-        if document_resolver is not None and _enter_document_selection(
-            session, choice, records, renderer, phone_number, channel, outbox, start
+        if option.document_resolver is not None and _enter_document_selection(
+            session, menu_key, records, phone_number, channel, outbox, start
         ):
             return
 
-        summary = renderer_msg.text
-        menu_rows = _menu_rows(menu)
-        if page is not None and page.is_paginated:
-            summary = f"{summary}\n\n{_paging_text(page)}"
-            menu_rows = _rows_with_paging(page, menu_rows, channel)
-
-        greeting = _msg("choose_option")
-        menu_items_text = _menu_text(menu_rows)
-        full_text = f"{summary}\n\n{greeting}\n\n{menu_items_text}"
-
-        interactive_payload = InteractivePayload(
-            type=InteractiveType.LIST,
-            body=greeting,
-            button_label=_msg("view_menu"),
-            action_data=[{"title": _msg("menu_title"), "rows": menu_rows}],
-        )
-
-        limit = get_interactive_body_char_limit(channel)
-
-        if len(summary) + len(greeting) > limit:
-            # Fallback: Send data as plain text, then menu separately.
-            outbox.append(Outbound(phone_number, OutboundMessage(text=summary)))
-            outbox.append(
-                Outbound(phone_number, OutboundMessage(text=greeting, interactive=interactive_payload), pace=False)
+        outbox.extend(
+            menu_reply(
+                phone_number,
+                limits,
+                prompt=prompt,
+                rows=_menu_rows(menu_for(session), _in_encounter(session)),
+                button_label=_msg("view_menu"),
+                section_title=_menu_section_title(session),
+                content=renderer_msg.text,
+                page=page,
             )
-        else:
-            # Single message: data + greeting in interactive body (avoiding redundant menu list)
-            interactive_payload = InteractivePayload(
-                type=interactive_payload.type,
-                body=f"{summary}\n\n{greeting}",
-                action_data=interactive_payload.action_data,
-                button_label=interactive_payload.button_label,
-                footer=interactive_payload.footer,
-            )
-            outbox.append(Outbound(phone_number, OutboundMessage(text=full_text, interactive=interactive_payload)))
-
-    except PermissionDeniedError:
-        logger.warning(
-            "PermissionDenied: %s id=%s action=%s",
-            actor.user_type,
-            actor.instance.id,
-            label,
-        )
-        _send_main_menu(
-            phone_number,
-            str(session.user_type),
-            channel,
-            outbox,
-            prefix=_msg("permission_denied"),
-        )
-    except MissingContextError as exc:
-        _send_main_menu(
-            phone_number,
-            str(session.user_type),
-            channel,
-            outbox,
-            prefix=str(exc),
-        )
-    except NoDataError:
-        _send_main_menu(
-            phone_number,
-            str(session.user_type),
-            channel,
-            outbox,
-            prefix=_msg("no_data", label=label.lower()),
-        )
-    except DataFetchError as exc:
-        logger.error("DataFetchError %s: %s", label, exc)
-        _send_main_menu(
-            phone_number,
-            str(session.user_type),
-            channel,
-            outbox,
-            prefix=_msg("fetch_error"),
         )
 
 
@@ -445,9 +481,13 @@ def _handle_awaiting_patient_search(
         outbox.append(Outbound(phone_number, _msg("session_expired")))
         return
 
-    # A fresh query always starts at the first page.
     session.open_search(text.strip())
     _run_patient_search(session, phone_number, channel, outbox, actor)
+
+
+def _describe_patient(record: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    """A search result as the picker offers it: who, and the number that identifies them."""
+    return (record["name"], record["phone_number"], record)
 
 
 def _run_patient_search(
@@ -458,15 +498,14 @@ def _run_patient_search(
     actor: Any,
 ) -> None:
     """Runs the stored query at the session's current page and offers the results."""
+    limits = get_channel_limits(channel)
     try:
         page = patient_lookup.search_patients(actor, session.search_query, session)
     except PermissionDeniedError:
         outbox.append(Outbound(phone_number, _msg("permission_denied")))
-        session.state = ConversationSession.State.AUTHENTICATED
-        session.save(update_fields=["state"])
+        session.return_to_menu()
         return
     except InvalidQueryError as exc:
-        # Stay in AWAITING_PATIENT_SEARCH so the next message is retried as a search query.
         outbox.append(Outbound(phone_number, str(exc)))
         return
     except NoDataError:
@@ -475,15 +514,11 @@ def _run_patient_search(
 
     page = fit_to_budget(
         page,
-        lambda rows: (
-            render_patient_search_results(
-                _msg("patient_search_results"),
-                [f"{r['name']} — {r['phone_number']}" for r in rows],
-                _UNBOUNDED_CHARS,
-            ).text
+        lambda rows: choices_as_text(
+            _msg("patients_title"), _choices_for(rows, _describe_patient, page.offset + 1), _UNBOUNDED_CHARS
         ),
-        _list_budget(channel),
-        _list_line_budget(channel),
+        _list_budget(limits),
+        _list_line_budget(limits),
         int(plugin_settings.DATA_PAGE_MIN_RECORDS),
     )
     session.record_shown(len(page.records))
@@ -493,39 +528,46 @@ def _run_patient_search(
         outbox.append(Outbound(phone_number, _msg("page_last")))
         return
 
-    session.candidates = results
-    session.state = ConversationSession.State.SELECTING_PATIENT
-    session.save(update_fields=["state", "candidates"])
+    choices = _choices_for(results, _describe_patient, page.offset + 1, prefix="patient")
+    session.offer([choice.candidate for choice in choices], ConversationSession.State.SELECTING_PATIENT)
 
     prompt = _msg("patient_search_results")
-    start = page.offset + 1
-    plain_options = [f"{r['name']} — {r['phone_number']}" for r in results]
-    body = f"{prompt}\n\n{_paging_text(page)}" if page.is_paginated else prompt
-    msg = render_patient_search_results(body, plain_options, get_max_chars(channel), start)
+    section_title = _msg("patients_title")
 
-    rows = [{"id": f"patient_{i}", "title": r["name"], "description": r["phone_number"]} for i, r in enumerate(results)]
-    # Reply buttons have no room for paging controls, so a paginated set uses the list.
-    if not page.is_paginated and len(results) <= get_max_reply_buttons(channel):
+    # A short, unpaged result set fits on buttons -- one tap, no list to open. Anything
+    # longer, or anything paged, needs the list so every result stays selectable.
+    if not page.is_paginated and len(results) <= limits.max_buttons:
         interactive = InteractivePayload(
             type=InteractiveType.REPLY_BUTTONS,
             body=prompt,
-            action_data=[{"id": f"patient_{i}", "title": r["name"]} for i, r in enumerate(results)],
+            action_data=[row(choice.row_id, choice.title) for choice in choices],
         )
-    else:
-        interactive = InteractivePayload(
-            type=InteractiveType.LIST,
-            body=body,
-            button_label=_msg("select_patient"),
-            action_data=[{"title": _msg("patients_title"), "rows": _rows_with_paging(page, rows, channel)}],
-        )
+        text = join(choices_as_text(section_title, choices, limits.text_body), prompt)
+        outbox.append(Outbound(phone_number, OutboundMessage(text=text, interactive=interactive)))
+        return
 
-    outbox.append(Outbound(phone_number, OutboundMessage(text=msg.text, interactive=interactive)))
+    outbox.extend(
+        picker_reply(
+            phone_number,
+            limits,
+            prompt=prompt,
+            choices=choices,
+            button_label=_msg("select_patient"),
+            section_title=section_title,
+            page=page,
+        )
+    )
 
 
 def _handle_selecting_patient(
     session: ConversationSession, phone_number: str, text: str, channel: str, outbox: list[Outbound]
 ) -> None:
     choice = text.strip()
+
+    if choice == BACK_ID:
+        session.return_to_menu()
+        _send_menu(session, phone_number, channel, outbox)
+        return
 
     step = _paging_step(choice)
     if step:
@@ -547,95 +589,51 @@ def _handle_selecting_patient(
         _run_patient_search(session, phone_number, channel, outbox, actor)
         return
 
-    # patient_ ids are 0-based (patient_0 is the first row).
-    index = _parse_selection_index(choice, "patient_", prefixed_base=0, display_start=current_offset(session) + 1)
-    candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore[reportAssignmentType]
-    if index is None or not (0 <= index < len(candidates)):
+    selected = session.select(choice)
+    if selected is None:
         outbox.append(Outbound(phone_number, _msg("invalid_choice")))
         return
 
-    selected = candidates[index]
-    session.active_patient_external_id = selected["external_id"]
-    session.state = ConversationSession.State.AUTHENTICATED
-    session.candidates = []
-    # A new patient's lists start at the top.
-    session.data_menu_choice = ""
-    session.data_offsets = []
-    session.data_shown = 0
-    session.search_query = ""
-    session.save(
-        update_fields=[
-            "state",
-            "active_patient_external_id",
-            "candidates",
-            "data_menu_choice",
-            "data_offsets",
-            "data_shown",
-            "search_query",
-        ]
-    )
-    _send_main_menu(
-        phone_number,
-        str(session.user_type),
-        channel,
-        outbox,
-        prefix=_msg("patient_selected", name=selected["name"]),
-    )
+    # The name rides along on the session: every later reply names whose records these are.
+    session.switch_patient(selected["external_id"], selected["name"])
+    _send_menu(session, phone_number, channel, outbox)
+
+
+def _describe_document(record: Any, menu_key: str) -> tuple[str, str, dict[str, Any]]:
+    return (record.name, f"{record.date} ({record.status})", {"external_id": record.external_id, "menu_key": menu_key})
 
 
 def _enter_document_selection(
     session: ConversationSession,
     menu_key: str,
     records: Any,
-    renderer: Any,
     phone_number: str,
     channel: str,
     outbox: list[Outbound],
     start: int = 1,
 ) -> bool:
-    """Offers the selectable records as a pick-list and parks the session in SELECTING_DOCUMENT."""
+    """Offers the selectable records as a pick-list and parks the session in SELECTING_DOCUMENT.
+
+    Returns False when nothing on the page can be selected, leaving the caller to send its
+    ordinary data reply -- records cached before `external_id` existed come back without one.
+    """
+    limits = get_channel_limits(channel)
     # One row is spent on "Back", so the provider's list limit leaves this many records.
-    max_records = get_max_interactive_rows(channel) - 1
-    selectable = [record for record in records if getattr(record, "external_id", "")][:max_records]
-    rows = [
-        {
-            "external_id": record.external_id,
-            "title": record.name,
-            "description": f"{record.date} ({record.status})",
-            "menu_key": menu_key,
-        }
-        for record in selectable
-    ]
-    if not rows:
+    selectable = [record for record in records if getattr(record, "external_id", "")][: limits.max_rows - 1]
+    if not selectable:
         return False
 
-    session.candidates = rows
-    session.state = ConversationSession.State.SELECTING_DOCUMENT
-    session.save(update_fields=["state", "candidates"])
+    choices = _choices_for(selectable, lambda record: _describe_document(record, menu_key), start, prefix="document")
+    session.offer([choice.candidate for choice in choices], ConversationSession.State.SELECTING_DOCUMENT)
 
-    prompt = _msg("select_document_prompt")
-    interactive_rows = [
-        {"id": f"document_{i}", "title": row["title"], "description": row["description"]} for i, row in enumerate(rows)
-    ]
-    interactive_rows.append({"id": "0", "title": _msg("back")})
-
-    max_chars = get_max_chars(channel)
-    interactive_body = f"{renderer(records, max_chars, start).text}\n\n{prompt}"
-    fallback_text = f"{renderer(selectable, max_chars, start).text}\n\n{prompt}"
-    # Over the body limit send_message degrades to plain text, which would drop the rows.
-    body = interactive_body if len(interactive_body) <= get_interactive_body_char_limit(channel) else prompt
-    outbox.append(
-        Outbound(
+    outbox.extend(
+        picker_reply(
             phone_number,
-            OutboundMessage(
-                text=fallback_text,
-                interactive=InteractivePayload(
-                    type=InteractiveType.LIST,
-                    body=body,
-                    button_label=_msg("select_document"),
-                    action_data=[{"title": _msg("documents_title"), "rows": interactive_rows}],
-                ),
-            ),
+            limits,
+            prompt=_msg("select_document_prompt"),
+            choices=choices,
+            button_label=_msg("select_document"),
+            section_title=_msg("documents_title"),
         )
     )
     return True
@@ -653,42 +651,38 @@ def _handle_selecting_document(
         return
 
     def _return_to_menu(prefix: str | None = None, pace: bool = True) -> None:
-        session.state = ConversationSession.State.AUTHENTICATED
-        session.candidates = []
-        session.save(update_fields=["state", "candidates"])
-        _send_main_menu(phone_number, str(session.user_type), channel, outbox, prefix=prefix, pace=pace)
+        # close_selection, not return_to_menu: the data page the pick-list was drawn from is
+        # still open behind it, and n/p must keep working on it.
+        session.close_selection()
+        _send_menu(session, phone_number, channel, outbox, prefix=prefix, pace=pace)
 
-    if choice == "0":
+    if choice == BACK_ID:
         _return_to_menu()
         return
 
     if _paging_step(choice):
+        # A paging command re-runs the list underneath one page along.
         _handle_authenticated(session, phone_number, choice, channel, outbox)
         return
 
-    # document_ ids are 0-based (document_0 is the first row).
-    index = _parse_selection_index(choice, "document_", prefixed_base=0, display_start=current_offset(session) + 1)
-    candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore[reportAssignmentType]
-    if index is None or not (0 <= index < len(candidates)):
+    selected = session.select(choice)
+    if selected is None:
         outbox.append(Outbound(phone_number, _msg("invalid_choice")))
         return
 
-    selected = candidates[index]
-    menu = _STAFF_MENU if session.user_type == ConversationSession.UserType.STAFF.value else _PATIENT_MENU
-    entry = menu.get(selected["menu_key"])
-    if entry is None:
+    option = menu_for(session).get(selected["menu_key"])
+    if option is None:
         logger.error("_handle_selecting_document: stale menu_key %s in session candidates", selected["menu_key"])
         _return_to_menu(prefix=_msg("fetch_error"))
         return
-    _label, _fetcher, _renderer, document_resolver = entry
-    if document_resolver is None:
+    if option.document_resolver is None:
         logger.error("_handle_selecting_document: menu entry %s has no document resolver", selected["menu_key"])
         _return_to_menu(prefix=_msg("fetch_error"))
         return
 
     try:
         patient = resolve_target_patient(actor, session)
-        document_request = document_resolver(patient, selected["external_id"])
+        document_request = option.document_resolver(patient, selected["external_id"])
         if document_request is None:
             _return_to_menu(prefix=_msg("document_unavailable"))
             return
@@ -716,73 +710,509 @@ def _handle_selecting_document(
     )
 
 
-def _send_main_menu(
+def _encounter_label(record: Any) -> str:
+    """The one-line identity of an encounter, for the sub-menu header."""
+    return _msg("encounter_label", facility=record.facility, date=record.date, status=record.status)
+
+
+def _fetch_picker_page(
+    session: ConversationSession,
+    fetcher: Any,
+    describe: Describe,
+    actor: Any,
+    channel: str,
+    advance: int,
+    list_key: str,
+    section_title: str,
+    reserved_rows: int,
+) -> Page:
+    """One page of a picker: the session's paging move applied, then the page trimmed to
+    what the provider's list and the reader's screen can both hold.
+
+    `reserved_rows` is what the non-record rows (Back, and any All) take out of the budget.
+    Paging costs no rows of its own -- it rides on buttons -- unless the provider has none,
+    which is the only case where it has to come out of the same budget.
+    """
+    limits = get_channel_limits(channel)
+    if advance == 0:
+        session.open_data_list(list_key)
+    elif advance < 0:
+        session.back_page()
+    else:
+        session.advance_page(session.next_offset())
+
+    page = fetcher(actor, session)
+
+    page = fit_to_budget(
+        page,
+        lambda rows: choices_as_text(section_title, _choices_for(rows, describe, page.offset + 1), _UNBOUNDED_CHARS),
+        _list_budget(limits),
+        _list_line_budget(limits),
+        int(plugin_settings.DATA_PAGE_MIN_RECORDS),
+    )
+    paging_row_cost = 0 if limits.max_buttons else int(page.has_next) + int(page.has_previous)
+    max_records = max(1, limits.max_rows - reserved_rows - paging_row_cost)
+    if len(page.records) > max_records:
+        page = replace(
+            page,
+            records=page.records[:max_records],
+            source_weights=page.source_weights[:max_records],
+            has_next=True,
+        )
+    session.record_shown(page.consumed())
+    return page
+
+
+def _send_picker(
+    session: ConversationSession,
+    page: Page,
+    describe: Describe,
     phone_number: str,
-    user_type: str,
+    channel: str,
+    outbox: list[Outbound],
+    *,
+    state: str,
+    prefix: str,
+    prompt: str,
+    button_label: str,
+    section_title: str,
+    leading_rows: list[dict[str, str]] | None = None,
+) -> None:
+    """Parks the session on a picker's choices and sends them.
+
+    Rows, stored candidates and the plain-text fallback all come from `describe`, numbered
+    from the page's own offset -- so a typed number and a tapped row always mean the same
+    record, whichever page it was offered on.
+    """
+    choices = _choices_for(page.records, describe, page.offset + 1, prefix=prefix)
+    session.offer([choice.candidate for choice in choices], state)
+    outbox.extend(
+        picker_reply(
+            phone_number,
+            get_channel_limits(channel),
+            prompt=prompt,
+            choices=choices,
+            button_label=button_label,
+            section_title=section_title,
+            leading_rows=leading_rows or (),
+            page=page,
+        )
+    )
+
+
+def _paged_past_the_end(session: ConversationSession, page: Page, phone_number: str, outbox: list[Outbound]) -> bool:
+    """An empty page beyond the first means the reader walked off the end; step back."""
+    if page.records:
+        return False
+    session.back_page()
+    outbox.append(Outbound(phone_number, _msg("page_last")))
+    return True
+
+
+def _describe_encounter(record: Any) -> tuple[str, str, dict[str, Any]]:
+    """An encounter as the picker offers it: where it happened, when, and how it ended."""
+    return (
+        record.facility,
+        f"{record.date} ({record.status})",
+        {"external_id": record.external_id, "label": _encounter_label(record)},
+    )
+
+
+def _enter_encounter_selection(
+    session: ConversationSession,
+    actor: Any,
+    phone_number: str,
+    channel: str,
+    outbox: list[Outbound],
+    advance: int = 0,
+) -> None:
+    """Offers the patient's encounters and parks the session in SELECTING_ENCOUNTER."""
+    with _reporting_data_errors(
+        session, actor, phone_number, channel, outbox, label=ENCOUNTERS_LABEL, scope=Scope.PATIENT
+    ):
+        page = _fetch_picker_page(
+            session,
+            encounters_data.fetch_encounters,
+            _describe_encounter,
+            actor,
+            channel,
+            advance,
+            list_key=_ENCOUNTER_PICKER_KEY,
+            section_title=_msg("encounters_title"),
+            reserved_rows=1,
+        )
+
+        if _paged_past_the_end(session, page, phone_number, outbox):
+            return
+
+        if len(page.records) == 1 and not page.is_paginated:
+            record = page.records[0]
+            session.open_encounter(record.external_id, _encounter_label(record))
+            _send_menu(session, phone_number, channel, outbox)
+            return
+
+        _send_picker(
+            session,
+            page,
+            _describe_encounter,
+            phone_number,
+            channel,
+            outbox,
+            state=ConversationSession.State.SELECTING_ENCOUNTER,
+            prefix="encounter",
+            prompt=_msg("select_encounter_prompt"),
+            button_label=_msg("select_encounter"),
+            section_title=_msg("encounters_title"),
+        )
+
+
+def _handle_selecting_encounter(
+    session: ConversationSession, phone_number: str, text: str, channel: str, outbox: list[Outbound]
+) -> None:
+    choice = text.strip()
+
+    actor = resolve_actor(session)
+    if actor is None:
+        session.logout()
+        outbox.append(Outbound(phone_number, _msg("session_expired")))
+        return
+
+    if choice == BACK_ID:
+        session.return_to_menu()
+        _send_menu(session, phone_number, channel, outbox)
+        return
+
+    step = _paging_step(choice)
+    if step:
+        if step < 0 and session.data_page == 0:
+            outbox.append(Outbound(phone_number, _msg("page_first")))
+            return
+        _enter_encounter_selection(session, actor, phone_number, channel, outbox, advance=step)
+        return
+
+    selected = session.select(choice)
+    if selected is None:
+        outbox.append(Outbound(phone_number, _msg("invalid_choice")))
+        return
+
+    # Reaching the picker at all means there was more than one to choose from.
+    session.open_encounter(selected["external_id"], selected["label"], has_alternatives=True)
+    _send_menu(session, phone_number, channel, outbox)
+
+
+def _enter_prescription_selection(
+    session: ConversationSession,
+    actor: Any,
+    menu_key: str,
+    option: MenuOption,
+    phone_number: str,
+    channel: str,
+    outbox: list[Outbound],
+    advance: int = 0,
+) -> None:
+    """Offers this encounter's prescriptions, or skips straight to the medications.
+
+    care_fe's PrescriptionListSelector is a sidebar within the medicines tab, not a level of
+    navigation -- so this is a filter chosen per viewing, not a scope that sticks.
+    """
+    describe = _prescription_describer(menu_key)
+    with _reporting_data_errors(session, actor, phone_number, channel, outbox, label=option.label, scope=option.scope):
+        try:
+            page = _fetch_picker_page(
+                session,
+                medications_data.fetch_prescription_choices,
+                describe,
+                actor,
+                channel,
+                advance,
+                list_key=_PRESCRIPTION_PICKER_KEY,
+                section_title=_msg("prescriptions_title"),
+                reserved_rows=2,
+            )
+        except NoDataError:
+            _show_all_prescriptions(session, actor, menu_key, option, phone_number, channel, outbox)
+            return
+
+        if _paged_past_the_end(session, page, phone_number, outbox):
+            return
+
+        if len(page.records) == 1 and not page.is_paginated:
+            _show_all_prescriptions(session, actor, menu_key, option, phone_number, channel, outbox)
+            return
+
+        _send_picker(
+            session,
+            page,
+            describe,
+            phone_number,
+            channel,
+            outbox,
+            state=ConversationSession.State.SELECTING_PRESCRIPTION,
+            prefix="prescription",
+            prompt=_msg("select_prescription_prompt"),
+            button_label=_msg("select_prescription"),
+            section_title=_msg("prescriptions_title"),
+            leading_rows=[_all_prescriptions_row()],
+        )
+
+
+def _show_all_prescriptions(
+    session: ConversationSession,
+    actor: Any,
+    menu_key: str,
+    option: MenuOption,
+    phone_number: str,
+    channel: str,
+    outbox: list[Outbound],
+) -> None:
+    """Sets the "all prescriptions" filter and runs the medication list against the encounter
+    menu -- used when there is nothing to pick from (zero or one prescription)."""
+    session.set_prescription_scope(ALL_PRESCRIPTIONS, _msg("all_prescriptions"))
+    _run_option(session, actor, menu_key, option, phone_number, channel, outbox)
+
+
+def _prescription_describer(menu_key: str) -> Describe:
+    """A prescription as care_fe's PrescriptionListSelector card reads it: when it was
+    written, over who wrote it.
+
+    `menu_key` rides along on each choice so the reply knows which menu option to re-run once
+    a prescription is picked.
+    """
+
+    def describe(record: Any) -> tuple[str, str, dict[str, Any]]:
+        return (
+            record.name or record.prescribed_on,
+            _msg("prescription_choice_by", prescribed_by=record.prescribed_by or NOT_RECORDED),
+            {"external_id": record.external_id, "menu_key": menu_key},
+        )
+
+    return describe
+
+
+def _all_prescriptions_row() -> dict[str, str]:
+    """care_fe leads its sidebar with "All prescriptions"; `a` picks it, because the numbers
+    belong to the prescriptions themselves."""
+    return row("prescription_all", _msg("all_prescriptions"), _msg("view_all_medications"))
+
+
+def _show_medications_keeping_picker(
+    session: ConversationSession,
+    actor: Any,
+    option: MenuOption,
+    phone_number: str,
+    channel: str,
+    outbox: list[Outbound],
+    advance: int = 0,
+) -> None:
+    """Renders the scoped medications while keeping the prescription picker open beside them,
+    so the reader can switch prescriptions in place -- care_fe's PrescriptionListSelector
+    stays next to the medicines, it is not a place you leave to change the filter.
+
+    The choices are redrawn from what the session already stored, so paging the medications
+    never renumbers the prescriptions: a row and a typed number keep meaning what they meant
+    when the picker was first offered.
+    """
+    fetcher, renderer = option.fetcher, option.renderer
+    if fetcher is None or renderer is None:
+        logger.error("_show_medications_keeping_picker: option %s has no fetcher/renderer", option.label)
+        _send_menu(session, phone_number, channel, outbox, prefix=_msg("fetch_error"))
+        return
+
+    limits = get_channel_limits(channel)
+    choices = [Choice.from_candidate(candidate) for candidate in session.candidates or []]  # pyright: ignore[reportGeneralTypeIssues]
+    prompt = _msg("select_prescription_prompt")
+    header = _scope_line(session, option.label.lower())
+
+    with _reporting_data_errors(session, actor, phone_number, channel, outbox, label=option.label, scope=option.scope):
+        if advance == 0:
+            session.open_data_list(_MEDICATIONS_LIST_KEY)
+        elif advance < 0:
+            session.back_page()
+        else:
+            session.advance_page(session.next_offset())
+
+        budget = _body_budget(limits, prompt)
+        page = fetcher(actor, session)
+        page = fit_to_budget(
+            page,
+            lambda rows: renderer(rows, _UNBOUNDED_CHARS, page.offset + 1, header=header).text,
+            budget,
+            _list_line_budget(limits),
+            int(plugin_settings.DATA_PAGE_MIN_RECORDS),
+        )
+        session.record_shown(page.consumed())
+
+        if not page.records and page.number > 0:
+            session.back_page()
+            outbox.append(Outbound(phone_number, _msg("page_last")))
+            return
+
+        outbox.extend(
+            picker_reply(
+                phone_number,
+                limits,
+                prompt=prompt,
+                choices=choices,
+                button_label=_msg("select_prescription"),
+                section_title=_msg("prescriptions_title"),
+                leading_rows=[_all_prescriptions_row()],
+                content=renderer(page.records, budget, page.offset + 1, header=header).text,
+                page=page,
+            )
+        )
+
+
+def _handle_selecting_prescription(
+    session: ConversationSession, phone_number: str, text: str, channel: str, outbox: list[Outbound]
+) -> None:
+    choice = text.strip()
+
+    actor = resolve_actor(session)
+    if actor is None:
+        session.logout()
+        outbox.append(Outbound(phone_number, _msg("session_expired")))
+        return
+
+    candidates: list[dict[str, Any]] = session.candidates  # pyright: ignore[reportAssignmentType]
+    menu_key = candidates[0]["menu_key"] if candidates else ""
+    option = menu_for(session).get(menu_key)
+
+    if choice == BACK_ID:
+        session.return_to_menu()
+        _send_menu(session, phone_number, channel, outbox)
+        return
+
+    if option is None:
+        logger.error("_handle_selecting_prescription: stale menu_key %s in session candidates", menu_key)
+        session.return_to_menu()
+        _send_menu(session, phone_number, channel, outbox, prefix=_msg("fetch_error"))
+        return
+
+    step = _paging_step(choice)
+    if step:
+        if step < 0 and session.data_page == 0:
+            outbox.append(Outbound(phone_number, _msg("page_first")))
+            return
+        if session.active_prescription_external_id:
+            _show_medications_keeping_picker(session, actor, option, phone_number, channel, outbox, advance=step)
+        else:
+            _enter_prescription_selection(session, actor, menu_key, option, phone_number, channel, outbox, advance=step)
+        return
+
+    if choice.lower() in _ALL_TOKENS:
+        session.set_prescription_scope(ALL_PRESCRIPTIONS, _msg("all_prescriptions"))
+        _show_medications_keeping_picker(session, actor, option, phone_number, channel, outbox)
+        return
+
+    selected = session.select(choice)
+    if selected is None:
+        outbox.append(Outbound(phone_number, _msg("invalid_choice")))
+        return
+
+    session.set_prescription_scope(selected["external_id"], selected["title"])
+    _show_medications_keeping_picker(session, actor, option, phone_number, channel, outbox)
+
+
+def _send_encounter_document(
+    session: ConversationSession,
+    actor: Any,
+    option: MenuOption,
+    phone_number: str,
+    channel: str,
+    outbox: list[Outbound],
+) -> None:
+    """The open encounter's discharge summary.
+
+    No pick-list: the encounter is already chosen, so the resolver is called directly --
+    what the retired "Encounter details" option uniquely provided.
+    """
+    if option.document_resolver is None:
+        logger.error("_send_encounter_document: option %s has no document resolver", option.label)
+        _send_menu(session, phone_number, channel, outbox, prefix=_msg("fetch_error"))
+        return
+
+    with _reporting_data_errors(session, actor, phone_number, channel, outbox, label=option.label, scope=option.scope):
+        try:
+            encounter = resolve_target_encounter(actor, session)
+            document_request = option.document_resolver(encounter.patient, str(encounter.external_id))
+            if document_request is None:
+                _send_menu(session, phone_number, channel, outbox, prefix=_msg("document_unavailable"))
+                return
+            link = get_or_create_document_link(actor, encounter.patient, document_request, provider=channel)
+        except DocumentUnavailableError:
+            logger.warning(
+                "_send_encounter_document: document unavailable for %s", session.active_encounter_external_id
+            )
+            _send_menu(session, phone_number, channel, outbox, prefix=_msg("document_unavailable"))
+            return
+
+        outbox.append(
+            Outbound(
+                phone_number,
+                build_document_message(
+                    f"{option.label}\n\n{_msg('document_text')}",
+                    build_document_url(link),
+                    footer=_msg("document_footer"),
+                ),
+            )
+        )
+
+
+def _menu_section_title(session: ConversationSession) -> str:
+    return _msg("encounter_menu_title") if _in_encounter(session) else _msg("menu_title")
+
+
+def _send_menu(
+    session: ConversationSession,
+    phone_number: str,
     channel: str,
     outbox: list[Outbound],
     name: str | None = None,
     prefix: str | None = None,
     pace: bool = True,
 ) -> None:
-    menu = _STAFF_MENU if user_type == ConversationSession.UserType.STAFF.value else _PATIENT_MENU
+    """Sends whichever menu the session is currently in, main or encounter sub-menu.
 
-    # ids match the existing menu keys so _handle_authenticated's menu.get(choice) works unchanged
-    rows = _menu_rows(menu)
-
-    greeting = _msg("greeting", name=name) if name else _msg("choose_option")
-    menu_items_text = _menu_text(rows)
-
-    if prefix:
-        plain_text = f"{prefix}\n\n{greeting}\n\n{menu_items_text}"
-        interactive_body = f"{prefix}\n\n{greeting}"
-    else:
-        plain_text = f"{greeting}\n\n{menu_items_text}"
-        interactive_body = greeting
-
-    msg = OutboundMessage(
-        text=plain_text,
-        interactive=InteractivePayload(
-            type=InteractiveType.LIST,
-            body=interactive_body,
+    `prefix` explains why the menu is back -- a permission refusal, an empty list, a patient
+    just switched to.
+    """
+    outbox.extend(
+        menu_reply(
+            phone_number,
+            get_channel_limits(channel),
+            prompt=_menu_prompt(session, name),
+            rows=_menu_rows(menu_for(session), _in_encounter(session)),
             button_label=_msg("view_menu"),
-            action_data=[{"title": _msg("menu_title"), "rows": rows}],
-        ),
+            section_title=_menu_section_title(session),
+            content=prefix or "",
+            pace=pace,
+        )
     )
-    outbox.append(Outbound(phone_number, msg, pace=pace))
 
 
-def _send_candidate_menu(
-    phone_number: str, candidates: list[dict[str, Any]], channel: str, outbox: list[Outbound]
-) -> None:
+def _send_candidate_menu(phone_number: str, choices: list[Choice], channel: str, outbox: list[Outbound]) -> None:
+    """The accounts one phone number resolves to. Never paged -- one number maps to a handful
+    of identities at most, so this stays a single message either way."""
+    limits = get_channel_limits(channel)
     prompt = _msg("select_account")
     plain_text = numbered_block(
         prompt,
-        [_msg("account_line", name=c["full_name"], user_type=c["user_type"].capitalize()) for c in candidates],
-        get_max_chars(channel),
+        [_msg("account_line", name=choice.title, user_type=choice.description) for choice in choices],
+        limits.text_body,
     )
 
-    if len(candidates) <= get_max_reply_buttons(channel):
-        buttons = [{"id": f"candidate_{i + 1}", "title": c["full_name"]} for i, c in enumerate(candidates)]
+    if len(choices) <= limits.max_buttons:
         interactive = InteractivePayload(
             type=InteractiveType.REPLY_BUTTONS,
             body=prompt,
-            action_data=buttons,
+            action_data=[{"id": choice.row_id, "title": choice.title} for choice in choices],
         )
     else:
-        rows = [
-            {
-                "id": f"candidate_{i + 1}",
-                "title": c["full_name"],
-                "description": c["user_type"].capitalize(),
-            }
-            for i, c in enumerate(candidates)
-        ]
         interactive = InteractivePayload(
             type=InteractiveType.LIST,
             body=prompt,
             button_label=_msg("select"),
-            action_data=[{"title": _msg("accounts_title"), "rows": rows}],
+            action_data=[{"title": _msg("accounts_title"), "rows": [choice.row for choice in choices]}],
         )
 
     outbox.append(Outbound(phone_number, OutboundMessage(text=plain_text, interactive=interactive)))

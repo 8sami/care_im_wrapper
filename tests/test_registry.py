@@ -9,35 +9,34 @@ from care_im_wrapper.conversation.messages import (
 )
 from care_im_wrapper.messaging import registry
 from care_im_wrapper.messaging.exceptions import OutboundRateLimitedError
-from tests.utils import OverrideCache  # noqa: F401 # pyright: ignore
+from care_im_wrapper.messaging.limits import default_limits
+from tests.utils import channel_limits, override_test_cache
 
 
 def _make_fake_client(*, supports_interactive: bool, max_message_chars: int = 1000):
     fake_client = MagicMock()
     fake_client.supports_interactive = supports_interactive
-    fake_client.max_message_chars = max_message_chars
+    fake_client.limits = channel_limits(text_body=max_message_chars)
     # Real pacing is exercised by SendMessageOutboundPacingTests; other tests here just
     # need is_outbound_rate_limited's cache.add(..., timeout=...) call to accept an int.
     fake_client.min_send_interval_seconds = 0
     return fake_client
 
 
-class GetMaxCharsTests(SimpleTestCase):
-    def test_unregistered_channel_returns_default_4096(self):
-        result = registry.get_max_chars("nonexistent")
-        self.assertEqual(result, 4096)
+class GetChannelLimitsTests(SimpleTestCase):
+    """Capability lookup goes through the provider, so registering one is all it takes."""
 
-    def test_registered_channel_returns_client_max_message_chars(self):
-        fake_client = MagicMock()
-        fake_client.supports_interactive = False
-        fake_client.max_message_chars = 1000
+    def test_an_unregistered_channel_gets_the_generic_defaults(self):
+        self.assertEqual(registry.get_channel_limits("nonexistent"), default_limits())
+
+    def test_a_registered_provider_describes_itself(self):
+        fake_client = _make_fake_client(supports_interactive=False, max_message_chars=1000)
 
         with patch.dict(registry._PROVIDERS, {"fake": lambda: fake_client}, clear=True):
-            result = registry.get_max_chars("fake")
-            self.assertEqual(result, 1000)
+            self.assertEqual(registry.get_channel_limits("fake").text_body, 1000)
 
 
-@OverrideCache
+@override_test_cache()
 class SendMessageTests(SimpleTestCase):
     def test_unregistered_channel_does_nothing_and_returns_none(self):
         result = registry.send_message("nonexistent", "+919876543210", "hi")
@@ -98,7 +97,7 @@ class SendMessageTests(SimpleTestCase):
             fake_client.send_text.assert_called_once_with("+919876543210", "hi")
 
 
-@OverrideCache
+@override_test_cache()
 class SendMessageOutboundPacingTests(SimpleTestCase):
     # OverrideCache isolates per test class, not per test method, so each test below
     # uses its own dedicated phone number(s) to avoid cross-method cache leakage.
