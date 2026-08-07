@@ -29,6 +29,7 @@ from care_im_wrapper.conversation.replies import (
     row,
 )
 from care_im_wrapper.conversation.templates import _msg
+from care_im_wrapper.core.sanitize import mask_phone_number
 from care_im_wrapper.data import encounters as encounters_data
 from care_im_wrapper.data import medications as medications_data
 from care_im_wrapper.data import patient_lookup
@@ -44,7 +45,6 @@ from care_im_wrapper.data.pagination import Page, fit_to_budget
 from care_im_wrapper.documents.delivery import build_document_message
 from care_im_wrapper.documents.exceptions import DocumentUnavailableError
 from care_im_wrapper.documents.service import build_document_url, get_or_create_document_link
-from care_im_wrapper.messaging.exceptions import OutboundRateLimitedError
 from care_im_wrapper.messaging.limits import ChannelLimits
 from care_im_wrapper.messaging.registry import get_channel_limits, send_message
 from care_im_wrapper.models import ConversationSession
@@ -180,33 +180,39 @@ def run_state_machine(phone_number: str, text: str, channel: str) -> None:
                 handler(session, phone_number, text, channel, outbox)
             else:
                 logger.error("run_state_machine: unhandled state %s", session.state)
-    _flush(channel, outbox)
+
+        # Inside the transaction: a turn whose first message never left must not leave the
+        # session advanced behind it. _flush re-raises only for that first message, so the
+        # rollback undoes the turn and the retry replays it against unmoved state. Once
+        # anything has been delivered the turn is committed, and _flush swallows the rest.
+        _flush(channel, outbox)
 
 
 def _flush(channel: str, outbox: list[Outbound]) -> None:
-    """Sends every queued message now that state is committed and durable."""
+    """Sends every queued message the handler built for this turn.
+
+    Any failure on the *first* message propagates, whatever its kind. Nothing was
+    delivered, so the caller's transaction rolls back and the reader is not left advanced
+    past a reply they never saw; process_inbound_message's exception taxonomy then decides
+    whether a retry is worth spending. Catching a provider-side failure here instead would
+    commit the turn silently -- the reader gets nothing, and no retry ever runs.
+
+    Once something *has* been delivered the turn is committed, so a later failure is logged
+    and the remainder dropped: replaying the turn would resend what already arrived.
+    """
     for index, item in enumerate(outbox):
         try:
             send_message(channel, item.phone_number, item.message, pace=item.pace)
-        except OutboundRateLimitedError:
+        except Exception:
             if index == 0:
                 raise
             logger.warning(
-                "_flush: rate-limited sending item %d/%d to %s on %s after earlier sends; "
-                "dropping the rest of this turn.",
+                "_flush: failed to send item %d/%d to %s on %s after earlier sends; dropping the rest of this turn.",
                 index + 1,
                 len(outbox),
-                item.phone_number,
+                mask_phone_number(item.phone_number),
                 channel,
-            )
-            return
-        except Exception:
-            logger.exception(
-                "_flush: failed to send item %d/%d to %s on %s; dropping the rest of this turn.",
-                index + 1,
-                len(outbox),
-                item.phone_number,
-                channel,
+                exc_info=True,
             )
             return
 

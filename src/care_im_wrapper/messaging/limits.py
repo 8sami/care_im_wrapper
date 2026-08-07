@@ -139,22 +139,23 @@ def whatsapp_limits() -> ChannelLimits:
 
 
 def default_limits() -> ChannelLimits:
-    """Fallback for a channel that has not described itself. Deliberately the most
-    restrictive reading of the generic defaults -- a provider we know nothing about is
-    safer under-filled than rejected."""
+    """Fallback for a channel that has not described itself. Reads only DEFAULT_* settings:
+    borrowing another provider's numbers would silently hand an unknown channel Meta's
+    limits, which is exactly the coupling ChannelLimits exists to prevent."""
     body = int(plugin_settings.DEFAULT_MAX_MESSAGE_CHARS)
+    button_title = int(plugin_settings.DEFAULT_BUTTON_TITLE_CHAR_LIMIT)
     return ChannelLimits(
         text_body=body,
-        interactive_body=min(body, int(plugin_settings.WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT)),
-        interactive_header=int(plugin_settings.WHATSAPP_HEADER_CHAR_LIMIT),
-        interactive_footer=int(plugin_settings.WHATSAPP_FOOTER_CHAR_LIMIT),
-        section_title=int(plugin_settings.WHATSAPP_SECTION_TITLE_CHAR_LIMIT),
-        row_title=int(plugin_settings.WHATSAPP_ROW_TITLE_CHAR_LIMIT),
-        row_description=int(plugin_settings.WHATSAPP_DESCRIPTION_TRUNCATE),
-        button_title=int(plugin_settings.WHATSAPP_TITLE_TRUNCATE),
-        list_button_label=int(plugin_settings.WHATSAPP_TITLE_TRUNCATE),
+        interactive_body=min(body, int(plugin_settings.DEFAULT_INTERACTIVE_BODY_CHAR_LIMIT)),
+        interactive_header=int(plugin_settings.DEFAULT_INTERACTIVE_HEADER_CHAR_LIMIT),
+        interactive_footer=int(plugin_settings.DEFAULT_INTERACTIVE_FOOTER_CHAR_LIMIT),
+        section_title=int(plugin_settings.DEFAULT_SECTION_TITLE_CHAR_LIMIT),
+        row_title=int(plugin_settings.DEFAULT_ROW_TITLE_CHAR_LIMIT),
+        row_description=int(plugin_settings.DEFAULT_ROW_DESCRIPTION_CHAR_LIMIT),
+        button_title=button_title,
+        list_button_label=button_title,
         max_rows=int(plugin_settings.DEFAULT_MAX_INTERACTIVE_ROWS),
         max_buttons=int(plugin_settings.DEFAULT_MAX_REPLY_BUTTONS),
         preview_lines=int(plugin_settings.DEFAULT_PREVIEW_LINE_LIMIT),
-        template_parameter=int(plugin_settings.WHATSAPP_TEMPLATE_PARAMETER_CHAR_LIMIT),
+        template_parameter=int(plugin_settings.DEFAULT_TEMPLATE_PARAMETER_CHAR_LIMIT),
     )

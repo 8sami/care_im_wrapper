@@ -168,4 +168,4 @@ class ResolvePatientFacilityTests(CareAPITestBase):
 
         event = NotificationEvent.objects.filter(trigger__slug="patient_registered").order_by("-id").first()
         if event is not None:  # only when the trigger and template are seeded
-            self.assertNotEqual(event.facility_organization_cache, [])
+            self.assertIsNotNone(event.facility_id)

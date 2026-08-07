@@ -34,7 +34,7 @@ def _option(fetcher):
     return MenuOption(
         label="Meds",
         fetcher=fetcher,
-        renderer=lambda r, m, start=1: SimpleNamespace(text="Meds"),
+        renderer=lambda r, m, start=1, *, header="": SimpleNamespace(text="Meds"),
     )
 
 

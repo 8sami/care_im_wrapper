@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from care.emr.api.viewsets.base import (  # pyright: ignore[reportMissingImports]
     EMRBaseViewSet,
     EMRCreateMixin,
@@ -15,6 +17,9 @@ from care.users.models import User  # pyright: ignore[reportMissingImports]
 from care.utils.shortcuts import get_object_or_404  # pyright: ignore[reportMissingImports]
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
+from django.utils import timezone
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
@@ -41,18 +46,14 @@ from care_im_wrapper.reports.schema import (
     resolve_template_context_slugs,
 )
 from care_im_wrapper.reports.validation import validate_variable_mapping
+from care_im_wrapper.settings import plugin_settings
 from care_im_wrapper.tasks import dispatch_notification_recipient, sync_notification_templates
 
 
-def _resolve_facility_root_org(facility_external_id):
-    facility = get_object_or_404(Facility, external_id=facility_external_id)
-    return get_object_or_404(FacilityOrganization, facility=facility, org_type="root")
-
-
-def _authorized_facility_root_org_id(request, resource_label: str) -> int | None:
+def _authorized_facility_id(request, resource_label: str) -> int | None:
     """Shared facility scoping for the event/recipient list views: resolves the ``facility``
-    query param to its root org id after checking the caller may read notification events
-    there. Returns None when no facility is given and the caller is a superuser (unscoped);
+    query param to its id after checking the caller may read notification events there.
+    Returns None when no facility is given and the caller is a superuser (unscoped);
     raises PermissionDenied otherwise. ``resource_label`` only tunes the error message.
     """
     facility_external_id = request.GET.get("facility")
@@ -63,12 +64,25 @@ def _authorized_facility_root_org_id(request, resource_label: str) -> int | None
             raise PermissionDenied("The facility query parameter is required.")
         return None
 
-    root_org = _resolve_facility_root_org(facility_external_id)
-    # can_read_notification_event only inspects facility_organization_cache, so an unsaved probe works.
-    probe_event = NotificationEvent(facility_organization_cache=[root_org.id])
+    facility = get_object_or_404(Facility, external_id=facility_external_id)
+    # can_read_notification_event only inspects facility_id, so an unsaved probe works.
+    probe_event = NotificationEvent(facility_id=facility.id)
     if not AuthorizationController.call("can_read_notification_event", request.user, probe_event):
         raise PermissionDenied(f"You do not have permission to view {resource_label} for this facility.")
-    return root_org.id
+    return facility.id
+
+
+#: The facility scope every event/recipient list is read through. Documented here rather than
+#: on each viewset because both resolve it via _authorized_facility_root_org_id.
+_FACILITY_PARAM = OpenApiParameter(
+    name="facility",
+    type=OpenApiTypes.UUID,
+    location=OpenApiParameter.QUERY,
+    description=(
+        "External id of the facility to scope results to. Required for every caller except a "
+        "superuser, who may omit it to read across all facilities."
+    ),
+)
 
 
 def _parse_bool_param(request, name: str) -> bool | None:
@@ -103,12 +117,25 @@ class NotificationTemplateViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet
     pydantic_read_model = NotificationTemplateReadSpec
 
     def get_queryset(self):
-        return NotificationTemplate.objects.all().order_by("name")
+        queryset = NotificationTemplate.objects.all().order_by("name")
+        # Only the list is gated here. EMRListMixin.list has no authorize hook, so a
+        # queryset-level check is all that governs it -- but get_object() runs this too, and
+        # gating every action would 403 the detail routes that carry their own manage check.
+        if self.action != "list":
+            return queryset
+        if not AuthorizationController.call("can_read_notification_template", self.request.user, None):
+            raise PermissionDenied("You do not have permission to view notification templates.")
+        return queryset
 
     def authorize_retrieve(self, instance):
         if not AuthorizationController.call("can_read_notification_template", self.request.user, instance):
             raise PermissionDenied("You do not have permission to view this notification template.")
 
+    @extend_schema(
+        request=None,
+        responses=NotificationTemplateReadSpec,
+        description="Flips is_active on this template. Returns the updated template.",
+    )
     @action(detail=True, methods=["post"])
     def toggle_active(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -119,6 +146,11 @@ class NotificationTemplateViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet
         instance.save(update_fields=["is_active", "updated_by_id", "modified_date"])
         return Response(NotificationTemplateReadSpec.serialize(instance).to_json())
 
+    @extend_schema(
+        request=None,
+        responses={202: OpenApiTypes.OBJECT},
+        description="Queues a background pull of the provider's approved template catalogue.",
+    )
     @action(detail=False, methods=["post"])
     def sync(self, request, *args, **kwargs):
         if not AuthorizationController.call("can_manage_notification_template", request.user, None):
@@ -126,6 +158,14 @@ class NotificationTemplateViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet
         sync_notification_templates.delay()  # pyright: ignore[reportCallIssue]
         return Response({"detail": "Notification template sync queued."}, status=202)
 
+    @extend_schema(
+        request=OpenApiTypes.OBJECT,
+        responses={200: NotificationTemplateReadSpec, 400: OpenApiTypes.OBJECT},
+        description=(
+            "Saves the template's variable_mapping. Body is {'variable_mapping': {placeholder: "
+            "expression}}. On failure returns 400 with per-placeholder errors under 'errors'."
+        ),
+    )
     @action(detail=True, methods=["post"])
     def set_variable_mapping(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -143,8 +183,18 @@ class NotificationTemplateViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet
         instance.save(update_fields=["variable_mapping", "updated_by_id", "modified_date"])
         return Response(NotificationTemplateReadSpec.serialize(instance).to_json())
 
-    @action(detail=True, methods=["get"])
-    def schema(self, request, *args, **kwargs):
+    # `schema` is DRF's own view attribute (the AutoSchema descriptor drf-spectacular reads);
+    # a method of that name shadows it and breaks /api/schema/ for the whole of CARE. The
+    # method is named apart from the route, which stays at .../schema/ for the FE.
+    @extend_schema(
+        responses=OpenApiTypes.OBJECT,
+        description=(
+            "Browsable field schema for this template's variable_mapping, unioned across every "
+            "trigger that renders it. Empty groups when no trigger is linked yet."
+        ),
+    )
+    @action(detail=True, methods=["get"], url_path="schema", url_name="schema")
+    def variable_schema(self, request, *args, **kwargs):
         """Browsable field schema for this template's variable_mapping, unioned across
         every trigger that renders it. Empty groups when no trigger is linked yet."""
         instance = self.get_object()
@@ -153,6 +203,14 @@ class NotificationTemplateViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet
         context_slugs = resolve_template_context_slugs(instance)
         return Response(build_notification_schema(context_slugs))
 
+    @extend_schema(
+        request=OpenApiTypes.OBJECT,
+        responses=OpenApiTypes.OBJECT,
+        description=(
+            "Dry-runs an unsaved variable_mapping draft against a preview stub of the linked "
+            "context. Returns 'rendered' per placeholder, plus 'errors' for any that failed."
+        ),
+    )
     @action(detail=True, methods=["post"])
     def preview_variable_mapping(self, request, *args, **kwargs):
         """Renders an unsaved variable_mapping draft against a preview stub of the linked
@@ -164,7 +222,7 @@ class NotificationTemplateViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet
         if not isinstance(variable_mapping, dict):
             raise ValidationError("variable_mapping must be an object.")
 
-        # Unlike schema(), which unions every context, preview uses only the first.
+        # Unlike variable_schema(), which unions every context, preview uses only the first.
         context_slugs = resolve_template_context_slugs(instance)
         preview = build_preview(context_slugs[0]) if context_slugs else None
         if preview is None:
@@ -190,6 +248,25 @@ class NotificationTemplateViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet
         return Response(body)
 
 
+@extend_schema_view(
+    list=extend_schema(
+        parameters=[
+            _FACILITY_PARAM,
+            OpenApiParameter(
+                name="trigger",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description="Slug of the trigger to filter events by.",
+            ),
+            OpenApiParameter(
+                name="is_urgent",
+                type=OpenApiTypes.BOOL,
+                location=OpenApiParameter.QUERY,
+                description="Filter by urgency. One of true, false, 1, 0.",
+            ),
+        ]
+    )
+)
 class NotificationEventViewSet(EMRCreateMixin, EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet):
     database_model = NotificationEvent
     pydantic_model = NotificationEventWriteSpec
@@ -215,10 +292,20 @@ class NotificationEventViewSet(EMRCreateMixin, EMRListMixin, EMRRetrieveMixin, E
         if is_urgent is not None:
             queryset = queryset.filter(is_urgent=is_urgent)
 
-        root_org_id = _authorized_facility_root_org_id(self.request, "notification events")
-        if root_org_id is None:
+        # Only a list is scoped by the query param. A detail route addresses one event, whose
+        # own facility_id is the better scope -- and requiring ?facility= there would 403
+        # every non-superuser hitting retrieve or dispatch, which send no such param.
+        if self.action != "list":
             return queryset
-        return queryset.filter(facility_organization_cache__contains=[root_org_id])
+
+        facility_id = _authorized_facility_id(self.request, "notification events")
+        if facility_id is None:
+            return queryset
+        return queryset.filter(facility_id=facility_id)
+
+    def authorize_retrieve(self, instance):
+        if not AuthorizationController.call("can_read_notification_event", self.request.user, instance):
+            raise PermissionDenied("You do not have permission to view this notification event.")
 
     def authorize_create(self, instance):
         # Manually-created events have no related_object/facility context yet, so authorize at the org level only.
@@ -305,6 +392,14 @@ class NotificationEventViewSet(EMRCreateMixin, EMRListMixin, EMRRetrieveMixin, E
         return candidates
 
     # Named dispatch_recipients: an @action literally named `dispatch` would shadow View.dispatch and break routing.
+    @extend_schema(
+        request=None,
+        responses={202: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+        description=(
+            "Queues every not-yet-sent recipient of this event for delivery. 400 when the event "
+            "has no pending recipients left."
+        ),
+    )
     @action(detail=True, methods=["post"], url_path="dispatch", url_name="dispatch")
     def dispatch_recipients(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -318,15 +413,32 @@ class NotificationEventViewSet(EMRCreateMixin, EMRListMixin, EMRRetrieveMixin, E
                 status=400,
             )
 
-        # Operator's explicit "send now", so clear any existing claim -- else a recipient
-        # stuck behind a dead worker's claim would do nothing until the claim went stale.
-        instance.recipients.filter(latest_status__isnull=True).update(dispatch_started_at=None)
+        # Operator's explicit "send now", so release claims a dead worker left behind. Only
+        # stale ones: a claim younger than the cutoff may belong to a worker still inside its
+        # send, and clearing that one queues a second task that delivers the message twice.
+        stale_cutoff = timezone.now() - timedelta(seconds=int(plugin_settings.DISPATCH_CLAIM_STALE_SECONDS))
+        instance.recipients.filter(latest_status__isnull=True, dispatch_started_at__lt=stale_cutoff).update(
+            dispatch_started_at=None
+        )
         for recipient in pending_recipients:
             dispatch_notification_recipient.delay(recipient.pk)  # pyright: ignore[reportCallIssue]
 
         return Response({"detail": f"Queued {len(pending_recipients)} recipient(s) for dispatch."}, status=202)
 
 
+@extend_schema_view(
+    list=extend_schema(
+        parameters=[
+            _FACILITY_PARAM,
+            OpenApiParameter(
+                name="event",
+                type=OpenApiTypes.UUID,
+                location=OpenApiParameter.QUERY,
+                description="External id of the notification event to list recipients for.",
+            ),
+        ]
+    )
+)
 class NotificationRecipientViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet):
     database_model = NotificationRecipient
     pydantic_read_model = NotificationRecipientReadSpec
@@ -342,10 +454,15 @@ class NotificationRecipientViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSe
         if event_external_id:
             queryset = queryset.filter(event__external_id=event_external_id)
 
-        root_org_id = _authorized_facility_root_org_id(self.request, "notification recipients")
-        if root_org_id is None:
+        # As on the event viewset: the query param scopes a list, the object's own event
+        # scopes a retrieve.
+        if self.action != "list":
             return queryset
-        return queryset.filter(event__facility_organization_cache__contains=[root_org_id])
+
+        facility_id = _authorized_facility_id(self.request, "notification recipients")
+        if facility_id is None:
+            return queryset
+        return queryset.filter(event__facility_id=facility_id)
 
     def authorize_retrieve(self, instance):
         if not AuthorizationController.call("can_read_notification_event", self.request.user, instance.event):

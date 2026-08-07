@@ -23,15 +23,11 @@ from care_im_wrapper.data.records import (
     PrescriptionRecord,
     ProcedureRecord,
 )
-from care_im_wrapper.settings import plugin_settings
+from care_im_wrapper.messaging.limits import clamp
 
-
-def _truncate(text: str, max_chars: int) -> str:
-    if len(text) <= max_chars:
-        return text
-    # max(0, ...): a negative slice would return the message's tail, not its head.
-    keep = max(0, max_chars - int(plugin_settings.WHATSAPP_TRUNCATE_RESERVE_CHARS))
-    return text[:keep] + "\n... (truncated)"
+#: Spelt out rather than an ellipsis: a block cut mid-record needs to say so plainly, where
+#: a single trailing character reads as part of the data.
+_TRUNCATION_MARKER = "\n... (truncated)"
 
 
 #: One nesting level, so blocks compose without rewriting inner depths.
@@ -45,7 +41,8 @@ def indent(text: str, levels: int = 1) -> str:
 
 
 def titled(title: str, *details: str | None) -> str:
-    """A title, then its details one level in. A detail may itself be a `titled()` block,."""
+    """A title, then its details one level in. A detail may itself be a `titled()` block, so
+    blocks nest to any depth."""
     return "\n".join([title, *(indent(detail) for detail in details if detail)])
 
 
@@ -58,7 +55,7 @@ def numbered_block(header: str, lines: list[str], max_chars: int, start: int = 1
         hanging = " " * len(marker)
         parts.append(marker + first)
         parts.extend(hanging + line if line else line for line in rest)
-    return _truncate("\n".join(parts), max_chars)
+    return clamp("\n".join(parts), max_chars, marker=_TRUNCATION_MARKER)
 
 
 #: "Duration: -" says not recorded, where a missing line reads as if there were none.
@@ -180,4 +177,5 @@ def render_summary(summary: PatientSummary, max_chars: int, *, header: str = "")
         _msg("summary_gender", value=summary.gender or not_recorded),
         _msg("summary_phone", value=summary.phone or not_recorded),
     ]
-    return OutboundMessage(text=_truncate((header or _msg("summary_header")) + "\n\n" + "\n".join(lines), max_chars))
+    body = (header or _msg("summary_header")) + "\n\n" + "\n".join(lines)
+    return OutboundMessage(text=clamp(body, max_chars, marker=_TRUNCATION_MARKER))

@@ -64,7 +64,8 @@ def default_page_size() -> int:
 
 
 def current_offset(session: Any) -> int:
-    """Where the session's current page starts. An absolute offset, not a page index --."""
+    """Where the session's current page starts. An absolute offset, not a page index, because
+    trimmed pages vary in size."""
     offsets = getattr(session, "data_offsets", None) or []
     return max(0, int(offsets[-1])) if offsets else 0
 
@@ -92,7 +93,8 @@ def paginate(source: Sequence[Any] | Any, number: int, page_size: int | None = N
 
 
 def paginate_or_raise(source: Sequence[Any] | Any, session: Any, page_size: int | None = None) -> Page:
-    """`paginate` for the session's current page. Only an empty *first* page is NoDataError;."""
+    """`paginate` for the session's current page. Only an empty *first* page is NoDataError;
+    an empty later page means the reader walked off the end."""
     start = current_offset(session)
     page = paginate(source, current_page_number(session), page_size, offset=start)
     if not page.records and start == 0:

@@ -14,7 +14,8 @@ from django.db.models import Q
 from django.utils import timezone
 
 from care_im_wrapper.conversation.handlers import run_state_machine
-from care_im_wrapper.core.rate_limit import is_outbound_rate_limited
+from care_im_wrapper.core.rate_limit import is_outbound_rate_limited, note_provider_pair_limit
+from care_im_wrapper.core.sanitize import mask_phone_number
 from care_im_wrapper.documents.exceptions import DocumentUnavailableError
 from care_im_wrapper.documents.service import (
     DIAGNOSTIC_REPORT_DOCUMENT_TYPE,
@@ -24,11 +25,9 @@ from care_im_wrapper.documents.service import (
 from care_im_wrapper.handlers.dispatch import NotificationRecipientSpec, fire_notification_event
 from care_im_wrapper.messaging.exceptions import (
     OutboundRateLimitedError,
-    WhatsAppBadRequestError,
-    WhatsAppNetworkError,
-    WhatsAppPairRateLimitError,
-    WhatsAppServerError,
-    WhatsAppTemplateNotConfiguredError,
+    PairRateLimitError,
+    PermanentSendError,
+    TransientSendError,
 )
 from care_im_wrapper.messaging.normalize import normalize_status_update
 from care_im_wrapper.messaging.registry import (
@@ -55,7 +54,7 @@ _STATE_ORDER: dict[NotificationStatusState, int] = {
 }
 
 # Never succeed on retry -- recorded as failed immediately instead of burning the budget.
-_PERMANENT_SEND_ERRORS = (WhatsAppTemplateNotConfiguredError, WhatsAppBadRequestError)
+_PERMANENT_SEND_ERRORS = (PermanentSendError,)
 
 DOCUMENT_READY_TRIGGER_SLUG = "document_ready_update"
 
@@ -119,17 +118,24 @@ def process_inbound_message(
 
     cache.delete(f"pending_task:{phone_number}")
 
+    masked_number = mask_phone_number(phone_number)
     try:
         run_state_machine(phone_number, text, channel)
     except OutboundRateLimitedError as exc:
         countdown = get_min_send_interval_seconds(channel)
-        logger.info("Outbound rate-limited for %s on %s. Retrying in %ss.", phone_number, channel, countdown)
+        logger.info("Outbound rate-limited for %s on %s. Retrying in %ss.", masked_number, channel, countdown)
         raise self.retry(exc=exc, countdown=countdown) from exc
-    except (WhatsAppPairRateLimitError, WhatsAppNetworkError, WhatsAppServerError) as exc:
-        logger.warning("Transient WhatsApp error for %s: %s. Retrying.", phone_number, exc)
+    except PairRateLimitError as exc:
+        # Distinct from the generic transient case: the provider named this recipient pair
+        # as the problem, so the useful wait is a growing per-pair one, not a flat delay.
+        countdown = note_provider_pair_limit(channel, phone_number)
+        logger.warning("Provider pair rate limit for %s on %s. Backing off %ss.", masked_number, channel, countdown)
+        raise self.retry(exc=exc, countdown=countdown) from exc
+    except TransientSendError as exc:
+        logger.warning("Transient send error for %s: %s. Retrying.", masked_number, exc)
         raise self.retry(exc=exc) from exc
-    except WhatsAppBadRequestError as exc:
-        logger.error("Permanent WhatsApp error for %s: %s. Dropping message.", phone_number, exc)
+    except PermanentSendError as exc:
+        logger.error("Permanent send error for %s: %s. Dropping message.", masked_number, exc)
     except Exception as exc:
         logger.error("process_inbound_message failed: %s", exc)
         raise self.retry(exc=exc) from exc

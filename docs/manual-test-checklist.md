@@ -74,7 +74,7 @@ Several people on one number
 - [ ] picking a row authenticates as that identity
 - [ ] candidate rows are 1-based
 - [ ] out-of-range or free-text selection → invalid choice, still `AMBIGUOUS`
-- [ ] a number that is both patient and staff shows both; picking staff gives option 7
+- [ ] a number that is both patient and staff shows both; picking staff gives option 4
 
 Lockout
 - [ ] `[MAX_FAILED_ATTEMPTS = 5]` wrong years → `COOLDOWN` for `[COOLDOWN_MINUTES = 30]`
@@ -277,7 +277,8 @@ Resource types
 
 ## 10. API
 
-- [ ] `notification-triggers` list/retrieve/update; unauthenticated rejected
+- [ ] `notification-triggers` list/retrieve; unauthenticated rejected
+- [ ] a write to `notification-triggers` is refused — the viewset is read-only
 - [ ] `notification-templates` list; `variable_mapping` editable
 - [ ] the variable picker offers the right fields per `context_slug`
 - [ ] an unknown `context_slug` is rejected with a clear error

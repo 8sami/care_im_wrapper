@@ -48,16 +48,6 @@ def track_previous_field(field_name: str):
     return _track
 
 
-def track_previous_status(instance: Model, **kwargs: Any) -> None:
-    """`pre_save` receiver stashing the pre-save `status` on the instance, so the paired."""
-    if instance.pk is None:
-        instance._previous_status = None  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
-    else:
-        instance._previous_status = (  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
-            type(instance).objects.filter(pk=instance.pk).values_list("status", flat=True).first()  # pyright: ignore[reportAttributeAccessIssue]
-        )
-
-
 def get_active_trigger(slug: str) -> NotificationTrigger | None:
     trigger = NotificationTrigger.objects.filter(slug=slug, is_active=True).first()
     if trigger is None:

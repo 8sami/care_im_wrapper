@@ -115,7 +115,10 @@ later.
 - Background/long-running work goes through Celery, not inline in request handling.
 
 ### Testing
-- `pytest-django` / Django's `unittest` for test coverage.
+- Django's `unittest`, run through `manage.py test` inside the backend container. Use the
+  `Makefile`: `make test`, or `make test-one T=tests.test_api_notifications` for one module.
+  The plugin imports `care`, so tests cannot run in the host `.venv` — that environment is
+  Python 3.12 and exists only for `make lint` and `make typecheck`.
 - Do not modify tests unless specifically asked to — cleanup and test-writing are separate passes.
 
 ### Security
@@ -127,4 +130,4 @@ later.
 
 ### Dependencies
 Django, Django REST Framework (APIs), Celery (background tasks), Redis (cache/queues),
-PostgreSQL/MySQL (production DB).
+PostgreSQL (CARE's database — there is no MySQL support to preserve).

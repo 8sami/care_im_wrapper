@@ -42,19 +42,33 @@ If you are proposing a feature:
 
 Ready to contribute? Here's how to set up `care_im_wrapper` for local development.
 
-1. Fork the `care_im_wrapper` repo on GitHub.
-2. Clone your fork locally:
+The plugin imports `care`, so it cannot run on its own. You need a working CARE checkout with
+its Docker stack, and the plugin registered in that instance's `plug_config.py`. The full
+procedure is in [docs/installation.md](docs/installation.md) — follow the *Local development*
+section first, then come back here.
+
+1. Fork the repo on GitHub and clone your fork **inside** your care checkout:
 
    ```sh
+   cd care
    git clone git@github.com:your_name_here/care_im_wrapper.git
    ```
 
-3. Install your local copy into a virtualenv. Assuming you have virtualenvwrapper installed, this is how you set up your fork for local development:
+2. Register it in `plug_config.py` and install it editable, per
+   [docs/installation.md](docs/installation.md). Then bring the stack up from the care root:
 
    ```sh
-   mkvirtualenv care_im_wrapper
-   cd care_im_wrapper/
-   python setup.py develop
+   make re-build
+   make up
+   ```
+
+3. Create a virtualenv **in the plugin directory** for the linter and type checker. These run
+   on the host rather than in the container, so they need their own environment:
+
+   ```sh
+   cd care_im_wrapper
+   python -m venv .venv
+   .venv/bin/pip install ruff basedpyright
    ```
 
 4. Create a branch for local development:
@@ -65,16 +79,16 @@ Ready to contribute? Here's how to set up `care_im_wrapper` for local developmen
 
    Now you can make your changes locally.
 
-5. When you're done making changes, check that your changes pass flake8 and the tests, including testing other Python versions with tox:
+5. When you're done, run the checks. They split across two environments, and the `Makefile`
+   handles the difference for you:
 
    ```sh
-   make lint
-   make test
-   # Or
-   make test-all
+   make lint       # ruff check + ruff format --check, from .venv
+   make typecheck  # basedpyright, from .venv
+   make test       # the full suite, inside the backend container
    ```
 
-   To get flake8 and tox, just pip install them into your virtualenv.
+   Use `make lint-fix` to apply the fixable style issues automatically.
 
 6. Commit your changes and push your branch to GitHub:
 
@@ -86,33 +100,78 @@ Ready to contribute? Here's how to set up `care_im_wrapper` for local developmen
 
 7. Submit a pull request through the GitHub website.
 
+## Where things run
+
+The plugin's Python code targets 3.13, matching CARE core. Anything that imports `care` — the
+tests, the docs build, coverage, the OpenAPI schema — must run inside the backend container,
+which is where CARE and its dependencies are installed. The `Makefile` targets already point
+at the right place:
+
+| Target | Runs in | Notes |
+| --- | --- | --- |
+| `make lint`, `make lint-fix` | host `.venv` | ruff |
+| `make typecheck` | host `.venv` | basedpyright |
+| `make test` | backend container | the whole suite |
+| `make test-one T=tests.test_api_notifications` | backend container | one module |
+| `make coverage`, `make coverage-html` | backend container | |
+| `make docs`, `make docs-open` | backend container | autodoc imports the package |
+| `make schema` | backend container | writes `schema.yaml` |
+
+> [!IMPORTANT]
+> Two Makefiles are in play, and which directory you are in decides which one you get.
+>
+> - **`make up`, `make down`, `make re-build`** are CARE's, and run from the **care root**.
+> - **Everything in the table above** is the plugin's, and runs from the **plugin directory**.
+>
+> The plugin's targets reach the stack through `docker compose -f ../docker-compose.yaml`, so
+> that `..` only resolves correctly from `care/care_im_wrapper/`. The care root Makefile has
+> no `docs`, `lint`, `typecheck` or `coverage` target at all, and its `test` runs CARE's own
+> suite rather than the plugin's — so a mistaken directory fails loudly rather than doing the
+> wrong thing quietly.
+
 ## Pull Request Guidelines
 
 Before you submit a pull request, check that it meets these guidelines:
 
 1. The pull request should include tests.
-2. If the pull request adds functionality, the docs should be updated. Put your new functionality into a function with a docstring, and add the feature to the list in README.md.
-3. The pull request should work for Python 3.12 and 3.13. Tests run in GitHub Actions on every pull request to the main branch, make sure that the tests pass for all supported Python versions.
+2. If the pull request adds functionality, update the relevant page under `docs/` and give the
+   new code a docstring — the API reference is generated from docstrings by autodoc.
+3. `make lint`, `make typecheck` and `make test` should all pass. There is no CI on this repo
+   yet, so nothing will catch a failure for you.
 
 ## Tips
 
-To run a subset of tests:
+To run a single test module:
 
 ```sh
-pytest tests.test_care_im_wrapper
+make test-one T=tests.test_api_notifications
 ```
 
-## Deploying
-
-A reminder for the maintainers on how to deploy. Make sure all your changes are committed (including an entry in HISTORY.md). Then run:
+To run one test case, extend the dotted path:
 
 ```sh
-bump2version patch # possible: major / minor / patch
-git push
+make test-one T=tests.test_api_notifications.TestNotificationEventCreate
+```
+
+## Releasing
+
+The plugin is not published to PyPI. It is consumed directly from git by the CARE instance
+that runs it, through `plug_config.py`:
+
+```python
+package_name="git+https://github.com/8sami/care_im_wrapper.git",
+version="@v1.2.3",
+```
+
+So a release is a tag. Make sure your changes are committed, including an entry in
+HISTORY.md, then:
+
+```sh
+git tag v1.2.3
 git push --tags
 ```
 
-You can set up a [GitHub Actions workflow](https://docs.github.com/en/actions/use-cases-and-examples/building-and-testing/building-and-testing-python#publishing-to-pypi) to automatically deploy your package to PyPI when you push a new tag.
+Deployments pin `version` to that tag and rebuild the CARE image to pick it up.
 
 ## Code of Conduct
 

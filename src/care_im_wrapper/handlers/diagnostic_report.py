@@ -13,7 +13,7 @@ from django.db import transaction
 from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 
-from care_im_wrapper.handlers.dispatch import track_previous_status
+from care_im_wrapper.handlers.dispatch import track_previous_field
 from care_im_wrapper.models.notification import _FACILITY_RESOLVERS
 from care_im_wrapper.reports.context_builders import NOTIFICATION_CONTEXT_REGISTRY, DiagnosticReportContext
 from care_im_wrapper.tasks import notify_document_ready
@@ -32,7 +32,7 @@ _FACILITY_RESOLVERS[DiagnosticReport] = _resolve_diagnostic_report_facility
 NOTIFICATION_CONTEXT_REGISTRY.register(DOCUMENT_READY_CONTEXT_SLUG, DiagnosticReportContext)
 
 
-pre_save.connect(track_previous_status, sender=ServiceRequest)
+pre_save.connect(track_previous_field("status"), sender=ServiceRequest, weak=False)
 
 
 @receiver(post_save, sender=ServiceRequest)

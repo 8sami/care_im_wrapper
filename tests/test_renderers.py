@@ -1,7 +1,8 @@
 from django.test import SimpleTestCase
 
 from care_im_wrapper.conversation.renderers import (
-    _truncate,
+    _TRUNCATION_MARKER,
+    numbered_block,
     render_appointments,
     render_lab_reports,
     render_prescriptions,
@@ -57,17 +58,16 @@ def _prescription(name="Discharge medications", medications=None, **kwargs):
 
 
 class TruncateTests(SimpleTestCase):
-    def test_short_text_returned_unchanged(self):
-        self.assertEqual(_truncate("short text", 4096), "short text")
+    def test_block_within_budget_is_not_marked(self):
+        block = numbered_block("Header", ["short text"], 4096)
 
-    def test_text_at_exact_limit_returned_unchanged(self):
-        text = "A" * 4096
-        self.assertEqual(_truncate(text, 4096), text)
+        self.assertNotIn(_TRUNCATION_MARKER, block)
 
-    def test_text_over_limit_is_truncated_with_suffix(self):
-        text = "A" * 5000
-        expected = "A" * (4096 - 20) + "\n... (truncated)"
-        self.assertEqual(_truncate(text, 4096), expected)
+    def test_block_over_budget_is_marked_and_fits(self):
+        block = numbered_block("Header", ["A" * 5000], 4096)
+
+        self.assertLessEqual(len(block), 4096)
+        self.assertTrue(block.endswith(_TRUNCATION_MARKER))
 
 
 class RenderPrescriptionsTests(SimpleTestCase):
@@ -78,7 +78,7 @@ class RenderPrescriptionsTests(SimpleTestCase):
 
         self.assertIn("*Discharge medications* (_Active_)", result.text)
         self.assertIn("Prescribed on: _30 Jul 2026_", result.text)
-        self.assertIn("Prescribed by: Dr. Ada Lovelace", result.text)
+        self.assertIn("Prescribed by: _Dr. Ada Lovelace_", result.text)
         self.assertIn("Facility: _City Care Hospital_", result.text)
         self.assertIsNone(result.interactive)
 
@@ -91,7 +91,7 @@ class RenderPrescriptionsTests(SimpleTestCase):
         """care_fe prints "-" for an absent value; silence would read as if there were."""
         result = render_prescriptions([_prescription(prescribed_by=None)], 4096)
 
-        self.assertIn("Prescribed by: -", result.text)
+        self.assertIn("Prescribed by: _-_", result.text)
 
     def test_medication_renders_all_four_care_fe_columns(self):
         result = render_prescriptions([_prescription()], 4096)

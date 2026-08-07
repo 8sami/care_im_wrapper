@@ -9,12 +9,11 @@ from django.utils import timezone
 
 ENTERED_IN_ERROR_STATUS = "entered_in_error"
 
-ACTIVE_MEDICATION_STATUSES = ("active", "on_hold", "draft", "unknown")
 INACTIVE_MEDICATION_STATUSES = ("ended", "completed", "cancelled", "entered_in_error")
 
 
 def humanize_choice(value: str | None) -> str:
-    """Converts a Django TextChoices-style value like 'in_progress' or."""
+    """Converts a Django TextChoices-style value like 'in_progress' into "In Progress"."""
     if not value:
         return "Not recorded"
     return value.replace("_", " ").title()
@@ -38,7 +37,8 @@ def humanize_encounter_class(value: str | None) -> str:
 
 
 def describe_resource(resource: Any, default: str = "Unknown") -> str:
-    """Names a SchedulableResource for display, e.g. "Ada Lovelace", "Cardiology Location",."""
+    """Names a SchedulableResource for display, e.g. "Ada Lovelace", "Cardiology Location",
+    or `default` when the resource has no name of its own."""
     if resource is None:
         return default
 

@@ -11,7 +11,7 @@ from care.emr.reports.context_builder.data_points.base import (  # pyright: igno
 
 
 class _NestedContext(SingleObjectContextBuilder):
-    """A context reached by descending one attribute of its parent, e.g."""
+    """A context reached by descending one attribute of its parent, e.g. the patient on a booking."""
 
     def get_context(self):
         return getattr(self.parent_context, self.parent_attribute)
@@ -69,7 +69,8 @@ class TokenSlotContext(_NestedContext):
 
 
 class TokenBookingContext(SingleObjectContextBuilder):
-    """Context for the ``related_object`` of the appointment_confirmed/cancelled/."""
+    """Context for the ``related_object`` of the appointment_confirmed / appointment_cancelled
+    / appointment_rescheduled triggers."""
 
     __display_name__ = "Appointment booking"
     __description__ = "The appointment booking that triggered the notification"
@@ -104,7 +105,8 @@ class TokenBookingContext(SingleObjectContextBuilder):
 
 
 class AppointmentReminderContext(TokenBookingContext):
-    """Same TokenBooking object as TokenBookingContext, but the reminder template names."""
+    """Same TokenBooking object as TokenBookingContext, but the reminder template names its
+    extra fields differently."""
 
     __display_name__ = "Appointment reminder"
     __description__ = "The upcoming appointment booking the reminder is for"
@@ -171,7 +173,7 @@ class DiagnosticReportContext(SingleObjectContextBuilder):
 
 
 class PatientNotificationContext(SingleObjectContextBuilder):
-    """Context for the ``related_object`` of the patient_registered / patient_discharged."""
+    """Context for the ``related_object`` of the patient_registered / patient_discharged triggers."""
 
     __display_name__ = "Patient"
     __description__ = "The patient the lifecycle notification is about"
@@ -206,16 +208,8 @@ class PatientNotificationContext(SingleObjectContextBuilder):
     }
 
 
-class AccountContext(_NestedContext):
-    name = Field(
-        display="Account name",
-        preview_value="Jane Doe",
-        description="Name on the billing account the invoice belongs to",
-    )
-
-
 class InvoiceContext(SingleObjectContextBuilder):
-    """Context for the ``related_object`` of the invoice_issued / payment_recorded."""
+    """Context for the ``related_object`` of the invoice_issued / payment_recorded triggers."""
 
     __display_name__ = "Invoice"
     __description__ = "The invoice the billing notification is about"
@@ -316,7 +310,8 @@ class TokenContext(SingleObjectContextBuilder):
 
 
 class NotificationContextRegistry:
-    """Maps a trigger ``context_slug`` to its context class. Populated by each."""
+    """Maps a trigger ``context_slug`` to its context class. Populated by each handler module
+    at import time."""
 
     def __init__(self) -> None:
         self._contexts: dict[str, type[SingleObjectContextBuilder]] = {}

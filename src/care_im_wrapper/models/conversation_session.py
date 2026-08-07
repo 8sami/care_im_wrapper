@@ -75,8 +75,9 @@ class ConversationSession(models.Model):
                 name="uq_session_phone_provider",
             )
         ]
+        # No index on (phone_number, provider): the unique constraint above already creates
+        # one, and a second costs a write on every save for nothing.
         indexes = [
-            models.Index(fields=["phone_number", "provider"]),
             models.Index(fields=["state"]),
         ]
 
@@ -94,7 +95,8 @@ class ConversationSession(models.Model):
         return False
 
     def record_activity(self) -> None:
-        """Call once per inbound turn, before dispatch. Logs out a session idle past."""
+        """Call once per inbound turn, before dispatch. Logs out a session idle past
+        SESSION_IDLE_TIMEOUT_SECONDS."""
         if self.state != self.State.COOLDOWN:
             idle_for = timezone.now() - self.last_active_at
             if idle_for.total_seconds() > int(plugin_settings.SESSION_IDLE_TIMEOUT_SECONDS):
@@ -285,7 +287,8 @@ class ConversationSession(models.Model):
         return current_offset(self) + int(self.data_shown or 0)
 
     def advance_page(self, next_offset: int) -> None:
-        """Move forward to the page starting at `next_offset`, remembering where this one."""
+        """Move forward to the page starting at `next_offset`, remembering where this one
+        began so `back_page` can return to it."""
         self.data_offsets = [*(self.data_offsets or []), max(0, int(next_offset))]
         self.save(update_fields=["data_offsets"])
 
@@ -297,13 +300,6 @@ class ConversationSession(models.Model):
     def data_page(self) -> int:
         """0-based index of the current page, for display."""
         return len(self.data_offsets or [])
-
-    def reset_data_page(self) -> None:
-        """Clears paging state -- on logout, on switching patient, or on leaving a list."""
-        if self.data_menu_choice or self.data_offsets:
-            self.data_menu_choice = ""
-            self.data_offsets = []
-            self.save(update_fields=["data_menu_choice", "data_offsets"])
 
     def open_search(self, query: str) -> None:
         """Records the patient-lookup query and restarts its results from the top."""

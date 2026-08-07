@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 from care_im_wrapper.conversation.messages import OutboundMessage, SentTemplate
 from care_im_wrapper.conversation.template_rendering import merge_variable_values
 from care_im_wrapper.core.rate_limit import is_outbound_rate_limited
-from care_im_wrapper.messaging.exceptions import OutboundRateLimitedError
+from care_im_wrapper.core.sanitize import mask_phone_number
+from care_im_wrapper.messaging.exceptions import OutboundRateLimitedError, TransientSendError
 from care_im_wrapper.messaging.limits import ChannelLimits, default_limits
 from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.settings import plugin_settings
@@ -42,6 +43,10 @@ class MessageSender(Protocol):
     def validate_variable_mapping_value(self, expr: str) -> list[str]:
         """Provider-specific formatting rules for one variable_mapping expression.
         Returns human-readable problems ([] = valid); see WhatsAppClient for an example."""
+        ...
+
+    def declared_placeholders(self, template: NotificationTemplate) -> list[str]:
+        """Every placeholder this template's approved body requires a value for."""
         ...
 
 
@@ -94,6 +99,15 @@ def validate_provider_expression(channel: str, expr: str) -> list[str]:
     return factory().validate_variable_mapping_value(expr)
 
 
+def get_declared_placeholders(channel: str, template: NotificationTemplate) -> list[str]:
+    """Placeholders the channel's approved template body requires values for ([] when the
+    provider is unregistered, i.e. nothing can be asserted about its shape)."""
+    factory = _PROVIDERS.get(channel)
+    if factory is None:
+        return []
+    return factory().declared_placeholders(template)
+
+
 def get_default_channel() -> str:
     """Last-resort channel fallback, configured via `NOTIFICATION_DEFAULT_PROVIDER`."""
     return plugin_settings.NOTIFICATION_DEFAULT_PROVIDER
@@ -131,14 +145,24 @@ def send_message(channel: str, to: str, msg: OutboundMessage | str, *, pace: boo
         logger.error("messaging.send_message: no provider registered for channel %s", channel)
         return None
     if pace and is_outbound_rate_limited(channel, to):
-        raise OutboundRateLimitedError(f"Outbound send to {to} on channel {channel} is rate-limited.")
+        raise OutboundRateLimitedError(
+            f"Outbound send to {mask_phone_number(to)} on channel {channel} is rate-limited."
+        )
     client = factory()
     if client.supports_interactive and msg.interactive is not None:
         try:
             return client.send_interactive(to, msg)
+        except TransientSendError:
+            # The provider could not take the message *now* -- a rate limit, a timeout, a
+            # 5xx. Re-sending the same content as plain text is a second request it has
+            # just refused, which against a per-recipient rate limit doubles the rate we
+            # are being punished for. Let it propagate and be retried whole.
+            raise
         except Exception:
+            # Anything else is a problem with the interactive payload itself, which plain
+            # text does not have.
             logger.warning(
-                "send_message: interactive send failed for channel %s, falling back to plain text",
+                "send_message: interactive send rejected for channel %s, falling back to plain text",
                 channel,
                 exc_info=True,
             )

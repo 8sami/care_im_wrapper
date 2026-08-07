@@ -301,6 +301,10 @@ def picker_reply(
     rows = [*leading_rows, *(choice.row for choice in choices)]
     if not paged_on_buttons:
         rows = [*paging_rows(page), *rows]
+    # Back is the only way out of a picker, so it has to survive the provider's row cap.
+    # Trim the choices to leave room for it rather than letting the send boundary drop
+    # whatever fell off the end -- which is always Back, since it is appended last.
+    rows = rows[: max(0, limits.max_rows - 1)]
     rows.append(row(BACK_ID, _msg("back")))
 
     hint = "" if paged_on_buttons else paging_hint(page)

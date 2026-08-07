@@ -10,7 +10,7 @@ To develop the plug in local environment along with care, follow the steps below
 
 ```bash
 cd care
-git clone git@github.com:ohcnetwork/care_im_wrapper.git
+git clone git@github.com:8sami/care_im_wrapper.git
 ```
 
 2. Add the plugin config in plug_config.py
@@ -18,7 +18,7 @@ git clone git@github.com:ohcnetwork/care_im_wrapper.git
 ```python
 
 care_im_wrapper_plugin = Plug(
-    name=care_im_wrapper, # name of the django app in the plugin
+    name="care_im_wrapper", # name of the django app in the plugin
     package_name="/app/care_im_wrapper", # this has to be /app/ + plugin folder name
     version="", # keep it empty for local development
     configs={}, # plugin configurations if any
@@ -54,8 +54,8 @@ To install care care_im_wrapper, you can add the plugin config in [care/plug_con
 ```python
 
 care_im_wrapper_plug = Plug(
-    name=care_im_wrapper,
-    package_name="git+https://github.com/ohcnetwork/care_im_wrapper.git",
+    name="care_im_wrapper",
+    package_name="git+https://github.com/8sami/care_im_wrapper.git",
     version="@master",
     configs={},
 )

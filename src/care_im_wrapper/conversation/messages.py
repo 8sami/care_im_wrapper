@@ -20,10 +20,14 @@ class InteractivePayload:
     Providers translate it into their own shape, or fall back to plain text.
 
     action_data shapes by type:
-      REPLY_BUTTONS → [{"id": str, "title": str}, ...]               max 3 items
+      REPLY_BUTTONS → [{"id": str, "title": str}, ...]
       LIST          → [{"title": str, "rows": [{"id": str, "title": str,
-                        "description": str | None}, ...]}, ...]       max 10 rows total
-      CTA_URL       → [{"display_text": str, "url": str}]             exactly 1 item
+                        "description": str | None}, ...]}, ...]
+      CTA_URL       → [{"display_text": str, "url": str}]            exactly 1 item
+
+    How many buttons or rows a channel will take is not fixed here -- it is
+    `ChannelLimits.max_buttons` / `max_rows`, which callers read via
+    `registry.get_channel_limits`.
     """
 
     type: InteractiveType
@@ -41,7 +45,6 @@ class InboundMessage:
     text: str
     channel: str  # "whatsapp" | "telegram" | future providers
     raw_id: str | None = None  # provider's message id (wamid, etc.)
-    # status-update correlation, optional for now
 
 
 @dataclass(frozen=True)

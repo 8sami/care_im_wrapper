@@ -18,9 +18,13 @@ the API or the Django shell all work the same way.
 
 ## Before you start
 
-- the patient needs a phone number, and it must be on Meta's allowed recipient list
-- templates must be synced and active: `manage.py seed_notification_variable_mappings`
-- celery and beat must be running
+Credentials, template seeding and the celery/beat requirement are covered in
+[](installation.md) — a trigger that fires with any of them missing produces an event that
+never leaves the queue.
+
+The one precondition specific to triggers: **the patient needs a phone number**, and while
+the Meta number is unverified that phone number must be on the app's allowed recipient list.
+A patient with no phone number is skipped without creating a failed recipient.
 
 ## Notes per trigger
 

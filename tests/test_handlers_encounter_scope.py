@@ -20,7 +20,7 @@ from care_im_wrapper.conversation.messages import InteractiveType, OutboundMessa
 from care_im_wrapper.conversation.renderers import render_lab_reports, render_procedures
 from care_im_wrapper.data.common import ALL_PRESCRIPTIONS
 from care_im_wrapper.data.pagination import Page
-from care_im_wrapper.data.records import EncounterRecord, PrescriptionChoiceRecord
+from care_im_wrapper.data.records import EncounterRecord, PrescriptionChoiceRecord, ProcedureRecord
 from care_im_wrapper.models import ConversationSession
 from tests.utils import patched_limits
 
@@ -281,7 +281,11 @@ class EncounterSubMenuTests(TestCase):
                 {
                     "2": MenuOption(
                         label="Procedures",
-                        fetcher=MagicMock(return_value=_page(["x"])),
+                        fetcher=MagicMock(
+                            return_value=_page(
+                                [ProcedureRecord(name="Dressing", date="12 Jul 2026", status="Completed")]
+                            )
+                        ),
                         renderer=render_procedures,
                         scope=Scope.ENCOUNTER,
                     )

@@ -5,6 +5,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from care_im_wrapper.conversation.handlers import Outbound, run_state_machine
+from care_im_wrapper.messaging.exceptions import WhatsAppPairRateLimitError
 from care_im_wrapper.models import ConversationSession
 
 PHONE = "+919876543210"
@@ -184,10 +185,32 @@ class RecordActivityIdleExpiryTests(TestCase):
 
 
 class RunStateMachineFlushTests(TestCase):
-    """Covers docs/chat-reply-delivery-refactor.md's core guarantee: state is committed
-    before any send, and a send failure mid-flush doesn't propagate back into the caller
-    (so a Celery task wrapping run_state_machine never retries a turn that already
-    advanced its state)."""
+    """The turn is atomic with its first send: if nothing was delivered the state must not
+    move, and once something has been delivered a later failure must not undo it."""
+
+    @patch("care_im_wrapper.conversation.handlers._handle_new")
+    @patch("care_im_wrapper.conversation.handlers.send_message")
+    def test_provider_failure_on_the_first_send_rolls_the_turn_back(self, mock_send, mock_handle_new):
+        """A provider rejection used to be swallowed by _flush's generic handler, so the
+        turn committed with nothing delivered and no retry ever ran -- the reader was
+        advanced past a reply they never saw."""
+        session = ConversationSession.objects.create(
+            phone_number=PHONE, provider=CHANNEL, state=ConversationSession.State.NEW
+        )
+
+        def _advance(session, phone_number, text, channel, outbox):
+            session.state = ConversationSession.State.AWAITING_YOB
+            session.save(update_fields=["state"])
+            outbox.append(Outbound(phone_number, "only message"))
+
+        mock_handle_new.side_effect = _advance
+        mock_send.side_effect = WhatsAppPairRateLimitError("pair rate limit hit")
+
+        with self.assertRaises(WhatsAppPairRateLimitError):
+            run_state_machine(PHONE, "hello", CHANNEL)
+
+        session.refresh_from_db()
+        self.assertEqual(session.state, ConversationSession.State.NEW)
 
     @patch("care_im_wrapper.conversation.handlers._handle_new")
     @patch("care_im_wrapper.conversation.handlers.send_message")

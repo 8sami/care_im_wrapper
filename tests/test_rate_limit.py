@@ -1,7 +1,12 @@
 from django.core.cache import cache
 from django.test import SimpleTestCase
 
-from care_im_wrapper.core.rate_limit import is_rate_limited
+from care_im_wrapper.core.rate_limit import (
+    is_outbound_rate_limited,
+    is_rate_limited,
+    note_provider_pair_limit,
+)
+from care_im_wrapper.settings import plugin_settings
 from tests.utils import override_test_cache
 
 
@@ -44,3 +49,36 @@ class IsRateLimitedTests(SimpleTestCase):
 
         # Then a 12th call, also assert True
         self.assertTrue(is_rate_limited("+913333333333"))
+
+
+@override_test_cache()
+class NoteProviderPairLimitTests(SimpleTestCase):
+    """The provider contradicting our pacing guess is the only real signal we get about it,
+    so each rejection widens the wait and holds every other turn for that reader back too."""
+
+    CHANNEL = "whatsapp"
+    PHONE = "+919876543210"
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+
+    def test_backoff_grows_on_each_consecutive_rejection(self):
+        first = note_provider_pair_limit(self.CHANNEL, self.PHONE)
+        second = note_provider_pair_limit(self.CHANNEL, self.PHONE)
+
+        self.assertGreater(second, first)
+
+    def test_backoff_is_capped(self):
+        for _ in range(20):
+            backoff = note_provider_pair_limit(self.CHANNEL, self.PHONE)
+
+        self.assertLessEqual(backoff, int(plugin_settings.PAIR_RATE_LIMIT_MAX_BACKOFF_SECONDS))
+
+    def test_it_paces_other_turns_to_the_same_recipient(self):
+        self.assertFalse(is_outbound_rate_limited(self.CHANNEL, self.PHONE))
+        cache.delete(f"outbound_rate_limit:{self.CHANNEL}:{self.PHONE}")
+
+        note_provider_pair_limit(self.CHANNEL, self.PHONE)
+
+        self.assertTrue(is_outbound_rate_limited(self.CHANNEL, self.PHONE))

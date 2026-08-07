@@ -86,7 +86,7 @@ class NotificationEventAdmin(admin.ModelAdmin):
         "variable_values",
         "related_object_content_type",
         "related_object_id",
-        "facility_organization_cache",
+        "facility_id",
     )
 
 

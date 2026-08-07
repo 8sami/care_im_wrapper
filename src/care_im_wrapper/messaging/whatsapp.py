@@ -123,18 +123,6 @@ class WhatsAppClient:
         return int(plugin_settings.WHATSAPP_MIN_SEND_INTERVAL_SECONDS)
 
     @property
-    def interactive_body_char_limit(self) -> int:
-        return int(plugin_settings.WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT)
-
-    @property
-    def max_interactive_rows(self) -> int:
-        return int(plugin_settings.WHATSAPP_LIST_ROW_LIMIT)
-
-    @property
-    def max_reply_buttons(self) -> int:
-        return int(plugin_settings.WHATSAPP_REPLY_BUTTON_LIMIT)
-
-    @property
     def limits(self) -> ChannelLimits:
         """Every field cap in one object, read fresh so overrides apply."""
         return whatsapp_limits()
@@ -152,6 +140,28 @@ class WhatsAppClient:
         if not match or not match.group(1).strip():
             errors.append("Value must be a Jinja2 expression wrapped in {{ ... }}.")
         return errors
+
+    def declared_placeholders(self, template: NotificationTemplate) -> list[str]:
+        """Every placeholder the approved template body requires a value for.
+
+        The same HEADER/BODY scan _build_components does, plus the fixed url_suffix key a
+        dynamic URL button is addressed through. Meta rejects a template message whose
+        parameter count does not match the approved body, so a mapping that covers only
+        some of these cannot produce a valid send.
+        """
+        payload_components = (template.payload or {}).get("components", [])  # pyright: ignore[reportAttributeAccessIssue]
+        keys: list[str] = []
+        for comp in payload_components:
+            comp_type = comp.get("type", "").upper()
+            if comp_type == "BUTTONS":
+                for button in comp.get("buttons", []):
+                    if button.get("type", "").upper() == "URL" and _PLACEHOLDER_RE.findall(button.get("url", "")):
+                        keys.append("url_suffix")
+                continue
+            if comp_type not in ("HEADER", "BODY") or comp.get("format", "TEXT").upper() != "TEXT":
+                continue
+            keys.extend(_PLACEHOLDER_RE.findall(comp.get("text", "")))
+        return list(dict.fromkeys(keys))
 
     def send_text(self, to: str, body: str) -> str | None:
         return self._send(
@@ -184,7 +194,7 @@ class WhatsAppClient:
                         "title": clamp(b["title"], limits.button_title),
                     },
                 }
-                for b in iv.action_data[: self.max_reply_buttons]
+                for b in iv.action_data[: limits.max_buttons]
             ]
             interactive_obj = {
                 "type": "button",
@@ -198,7 +208,7 @@ class WhatsAppClient:
             for section in iv.action_data:
                 rows = []
                 for row in section.get("rows", []):
-                    if total_rows >= self.max_interactive_rows:
+                    if total_rows >= limits.max_rows:
                         break
                     entry: dict[str, Any] = {
                         "id": str(row["id"])[:_INTERACTIVE_ID_MAX_CHARS],
@@ -389,7 +399,8 @@ class WhatsAppClient:
     def _build_components(
         self, template: NotificationTemplate, related_object: Any, context: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        """Builds Meta's `components` list (HEADER + BODY text placeholders, plus a dynamic."""
+        """Builds Meta's `components` list: HEADER and BODY text placeholders, plus a dynamic
+        URL button when the template has one."""
         from care_im_wrapper.models.notification import TemplateParameterFormat
 
         if not template.variable_mapping:
@@ -430,7 +441,8 @@ class WhatsAppClient:
 
     @staticmethod
     def _flatten_components(components: list[dict[str, Any]]) -> dict[str, str]:
-        """Resolved values read back off the components we send, so the audit record cannot."""
+        """Resolved values read back off the components we send, so the audit record cannot
+        drift from what actually went on the wire."""
         flat: dict[str, str] = {}
         for comp in components:
             if comp.get("type") == "button":

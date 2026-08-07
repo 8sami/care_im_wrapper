@@ -13,6 +13,7 @@ from enum import Enum
 from typing import Any
 
 from care_im_wrapper.conversation import renderers
+from care_im_wrapper.conversation.templates import _msg
 from care_im_wrapper.data import (
     appointments,
     lab_reports,
@@ -40,7 +41,7 @@ class Action(Enum):
     ENCOUNTER_DOCUMENT = "encounter_document"
 
 
-ENCOUNTERS_LABEL = "Encounters"
+ENCOUNTERS_LABEL = _msg("menu_encounters")
 
 
 @dataclass(frozen=True)
@@ -63,18 +64,18 @@ class MenuOption:
 _MAIN_MENU: dict[str, MenuOption] = {
     "1": MenuOption(
         label=ENCOUNTERS_LABEL,
-        description="A visit's medications, procedures & reports",
+        description=_msg("menu_encounters_hint"),
         action=Action.OPEN_ENCOUNTER,
     ),
     "2": MenuOption(
-        label="Appointments",
-        description="Your upcoming & past bookings",
+        label=_msg("menu_appointments"),
+        description=_msg("menu_appointments_hint"),
         fetcher=appointments.fetch_appointments,
         renderer=renderers.render_appointments,
     ),
     "3": MenuOption(
-        label="Patient summary",
-        description="Name, date of birth, blood group & phone",
+        label=_msg("menu_patient_summary"),
+        description=_msg("menu_patient_summary_hint"),
         fetcher=patient_summary.fetch_summary,
         renderer=renderers.render_summary,
     ),
@@ -83,45 +84,45 @@ _MAIN_MENU: dict[str, MenuOption] = {
 _STAFF_MAIN_MENU: dict[str, MenuOption] = {
     **_MAIN_MENU,
     "4": MenuOption(
-        label="Patient lookup",
-        description="Find a patient by name or phone number",
+        label=_msg("menu_patient_lookup"),
+        description=_msg("menu_patient_lookup_hint"),
         action=Action.PATIENT_SEARCH,
     ),
 }
 
 _ENCOUNTER_MENU: dict[str, MenuOption] = {
     "1": MenuOption(
-        label="Medications",
-        description="Prescriptions & dosage for this visit",
+        label=_msg("menu_medications"),
+        description=_msg("menu_medications_hint"),
         fetcher=medications.fetch_prescriptions,
         renderer=renderers.render_prescriptions,
         scope=Scope.PRESCRIPTION,
     ),
     "2": MenuOption(
-        label="Procedures",
-        description="Procedures ordered during this visit",
+        label=_msg("menu_procedures"),
+        description=_msg("menu_procedures_hint"),
         fetcher=procedures.fetch_procedures,
         renderer=renderers.render_procedures,
         scope=Scope.ENCOUNTER,
     ),
     "3": MenuOption(
-        label="Lab reports",
-        description="Diagnostic reports, with PDFs to download",
+        label=_msg("menu_lab_reports"),
+        description=_msg("menu_lab_reports_hint"),
         fetcher=lab_reports.fetch_lab_reports,
         renderer=renderers.render_lab_reports,
         document_resolver=document_resolvers.resolve_diagnostic_report_document,
         scope=Scope.ENCOUNTER,
     ),
     "4": MenuOption(
-        label="Discharge summary",
-        description="Download this visit's discharge summary",
+        label=_msg("menu_discharge_summary"),
+        description=_msg("menu_discharge_summary_hint"),
         document_resolver=document_resolvers.resolve_encounter_document,
         scope=Scope.ENCOUNTER,
         action=Action.ENCOUNTER_DOCUMENT,
     ),
     "5": MenuOption(
-        label="Change encounter",
-        description="Switch to a different visit",
+        label=_msg("menu_change_encounter"),
+        description=_msg("menu_change_encounter_hint"),
         action=Action.OPEN_ENCOUNTER,
     ),
 }

@@ -125,5 +125,6 @@ class HandleAwaitingPatientSearchTests(TestCase):
         self.assertEqual(call_msg.interactive.type, InteractiveType.LIST)
         self.assertEqual(call_msg.interactive.button_label, "Select Patient")
         rows = call_msg.interactive.action_data[0]["rows"]
-        self.assertEqual(len(rows), 4)
+        # The four results, then the back row every picker ends on.
+        self.assertEqual([r["id"] for r in rows], ["patient_0", "patient_1", "patient_2", "patient_3", "0"])
         self.assertEqual(rows[0], {"id": "patient_0", "title": "Patient 0", "description": "+91********00"})

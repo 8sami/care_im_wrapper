@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+from django.core.cache import cache
 from django.test import SimpleTestCase
 
 from care_im_wrapper.conversation.messages import (
@@ -8,7 +9,11 @@ from care_im_wrapper.conversation.messages import (
     OutboundMessage,
 )
 from care_im_wrapper.messaging import registry
-from care_im_wrapper.messaging.exceptions import OutboundRateLimitedError
+from care_im_wrapper.messaging.exceptions import (
+    OutboundRateLimitedError,
+    WhatsAppBadRequestError,
+    WhatsAppPairRateLimitError,
+)
 from care_im_wrapper.messaging.limits import default_limits
 from tests.utils import channel_limits, override_test_cache
 
@@ -132,3 +137,41 @@ class SendMessageOutboundPacingTests(SimpleTestCase):
             registry.send_message("fake", "+919876500004", "hi")
 
         self.assertEqual(fake_client.send_text.call_count, 2)
+
+
+@override_test_cache()
+class SendMessageInteractiveFallbackTests(SimpleTestCase):
+    """The plain-text fallback is for an interactive payload the provider won't render.
+    A transient failure is not that: retrying it as text is a second request the provider
+    has just refused, which against a per-recipient rate limit doubles the offence."""
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.msg = OutboundMessage(
+            text="fallback text",
+            interactive=InteractivePayload(type=InteractiveType.REPLY_BUTTONS, body="pick", action_data=[]),
+        )
+
+    def _send_with(self, interactive_error):
+        client = _make_fake_client(supports_interactive=True)
+        client.send_interactive.side_effect = interactive_error
+        client.send_text.return_value = "wamid.text"
+        with patch.dict(registry._PROVIDERS, {"whatsapp": lambda: client}):  # noqa: SLF001
+            return client, registry.send_message("whatsapp", "+919876543210", self.msg)
+
+    def test_transient_failure_propagates_without_a_second_send(self):
+        client = _make_fake_client(supports_interactive=True)
+        client.send_interactive.side_effect = WhatsAppPairRateLimitError("pair rate limit hit")
+
+        with patch.dict(registry._PROVIDERS, {"whatsapp": lambda: client}):  # noqa: SLF001
+            with self.assertRaises(WhatsAppPairRateLimitError):
+                registry.send_message("whatsapp", "+919876543210", self.msg)
+
+        client.send_text.assert_not_called()
+
+    def test_payload_rejection_still_falls_back_to_text(self):
+        client, tracking_id = self._send_with(WhatsAppBadRequestError("unsupported interactive shape"))
+
+        self.assertEqual(tracking_id, "wamid.text")
+        client.send_text.assert_called_once()
