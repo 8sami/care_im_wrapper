@@ -7,7 +7,9 @@ from typing import TYPE_CHECKING, Any, Protocol
 from care_im_wrapper.conversation.messages import OutboundMessage, SentTemplate
 from care_im_wrapper.conversation.template_rendering import merge_variable_values
 from care_im_wrapper.core.rate_limit import is_outbound_rate_limited
-from care_im_wrapper.messaging.exceptions import OutboundRateLimitedError
+from care_im_wrapper.core.sanitize import mask_phone_number
+from care_im_wrapper.messaging.exceptions import OutboundRateLimitedError, TransientSendError
+from care_im_wrapper.messaging.limits import ChannelLimits, default_limits
 from care_im_wrapper.models import ConversationSession
 from care_im_wrapper.settings import plugin_settings
 
@@ -28,11 +30,9 @@ class MessageSender(Protocol):
     @property
     def min_send_interval_seconds(self) -> int: ...
     @property
-    def interactive_body_char_limit(self) -> int: ...
-    @property
-    def max_interactive_rows(self) -> int: ...
-    @property
-    def max_reply_buttons(self) -> int: ...
+    def limits(self) -> ChannelLimits:
+        """Every field cap this provider imposes, in one object."""
+        ...
 
     def send_text(self, to: str, body: str) -> str | None: ...
     def send_interactive(self, to: str, msg: OutboundMessage) -> str | None: ...
@@ -43,6 +43,10 @@ class MessageSender(Protocol):
     def validate_variable_mapping_value(self, expr: str) -> list[str]:
         """Provider-specific formatting rules for one variable_mapping expression.
         Returns human-readable problems ([] = valid); see WhatsAppClient for an example."""
+        ...
+
+    def declared_placeholders(self, template: NotificationTemplate) -> list[str]:
+        """Every placeholder this template's approved body requires a value for."""
         ...
 
 
@@ -59,12 +63,14 @@ _PROVIDERS: dict[str, Callable[[], MessageSender]] = {
 }
 
 
-def get_max_chars(channel: str) -> int:
-    """Returns the maximum allowed characters for a given provider."""
+def get_channel_limits(channel: str) -> ChannelLimits:
+    """Every cap the channel imposes, so a caller composing a message never has to name a
+    provider. A registered provider describes itself; anything else gets the generic
+    defaults, which are deliberately the most restrictive reading of them."""
     factory = _PROVIDERS.get(channel)
     if factory is None:
-        return int(plugin_settings.DEFAULT_MAX_MESSAGE_CHARS)
-    return factory().max_message_chars
+        return default_limits()
+    return factory().limits
 
 
 def get_min_send_interval_seconds(channel: str) -> int:
@@ -73,34 +79,6 @@ def get_min_send_interval_seconds(channel: str) -> int:
     if factory is None:
         return int(plugin_settings.DEFAULT_MIN_SEND_INTERVAL_SECONDS)
     return factory().min_send_interval_seconds
-
-
-def get_interactive_body_char_limit(channel: str) -> float:
-    """Returns the max chars allowed in an interactive message body for a given provider.
-
-    A capability of the provider itself (like max_message_chars), not something inferred
-    from the channel name -- an unregistered channel has no limit to enforce.
-    """
-    factory = _PROVIDERS.get(channel)
-    if factory is None:
-        return float("inf")
-    return factory().interactive_body_char_limit
-
-
-def get_max_interactive_rows(channel: str) -> int:
-    """Returns the max rows allowed in one interactive list for a given provider."""
-    factory = _PROVIDERS.get(channel)
-    if factory is None:
-        return int(plugin_settings.DEFAULT_MAX_INTERACTIVE_ROWS)
-    return factory().max_interactive_rows
-
-
-def get_max_reply_buttons(channel: str) -> int:
-    """Returns the max reply buttons allowed on one interactive message for a given provider."""
-    factory = _PROVIDERS.get(channel)
-    if factory is None:
-        return int(plugin_settings.DEFAULT_MAX_REPLY_BUTTONS)
-    return factory().max_reply_buttons
 
 
 def get_template_capable_providers() -> list[tuple[str, MessageSender]]:
@@ -119,6 +97,15 @@ def validate_provider_expression(channel: str, expr: str) -> list[str]:
     if factory is None:
         return []
     return factory().validate_variable_mapping_value(expr)
+
+
+def get_declared_placeholders(channel: str, template: NotificationTemplate) -> list[str]:
+    """Placeholders the channel's approved template body requires values for ([] when the
+    provider is unregistered, i.e. nothing can be asserted about its shape)."""
+    factory = _PROVIDERS.get(channel)
+    if factory is None:
+        return []
+    return factory().declared_placeholders(template)
 
 
 def get_default_channel() -> str:
@@ -158,14 +145,24 @@ def send_message(channel: str, to: str, msg: OutboundMessage | str, *, pace: boo
         logger.error("messaging.send_message: no provider registered for channel %s", channel)
         return None
     if pace and is_outbound_rate_limited(channel, to):
-        raise OutboundRateLimitedError(f"Outbound send to {to} on channel {channel} is rate-limited.")
+        raise OutboundRateLimitedError(
+            f"Outbound send to {mask_phone_number(to)} on channel {channel} is rate-limited."
+        )
     client = factory()
     if client.supports_interactive and msg.interactive is not None:
         try:
             return client.send_interactive(to, msg)
+        except TransientSendError:
+            # The provider could not take the message *now* -- a rate limit, a timeout, a
+            # 5xx. Re-sending the same content as plain text is a second request it has
+            # just refused, which against a per-recipient rate limit doubles the rate we
+            # are being punished for. Let it propagate and be retried whole.
+            raise
         except Exception:
+            # Anything else is a problem with the interactive payload itself, which plain
+            # text does not have.
             logger.warning(
-                "send_message: interactive send failed for channel %s, falling back to plain text",
+                "send_message: interactive send rejected for channel %s, falling back to plain text",
                 channel,
                 exc_info=True,
             )

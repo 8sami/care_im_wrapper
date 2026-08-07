@@ -10,7 +10,7 @@ from care_im_wrapper.data.base import describe_resource
 from care_im_wrapper.handlers.dispatch import (
     NotificationRecipientSpec,
     fire_notification_event,
-    track_previous_status,
+    track_previous_field,
 )
 from care_im_wrapper.models.notification import _FACILITY_RESOLVERS
 from care_im_wrapper.reports.context_builders import (
@@ -54,7 +54,7 @@ def _create_event_and_recipient(booking: TokenBooking, trigger_slug: str, title:
     )
 
 
-pre_save.connect(track_previous_status, sender=TokenBooking)
+pre_save.connect(track_previous_field("status"), sender=TokenBooking, weak=False)
 
 
 @receiver(post_save, sender=TokenBooking)

@@ -16,7 +16,7 @@ from care_im_wrapper.data.base import humanize_date, humanize_time
 from care_im_wrapper.handlers.dispatch import (
     NotificationRecipientSpec,
     fire_notification_event,
-    track_previous_status,
+    track_previous_field,
 )
 from care_im_wrapper.models.notification import _FACILITY_RESOLVERS
 from care_im_wrapper.reports.context_builders import NOTIFICATION_CONTEXT_REGISTRY, PatientNotificationContext
@@ -93,7 +93,7 @@ def on_patient_post_save(sender: type[Patient], instance: Patient, created: bool
     )
 
 
-pre_save.connect(track_previous_status, sender=Encounter)
+pre_save.connect(track_previous_field("status"), sender=Encounter, weak=False)
 
 
 @receiver(post_save, sender=Encounter)

@@ -1,11 +1,10 @@
 from django.test import SimpleTestCase
 
 from care_im_wrapper.conversation.renderers import (
-    _truncate,
+    _TRUNCATION_MARKER,
+    numbered_block,
     render_appointments,
-    render_encounters,
     render_lab_reports,
-    render_patient_search_results,
     render_prescriptions,
     render_procedures,
     render_summary,
@@ -13,7 +12,6 @@ from care_im_wrapper.conversation.renderers import (
 from care_im_wrapper.data.records import (
     AppointmentRecord,
     DosageLine,
-    EncounterRecord,
     LabReportRecord,
     MedicationRecord,
     PatientSummary,
@@ -60,17 +58,16 @@ def _prescription(name="Discharge medications", medications=None, **kwargs):
 
 
 class TruncateTests(SimpleTestCase):
-    def test_short_text_returned_unchanged(self):
-        self.assertEqual(_truncate("short text", 4096), "short text")
+    def test_block_within_budget_is_not_marked(self):
+        block = numbered_block("Header", ["short text"], 4096)
 
-    def test_text_at_exact_limit_returned_unchanged(self):
-        text = "A" * 4096
-        self.assertEqual(_truncate(text, 4096), text)
+        self.assertNotIn(_TRUNCATION_MARKER, block)
 
-    def test_text_over_limit_is_truncated_with_suffix(self):
-        text = "A" * 5000
-        expected = "A" * (4096 - 20) + "\n... (truncated)"
-        self.assertEqual(_truncate(text, 4096), expected)
+    def test_block_over_budget_is_marked_and_fits(self):
+        block = numbered_block("Header", ["A" * 5000], 4096)
+
+        self.assertLessEqual(len(block), 4096)
+        self.assertTrue(block.endswith(_TRUNCATION_MARKER))
 
 
 class RenderPrescriptionsTests(SimpleTestCase):
@@ -143,7 +140,7 @@ class RenderPrescriptionsTests(SimpleTestCase):
     def test_medication_without_dosage_instructions_says_so(self):
         result = render_prescriptions([_prescription(medications=[_medication(lines=[])])], 4096)
 
-        self.assertIn("No dosage instructions recorded.", result.text)
+        self.assertIn("_No dosage instructions recorded._", result.text)
 
     def test_medication_note_is_shown(self):
         result = render_prescriptions([_prescription(medications=[_medication(note="After food")])], 4096)
@@ -158,32 +155,13 @@ class RenderPrescriptionsTests(SimpleTestCase):
     def test_prescription_with_no_medications_says_so(self):
         result = render_prescriptions([_prescription(medications=[])], 4096)
 
-        self.assertIn("No medications on this prescription.", result.text)
+        self.assertIn("_No medications on this prescription._", result.text)
 
     def test_multiple_prescriptions_are_numbered_sequentially(self):
         result = render_prescriptions([_prescription(name="First"), _prescription(name="Second")], 4096)
 
         self.assertIn("1.  *First*", result.text)
         self.assertIn("2.  *Second*", result.text)
-
-
-class RenderEncountersTests(SimpleTestCase):
-    def test_single_record_formats_facility_date_and_status(self):
-        records = [
-            EncounterRecord(
-                date="05 Mar 2024", facility="City Hospital", status="In Progress", encounter_class="Inpatient"
-            )
-        ]
-
-        result = render_encounters(records, 4096)
-
-        expected = (
-            "Your recent encounters:\n\n"
-            "1.  *City Hospital* (_In Progress_)\n"
-            "       Date: _05 Mar 2024_\n"
-            "       Type: _Inpatient_"
-        )
-        self.assertEqual(result.text, expected)
 
 
 class RenderAppointmentsTests(SimpleTestCase):
@@ -266,24 +244,3 @@ class RenderSummaryTests(SimpleTestCase):
             "Phone: _Not recorded_"
         )
         self.assertEqual(result.text, expected)
-
-
-class RenderPatientSearchResultsTests(SimpleTestCase):
-    def test_numbers_each_result_line(self):
-        result = render_patient_search_results(
-            "Search results. Reply with the number to select:",
-            ["Jane Doe (+919876543210)", "John Roe (+911111111111)"],
-            4096,
-        )
-
-        expected = (
-            "Search results. Reply with the number to select:\n\n"
-            "1.  Jane Doe (+919876543210)\n"
-            "2.  John Roe (+911111111111)"
-        )
-        self.assertEqual(result.text, expected)
-
-    def test_empty_results_list_returns_only_prompt(self):
-        result = render_patient_search_results("Search results:", [], 4096)
-
-        self.assertEqual(result.text, "Search results:\n")

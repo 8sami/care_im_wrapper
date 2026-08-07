@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+from django.core.cache import cache
 from django.test import SimpleTestCase
 
 from care_im_wrapper.conversation.messages import (
@@ -8,36 +9,39 @@ from care_im_wrapper.conversation.messages import (
     OutboundMessage,
 )
 from care_im_wrapper.messaging import registry
-from care_im_wrapper.messaging.exceptions import OutboundRateLimitedError
-from tests.utils import OverrideCache  # noqa: F401 # pyright: ignore
+from care_im_wrapper.messaging.exceptions import (
+    OutboundRateLimitedError,
+    WhatsAppBadRequestError,
+    WhatsAppPairRateLimitError,
+)
+from care_im_wrapper.messaging.limits import default_limits
+from tests.utils import channel_limits, override_test_cache
 
 
 def _make_fake_client(*, supports_interactive: bool, max_message_chars: int = 1000):
     fake_client = MagicMock()
     fake_client.supports_interactive = supports_interactive
-    fake_client.max_message_chars = max_message_chars
+    fake_client.limits = channel_limits(text_body=max_message_chars)
     # Real pacing is exercised by SendMessageOutboundPacingTests; other tests here just
     # need is_outbound_rate_limited's cache.add(..., timeout=...) call to accept an int.
     fake_client.min_send_interval_seconds = 0
     return fake_client
 
 
-class GetMaxCharsTests(SimpleTestCase):
-    def test_unregistered_channel_returns_default_4096(self):
-        result = registry.get_max_chars("nonexistent")
-        self.assertEqual(result, 4096)
+class GetChannelLimitsTests(SimpleTestCase):
+    """Capability lookup goes through the provider, so registering one is all it takes."""
 
-    def test_registered_channel_returns_client_max_message_chars(self):
-        fake_client = MagicMock()
-        fake_client.supports_interactive = False
-        fake_client.max_message_chars = 1000
+    def test_an_unregistered_channel_gets_the_generic_defaults(self):
+        self.assertEqual(registry.get_channel_limits("nonexistent"), default_limits())
+
+    def test_a_registered_provider_describes_itself(self):
+        fake_client = _make_fake_client(supports_interactive=False, max_message_chars=1000)
 
         with patch.dict(registry._PROVIDERS, {"fake": lambda: fake_client}, clear=True):
-            result = registry.get_max_chars("fake")
-            self.assertEqual(result, 1000)
+            self.assertEqual(registry.get_channel_limits("fake").text_body, 1000)
 
 
-@OverrideCache
+@override_test_cache()
 class SendMessageTests(SimpleTestCase):
     def test_unregistered_channel_does_nothing_and_returns_none(self):
         result = registry.send_message("nonexistent", "+919876543210", "hi")
@@ -98,7 +102,7 @@ class SendMessageTests(SimpleTestCase):
             fake_client.send_text.assert_called_once_with("+919876543210", "hi")
 
 
-@OverrideCache
+@override_test_cache()
 class SendMessageOutboundPacingTests(SimpleTestCase):
     # OverrideCache isolates per test class, not per test method, so each test below
     # uses its own dedicated phone number(s) to avoid cross-method cache leakage.
@@ -133,3 +137,41 @@ class SendMessageOutboundPacingTests(SimpleTestCase):
             registry.send_message("fake", "+919876500004", "hi")
 
         self.assertEqual(fake_client.send_text.call_count, 2)
+
+
+@override_test_cache()
+class SendMessageInteractiveFallbackTests(SimpleTestCase):
+    """The plain-text fallback is for an interactive payload the provider won't render.
+    A transient failure is not that: retrying it as text is a second request the provider
+    has just refused, which against a per-recipient rate limit doubles the offence."""
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.msg = OutboundMessage(
+            text="fallback text",
+            interactive=InteractivePayload(type=InteractiveType.REPLY_BUTTONS, body="pick", action_data=[]),
+        )
+
+    def _send_with(self, interactive_error):
+        client = _make_fake_client(supports_interactive=True)
+        client.send_interactive.side_effect = interactive_error
+        client.send_text.return_value = "wamid.text"
+        with patch.dict(registry._PROVIDERS, {"whatsapp": lambda: client}):  # noqa: SLF001
+            return client, registry.send_message("whatsapp", "+919876543210", self.msg)
+
+    def test_transient_failure_propagates_without_a_second_send(self):
+        client = _make_fake_client(supports_interactive=True)
+        client.send_interactive.side_effect = WhatsAppPairRateLimitError("pair rate limit hit")
+
+        with patch.dict(registry._PROVIDERS, {"whatsapp": lambda: client}):  # noqa: SLF001
+            with self.assertRaises(WhatsAppPairRateLimitError):
+                registry.send_message("whatsapp", "+919876543210", self.msg)
+
+        client.send_text.assert_not_called()
+
+    def test_payload_rejection_still_falls_back_to_text(self):
+        client, tracking_id = self._send_with(WhatsAppBadRequestError("unsupported interactive shape"))
+
+        self.assertEqual(tracking_id, "wamid.text")
+        client.send_text.assert_called_once()

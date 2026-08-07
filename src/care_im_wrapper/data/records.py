@@ -1,4 +1,8 @@
-"""Structured return types for all data fetchers."""
+"""Structured return types for all data fetchers.
+
+Every string here is already display-ready: dates humanized, choices turned into labels. The
+renderers lay these out; they never reach back into the ORM to look something up.
+"""
 
 from __future__ import annotations
 
@@ -9,20 +13,20 @@ from dataclasses import dataclass
 class DosageLine:
     """One entry of ``MedicationRequest.dosage_instruction``."""
 
-    dosage: str  # "" when not recorded; renderers apply the "-" fallback
+    dosage: str  # "" when not recorded; the renderers apply the "-" fallback
     frequency: str
     additional_instructions: tuple[str, ...]
     duration: str
     sig: str  # route / method / site, as "Via Oral route by X to Y"
-    is_non_unit_dose: bool  # dose ranges, or quantity != 1
+    is_non_unit_dose: bool  # a dose range, or a quantity other than 1
 
 
 @dataclass(frozen=True)
 class MedicationRecord:
     """One ``MedicationRequest`` within a prescription."""
 
-    name: str  # displayMedicationName
-    status: str  # already humanized via humanize_choice()
+    name: str  # care_fe's displayMedicationName
+    status: str
     is_inactive: bool  # care_fe dims these
     lines: tuple[DosageLine, ...]
     note: str | None = None
@@ -32,23 +36,32 @@ class MedicationRecord:
 class PrescriptionRecord:
     """One ``MedicationRequestPrescription`` and the medications on it."""
 
-    name: str | None  # prescription.name
-    status: str  # already humanized
-    prescribed_by: str | None  # formatName(prescription.prescribed_by)
-    prescribed_on: str  # humanized prescription.created_date
+    name: str | None
+    status: str
+    prescribed_by: str | None
+    prescribed_on: str
     facility: str | None  # prescription.encounter.facility.name
     note: str | None
     medications: tuple[MedicationRecord, ...]
 
 
 @dataclass(frozen=True)
+class PrescriptionChoiceRecord:
+    """One row of the prescription picker -- care_fe's PrescriptionListSelector card."""
+
+    prescribed_on: str
+    prescribed_by: str | None
+    name: str | None
+    external_id: str = ""  # maps a chosen row back to its prescription
+
+
+@dataclass(frozen=True)
 class EncounterRecord:
-    date: str  # already humanized via humanize_date()
+    date: str
     facility: str
-    status: str  # already humanized via humanize_choice()
+    status: str
     encounter_class: str
-    # Encounter.external_id, to map a rendered row back to its record. Not displayed.
-    external_id: str = ""
+    external_id: str = ""  # maps a chosen row back to its encounter; never displayed
 
     @property
     def name(self) -> str:
@@ -60,31 +73,30 @@ class EncounterRecord:
 class AppointmentRecord:
     subject: str
     facility: str  # SchedulableResource.facility.name -- unconditional, any resource_type
-    status: str  # already humanized via humanize_choice()
-    date: str  # already humanized via humanize_date()
+    status: str
+    date: str
     time_slot: str  # e.g. "10:00 am - 10:30 am"
 
 
 @dataclass(frozen=True)
 class LabReportRecord:
     name: str
-    date: str  # already humanized via humanize_date()
-    status: str  # already humanized via humanize_choice()
-    # DiagnosticReport.external_id, to map a rendered row back to its record. Not displayed.
-    external_id: str = ""
+    date: str
+    status: str
+    external_id: str = ""  # maps a chosen row back to its report; never displayed
 
 
 @dataclass(frozen=True)
 class ProcedureRecord:
     name: str
-    date: str  # already humanized via humanize_date()
-    status: str  # already humanized via humanize_choice()
+    date: str
+    status: str
 
 
 @dataclass(frozen=True)
 class PatientSummary:
     name: str | None
-    date_of_birth: str | None  # formatted dob or "Year of birth: YYYY"
-    blood_group: str | None  # already humanized
-    gender: str | None  # already humanized
+    date_of_birth: str | None  # a formatted dob, or "Year of birth: YYYY"
+    blood_group: str | None
+    gender: str | None
     phone: str | None

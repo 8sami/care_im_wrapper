@@ -4,9 +4,11 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 
 from care_im_wrapper.conversation.handlers import Outbound, _handle_authenticated, _handle_selecting_document
+from care_im_wrapper.conversation.menus import MenuOption
 from care_im_wrapper.conversation.messages import InteractiveType, OutboundMessage
 from care_im_wrapper.documents.exceptions import DocumentUnavailableError
 from care_im_wrapper.models import ConversationSession
+from tests.utils import patched_limits
 
 PHONE = "+919876543210"
 CHANNEL = "whatsapp"
@@ -36,12 +38,13 @@ class EnterDocumentSelectionTests(TestCase):
     def _patch_menu(self, records):
         fetcher = MagicMock(return_value=records)
         renderer = MagicMock(return_value=OutboundMessage(text="Your recent lab reports:\n\n1. Urine — 20 Jul 2026"))
-        entry = {"5": ("Lab reports", fetcher, renderer, MagicMock())}
-        return patch.dict("care_im_wrapper.conversation.handlers._PATIENT_MENU", entry, clear=True)
+        entry = {
+            "5": MenuOption(label="Lab reports", fetcher=fetcher, renderer=renderer, document_resolver=MagicMock())
+        }
+        return patch.dict("care_im_wrapper.conversation.menus._MAIN_MENU", entry, clear=True)
 
-    @patch("care_im_wrapper.conversation.handlers.get_max_chars", return_value=4096)
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")
-    def test_offers_one_row_per_record_and_parks_in_selecting_document(self, mock_resolve_actor, _max):
+    def test_offers_one_row_per_record_and_parks_in_selecting_document(self, mock_resolve_actor):
         mock_resolve_actor.return_value = _make_actor()
         records = [_record("Urine", "uuid-1"), _record("Lipid panel", "uuid-2")]
         outbox: list[Outbound] = []
@@ -60,10 +63,8 @@ class EnterDocumentSelectionTests(TestCase):
         self.assertEqual(rows[0]["title"], "Urine")
         self.assertEqual(rows[0]["description"], "20 Jul 2026 (Final)")
 
-    @patch("care_im_wrapper.conversation.handlers.get_max_interactive_rows", return_value=10)
-    @patch("care_im_wrapper.conversation.handlers.get_max_chars", return_value=4096)
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")
-    def test_caps_rows_so_the_back_row_survives_the_providers_row_limit(self, mock_resolve_actor, _max, _rows):
+    def test_caps_rows_so_the_back_row_survives_the_providers_row_limit(self, mock_resolve_actor):
         """The cap comes from the provider, not a constant in the conversation layer."""
         mock_resolve_actor.return_value = _make_actor()
         records = [_record(f"Test {i}", f"uuid-{i}") for i in range(10)]
@@ -76,9 +77,8 @@ class EnterDocumentSelectionTests(TestCase):
         self.assertEqual(len(rows), 10)
         self.assertEqual(rows[-1]["id"], "0")
 
-    @patch("care_im_wrapper.conversation.handlers.get_max_chars", return_value=4096)
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")
-    def test_records_without_an_external_id_fall_back_to_the_plain_text_reply(self, mock_resolve_actor, _max):
+    def test_records_without_an_external_id_fall_back_to_the_plain_text_reply(self, mock_resolve_actor):
         """Records cached before external_id existed come back without one. A pick-list
         with nothing in it would be a dead end."""
         mock_resolve_actor.return_value = _make_actor()
@@ -91,23 +91,25 @@ class EnterDocumentSelectionTests(TestCase):
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.AUTHENTICATED)
         self.assertEqual(len(outbox), 1)
+        # An unpaged data reply: the View Menu list, not a pick-list.
         rows = outbox[0].message.interactive.action_data[0]["rows"]
-        self.assertEqual(rows[-1]["title"], "Logout")  # the main menu, not a pick-list
+        self.assertEqual(rows[-1]["title"], "Logout")
 
-    @patch("care_im_wrapper.conversation.handlers.get_interactive_body_char_limit", return_value=40)
-    @patch("care_im_wrapper.conversation.handlers.get_max_chars", return_value=4096)
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")
-    def test_summary_too_long_for_the_body_keeps_the_rows_and_drops_the_dump(self, mock_resolve_actor, _max, _limit):
-        """Over the body limit the send degrades to plain text and loses the pick-list."""
+    def test_summary_too_long_for_the_body_keeps_the_rows_and_drops_the_dump(self, mock_resolve_actor):
+        """Over the body limit the send degrades to plain text and loses the pick-list, so the
+        body stays the prompt alone and the records ride in the plain-text fallback."""
         mock_resolve_actor.return_value = _make_actor()
         outbox: list[Outbound] = []
 
-        with self._patch_menu([_record("Urine", "uuid-1")]):
+        with self._patch_menu([_record("Urine", "uuid-1")]), patched_limits(interactive_body=40):
             _handle_authenticated(self.session, PHONE, "5", CHANNEL, outbox)
 
         msg = outbox[0].message
         self.assertEqual(msg.interactive.body, "Select from the list:")
-        self.assertIn("Your recent lab reports:", msg.text)
+        # The records survive in the plain text, written out from the same choices as the rows.
+        self.assertIn("1.  Urine", msg.text)
+        self.assertIn("20 Jul 2026 (Final)", msg.text)
         self.assertEqual([r["id"] for r in msg.interactive.action_data[0]["rows"]], ["document_0", "0"])
 
 
@@ -120,13 +122,27 @@ class HandleSelectingDocumentTests(TestCase):
             user_type="patient",
             user_id=42,
             candidates=[
-                {"external_id": "uuid-1", "title": "Urine", "description": "20 Jul 2026 (Final)", "menu_key": "5"},
+                {
+                    "external_id": "uuid-1",
+                    "title": "Urine",
+                    "description": "20 Jul 2026 (Final)",
+                    "menu_key": "5",
+                    "row_id": "document_0",
+                    "token": "1",
+                },
             ],
         )
 
     def _patch_menu(self, document_resolver):
-        entry = {"5": ("Lab reports", MagicMock(), MagicMock(), document_resolver)}
-        return patch.dict("care_im_wrapper.conversation.handlers._PATIENT_MENU", entry, clear=True)
+        entry = {
+            "5": MenuOption(
+                label="Lab reports",
+                fetcher=MagicMock(),
+                renderer=MagicMock(),
+                document_resolver=document_resolver,
+            )
+        }
+        return patch.dict("care_im_wrapper.conversation.menus._MAIN_MENU", entry, clear=True)
 
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")
     @patch("care_im_wrapper.conversation.handlers.resolve_target_patient")

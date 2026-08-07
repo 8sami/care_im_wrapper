@@ -11,7 +11,7 @@ from rest_framework.settings import perform_import
 
 from care_im_wrapper.core.choices import Provider
 
-PLUGIN_NAME = "care_im_wrapper"  # was causing circular import
+PLUGIN_NAME = "care_im_wrapper"
 
 env = environ.Env()
 
@@ -96,15 +96,28 @@ REQUIRED_SETTINGS = {
 DEFAULTS = {
     "WHATSAPP_MESSAGE_CHAR_LIMIT": 4096,
     "WHATSAPP_TITLE_TRUNCATE": 20,
-    "WHATSAPP_TRUNCATE_RESERVE_CHARS": 20,  # chars reserved for the "... (truncated)" suffix
     "WHATSAPP_DESCRIPTION_TRUNCATE": 72,
     "DATA_FETCH_LIMIT": 10,
     "PATIENT_SEARCH_MIN_QUERY_LENGTH": 3,  # minimum chars before staff patient lookup runs a query
+    # Generic channel caps, for a provider that has not described itself. Deliberately the
+    # most restrictive reading: an unknown provider is safer under-filled than rejected.
     "DEFAULT_MAX_MESSAGE_CHARS": 4096,
     "DEFAULT_MIN_SEND_INTERVAL_SECONDS": 0,
     "DEFAULT_MAX_INTERACTIVE_ROWS": 10,
     "DEFAULT_MAX_REPLY_BUTTONS": 3,
+    "DEFAULT_PREVIEW_LINE_LIMIT": 20,  # lines a client shows before folding behind "Read more"
+    "DEFAULT_INTERACTIVE_BODY_CHAR_LIMIT": 1024,
+    "DEFAULT_INTERACTIVE_HEADER_CHAR_LIMIT": 60,
+    "DEFAULT_INTERACTIVE_FOOTER_CHAR_LIMIT": 60,
+    "DEFAULT_SECTION_TITLE_CHAR_LIMIT": 20,
+    "DEFAULT_ROW_TITLE_CHAR_LIMIT": 20,
+    "DEFAULT_ROW_DESCRIPTION_CHAR_LIMIT": 72,
+    "DEFAULT_BUTTON_TITLE_CHAR_LIMIT": 20,
+    "DEFAULT_TEMPLATE_PARAMETER_CHAR_LIMIT": 1024,
     "WHATSAPP_MIN_SEND_INTERVAL_SECONDS": 6,
+    # Ceiling for the doubling backoff applied when a provider rejects a send as too
+    # frequent for one recipient pair (see core.rate_limit.note_provider_pair_limit).
+    "PAIR_RATE_LIMIT_MAX_BACKOFF_SECONDS": 300,
     "WHATSAPP_DEFAULT_LANGUAGE_CODE": "en_US",  # used when a template has no language_code set
     "WHATSAPP_HTTP_TIMEOUT_SECONDS": 10,
     "WHATSAPP_API_URL": "https://graph.facebook.com/v25.0",

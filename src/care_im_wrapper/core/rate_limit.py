@@ -33,6 +33,37 @@ def is_rate_limited(subject: str, *, window: int | None = None, max_hits: int | 
     return current_count > max_messages
 
 
+def note_provider_pair_limit(channel: str, phone_number: str) -> int:
+    """Records that the provider refused a send as too frequent for this recipient, and
+    returns how long to wait before trying again.
+
+    Our own minimum interval is a guess at the provider's; when the provider contradicts
+    it, that guess was wrong for this pair. So the wait doubles on each consecutive
+    rejection, and the pacing key is armed for that long -- which makes every *other*
+    queued turn for the same reader wait too, instead of each one independently retrying
+    into the same wall. The counter expires on its own, so a pair that goes quiet returns
+    to normal pacing without anything having to reset it.
+    """
+    from care_im_wrapper.messaging.registry import get_min_send_interval_seconds
+
+    base = max(1, get_min_send_interval_seconds(channel))
+    ceiling = int(plugin_settings.PAIR_RATE_LIMIT_MAX_BACKOFF_SECONDS)
+    level_key = f"pair_backoff:{channel}:{phone_number}"
+
+    if cache.add(level_key, 1, timeout=ceiling):
+        level = 1
+    else:
+        try:
+            level = cache.incr(level_key)
+        except ValueError:
+            cache.add(level_key, 1, timeout=ceiling)
+            level = 1
+
+    backoff = min(base * 2**level, ceiling)
+    cache.set(f"outbound_rate_limit:{channel}:{phone_number}", True, timeout=backoff)
+    return backoff
+
+
 def is_outbound_rate_limited(channel: str, phone_number: str, *, is_urgent: bool = False) -> bool:
     """
     Returns True if a send to phone_number on channel happened within the last

@@ -60,7 +60,7 @@ Happy path
 - [ ] known number gets the year-of-birth prompt, state `AWAITING_YOB`
 - [ ] correct year authenticates, menu appears, state `AUTHENTICATED`
 - [ ] `user_type`, `snapshot_name` and `snapshot_phone` are set
-- [ ] menu shows options 1–6 plus Logout, no option 7
+- [ ] main menu shows Encounters, Appointments, Patient summary plus Logout, no Patient lookup
 
 Year of birth
 - [ ] `199` → invalid format, attempt counter unchanged
@@ -74,7 +74,7 @@ Several people on one number
 - [ ] picking a row authenticates as that identity
 - [ ] candidate rows are 1-based
 - [ ] out-of-range or free-text selection → invalid choice, still `AMBIGUOUS`
-- [ ] a number that is both patient and staff shows both; picking staff gives option 7
+- [ ] a number that is both patient and staff shows both; picking staff gives option 4
 
 Lockout
 - [ ] `[MAX_FAILED_ATTEMPTS = 5]` wrong years → `COOLDOWN` for `[COOLDOWN_MINUTES = 30]`
@@ -95,12 +95,32 @@ Lockout
 - [ ] two numbers have independent sessions
 - [ ] the same number on another provider is a separate session
 
-## 4. Patient menu
+## 4. Menus
 
-Each option: data renders, no data gives the no-data message, menu is re-offered.
+The main menu is care_fe's PatientHome tabs; the encounter sub-menu is EncounterShow's.
+Each option: data renders, no data gives the no-data message, the menu is re-offered.
 
-- [ ] **1 Encounters** — facility, date, status, class; offers documents
-- [ ] **2 Medications** — prescriptions with prescriber, facility and note, medications inside
+Main menu
+- [ ] **1 Encounters** → picker, or straight into the sub-menu when there is only one
+- [ ] **2 Appointments** — practitioner reads `<Practitioner> at <Facility>`
+- [ ] location reads `<Name> Location at <Facility>`
+- [ ] healthcare service reads `<Name> HealthcareService at <Facility>`
+- [ ] **3 Patient summary** — name, DOB, blood group, gender, phone; blanks say not recorded
+- [ ] **0 Logout**
+
+Encounter picker
+- [ ] more than one encounter → pick-list, state `SELECTING_ENCOUNTER`
+- [ ] exactly one → opened without asking, and "Change encounter" is absent from the sub-menu
+- [ ] selecting one sets `active_encounter_external_id` and shows the sub-menu
+- [ ] a typed number picks the row it is printed beside, on page two as well as page one
+- [ ] `0` returns to the main menu with no encounter open
+
+Encounter sub-menu
+- [ ] every reply heads its records with the encounter they belong to
+- [ ] that line replaces "Your recent …:" rather than appearing alongside it
+- [ ] with nothing scoped, the fetcher's own header is still there
+- [ ] **1 Medications** → prescription picker, or the full list when there are 0 or 1
+- [ ] prescriptions with prescriber, facility and note, medications inside
 - [ ] one block per `dosage_instruction`: dosage, frequency, duration, instructions
 - [ ] a tapered medication shows numbered steps, each dose next to its own duration
 - [ ] medications with no prescription group under their authored date
@@ -109,33 +129,47 @@ Each option: data renders, no data gives the no-data message, menu is re-offered
 - [ ] `1-1-1` renders `1-1-1 (Thrice a day)`; `2-2-2` stays verbatim
 - [ ] `BID` renders `1-0-1 (Twice a day)`
 - [ ] legacy string `dosage_instruction` still renders
-- [ ] **3 Procedures** — name, date, status
-- [ ] **4 Appointments** — practitioner reads `<Practitioner> at <Facility>`
-- [ ] location reads `<Name> Location at <Facility>`
-- [ ] healthcare service reads `<Name> HealthcareService at <Facility>`
-- [ ] **5 Lab reports** — name, date, status; offers documents
-- [ ] **6 Summary** — name, DOB, blood group, gender, phone; blanks say not recorded
+- [ ] **2 Procedures** — name, date, status
+- [ ] **3 Lab reports** — name, date, status; offers documents
+- [ ] **4 Discharge summary** — delivered directly, with no pick-list
+- [ ] **5 Change encounter** — present only when the patient has another encounter
+- [ ] **0 Back to main menu** — leaves the encounter rather than logging out
+- [ ] a procedure or report from another encounter never appears
+- [ ] an encounter that has since been deleted drops back to the main menu and says so
+
+Prescription picker
+- [ ] two or more prescriptions → picker led by *All prescriptions*
+- [ ] `a` shows every medication and keeps the picker beside them
+- [ ] picking one filters to it, and switching in place re-filters without backing out
+- [ ] paging the medications does not renumber the prescriptions
+- [ ] re-entering Medications asks again
+- [ ] changing encounter drops the filter
+
+Everywhere
 - [ ] `entered_in_error` records are excluded everywhere
 - [ ] at most `[DATA_FETCH_LIMIT = 10]` records per page
 - [ ] `n` and `p` page forward and back; `n` on the last page says so
-- [ ] interactive providers show Next/Previous rows, dropped when over the row cap
+- [ ] a paged data list carries Previous/Next/Menu as reply buttons, not rows
+- [ ] a paged picker keeps its rows and puts Previous/Next on a second message
 - [ ] numbering continues across pages instead of restarting
 - [ ] nothing repeats or is skipped paging forward then back
 - [ ] invalid choice (`9`, `abc`, emoji) → invalid choice, still `AUTHENTICATED`
 - [ ] the same option twice within `[DATA_CACHE_TIMEOUT_SECONDS = 90]` serves from cache
+- [ ] two different prescriptions at the same offset do not serve each other's cached page
 - [ ] a long list truncates at `[WHATSAPP_MESSAGE_CHAR_LIMIT = 4096]` with a marker
 - [ ] over the limit it splits into text then menu, in that order
 
 ## 5. Staff lookup
 
-- [ ] staff see option 7, patients do not
-- [ ] option 7 → search prompt, state `AWAITING_PATIENT_SEARCH`
+- [ ] staff see Patient lookup on the main menu, patients do not
+- [ ] it is absent inside an encounter, and back after `0`
+- [ ] choosing it → search prompt, state `AWAITING_PATIENT_SEARCH`
 - [ ] query under `[PATIENT_SEARCH_MIN_QUERY_LENGTH = 3]` errors but stays in the search state
 - [ ] no matches → no-patients-found
 - [ ] matches → pick-list, state `SELECTING_PATIENT`
 - [ ] result rows are 0-based
 - [ ] more than `[WHATSAPP_LIST_ROW_LIMIT = 10]` matches caps the list rather than failing
-- [ ] selecting sets `active_patient_external_id` and confirms
+- [ ] selecting sets `active_patient_external_id`, and every later reply names the patient
 - [ ] later menu options return that patient's data, not the staff member's
 - [ ] out-of-range or free-text selection → invalid choice
 - [ ] staff without lookup permission → permission denied, back to `AUTHENTICATED`
@@ -144,7 +178,6 @@ Each option: data renders, no data gives the no-data message, menu is re-offered
 ## 6. Documents
 
 Selection
-- [ ] encounters with selectable records → pick-list, state `SELECTING_DOCUMENT`
 - [ ] lab reports with a finalised report → pick-list
 - [ ] selecting delivers the document and stays in `SELECTING_DOCUMENT`
 - [ ] `0` returns to the menu and clears `candidates`
@@ -244,7 +277,8 @@ Resource types
 
 ## 10. API
 
-- [ ] `notification-triggers` list/retrieve/update; unauthenticated rejected
+- [ ] `notification-triggers` list/retrieve; unauthenticated rejected
+- [ ] a write to `notification-triggers` is refused — the viewset is read-only
 - [ ] `notification-templates` list; `variable_mapping` editable
 - [ ] the variable picker offers the right fields per `context_slug`
 - [ ] an unknown `context_slug` is rejected with a clear error

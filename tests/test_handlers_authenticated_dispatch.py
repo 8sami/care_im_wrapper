@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 
 from care_im_wrapper.conversation.handlers import Outbound, _handle_authenticated
+from care_im_wrapper.conversation.menus import Action, MenuOption
 from care_im_wrapper.data.exceptions import DataFetchError, MissingContextError, NoDataError, PermissionDeniedError
 from care_im_wrapper.models import ConversationSession
 
@@ -64,7 +65,7 @@ class HandleAuthenticatedMenuDispatchTests(TestCase):
         mock_resolve_actor.return_value = _make_actor()
         outbox: list[Outbound] = []
 
-        with patch.dict("care_im_wrapper.conversation.handlers._PATIENT_MENU", {}, clear=True):
+        with patch.dict("care_im_wrapper.conversation.menus._MAIN_MENU", {}, clear=True):
             _handle_authenticated(self.session, PHONE, "99", CHANNEL, outbox)
 
         self.assertEqual(outbox, [Outbound(PHONE, "Please reply with a valid number from the list.")])
@@ -72,10 +73,10 @@ class HandleAuthenticatedMenuDispatchTests(TestCase):
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")
     def test_entry_with_none_fetcher_moves_to_awaiting_patient_search(self, mock_resolve_actor):
         mock_resolve_actor.return_value = _make_actor()
-        fake_entry = {"7": ("Patient lookup", None, None, None)}
+        fake_entry = {"7": MenuOption(label="Patient lookup", action=Action.PATIENT_SEARCH)}
         outbox: list[Outbound] = []
 
-        with patch.dict("care_im_wrapper.conversation.handlers._PATIENT_MENU", fake_entry, clear=True):
+        with patch.dict("care_im_wrapper.conversation.menus._MAIN_MENU", fake_entry, clear=True):
             _handle_authenticated(self.session, PHONE, "7", CHANNEL, outbox)
 
         self.session.refresh_from_db()
@@ -96,11 +97,11 @@ class HandleAuthenticatedExceptionBranchTests(TestCase):
     def _patch_menu_with_fetcher(self, side_effect):
         fetcher = MagicMock(side_effect=side_effect)
         renderer = MagicMock()
-        entry = {"1": ("Test Label", fetcher, renderer, None)}
-        return patch.dict("care_im_wrapper.conversation.handlers._PATIENT_MENU", entry, clear=True), fetcher, renderer
+        entry = {"1": MenuOption(label="Test Label", fetcher=fetcher, renderer=renderer)}
+        return patch.dict("care_im_wrapper.conversation.menus._MAIN_MENU", entry, clear=True), fetcher, renderer
 
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")
-    @patch("care_im_wrapper.conversation.handlers._send_main_menu")
+    @patch("care_im_wrapper.conversation.handlers._send_menu")
     def test_permission_denied_error_sends_permission_denied_prefix(self, mock_send_menu, mock_resolve_actor):
         mock_resolve_actor.return_value = _make_actor()
         patcher, _, _ = self._patch_menu_with_fetcher(PermissionDeniedError("no access"))
@@ -110,12 +111,12 @@ class HandleAuthenticatedExceptionBranchTests(TestCase):
             _handle_authenticated(self.session, PHONE, "1", CHANNEL, outbox)
 
         mock_send_menu.assert_called_once_with(
-            PHONE, "patient", CHANNEL, outbox, prefix="You don't have permission to view this information."
+            self.session, PHONE, CHANNEL, outbox, prefix="You don't have permission to view this information."
         )
         self.assertEqual(outbox, [])
 
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")
-    @patch("care_im_wrapper.conversation.handlers._send_main_menu")
+    @patch("care_im_wrapper.conversation.handlers._send_menu")
     def test_missing_context_error_uses_exception_message_as_prefix(self, mock_send_menu, mock_resolve_actor):
         mock_resolve_actor.return_value = _make_actor()
         patcher, _, _ = self._patch_menu_with_fetcher(MissingContextError("No active patient selected"))
@@ -124,10 +125,12 @@ class HandleAuthenticatedExceptionBranchTests(TestCase):
         with patcher:
             _handle_authenticated(self.session, PHONE, "1", CHANNEL, outbox)
 
-        mock_send_menu.assert_called_once_with(PHONE, "patient", CHANNEL, outbox, prefix="No active patient selected")
+        mock_send_menu.assert_called_once_with(
+            self.session, PHONE, CHANNEL, outbox, prefix="No active patient selected"
+        )
 
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")
-    @patch("care_im_wrapper.conversation.handlers._send_main_menu")
+    @patch("care_im_wrapper.conversation.handlers._send_menu")
     def test_no_data_error_uses_lowercased_label_in_no_data_message(self, mock_send_menu, mock_resolve_actor):
         mock_resolve_actor.return_value = _make_actor()
         patcher, _, _ = self._patch_menu_with_fetcher(NoDataError("nothing found"))
@@ -137,11 +140,11 @@ class HandleAuthenticatedExceptionBranchTests(TestCase):
             _handle_authenticated(self.session, PHONE, "1", CHANNEL, outbox)
 
         mock_send_menu.assert_called_once_with(
-            PHONE, "patient", CHANNEL, outbox, prefix="No test label found on record."
+            self.session, PHONE, CHANNEL, outbox, prefix="No test label found on record."
         )
 
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")
-    @patch("care_im_wrapper.conversation.handlers._send_main_menu")
+    @patch("care_im_wrapper.conversation.handlers._send_menu")
     def test_data_fetch_error_sends_generic_fetch_error_prefix(self, mock_send_menu, mock_resolve_actor):
         mock_resolve_actor.return_value = _make_actor()
         patcher, _, _ = self._patch_menu_with_fetcher(DataFetchError("upstream failed"))
@@ -151,5 +154,5 @@ class HandleAuthenticatedExceptionBranchTests(TestCase):
             _handle_authenticated(self.session, PHONE, "1", CHANNEL, outbox)
 
         mock_send_menu.assert_called_once_with(
-            PHONE, "patient", CHANNEL, outbox, prefix="Could not retrieve that information. Please try again."
+            self.session, PHONE, CHANNEL, outbox, prefix="Could not retrieve that information. Please try again."
         )

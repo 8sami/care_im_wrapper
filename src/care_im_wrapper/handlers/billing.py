@@ -19,7 +19,6 @@ from care_im_wrapper.handlers.dispatch import (
     NotificationRecipientSpec,
     fire_notification_event,
     track_previous_field,
-    track_previous_status,
 )
 from care_im_wrapper.models.notification import _FACILITY_RESOLVERS
 from care_im_wrapper.reports.context_builders import NOTIFICATION_CONTEXT_REGISTRY, InvoiceContext
@@ -90,7 +89,7 @@ def _fire_billing_event(
     )
 
 
-pre_save.connect(track_previous_status, sender=Invoice)
+pre_save.connect(track_previous_field("status"), sender=Invoice, weak=False)
 
 
 @receiver(post_save, sender=Invoice)

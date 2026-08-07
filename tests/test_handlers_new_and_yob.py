@@ -106,7 +106,7 @@ class HandleAwaitingYobTests(TestCase):
         self.assertTrue(outbox[0].message.startswith("Your account is locked. Please try again in"))
         self.assertTrue(outbox[0].message.endswith("minutes."))
 
-    @patch("care_im_wrapper.conversation.handlers._send_main_menu")
+    @patch("care_im_wrapper.conversation.handlers._send_menu")
     def test_single_matching_candidate_authenticates_and_sends_main_menu(self, mock_send_menu):
         outbox: list[Outbound] = []
         _handle_awaiting_yob(self.session, PHONE, "1990", CHANNEL, outbox)
@@ -118,7 +118,7 @@ class HandleAwaitingYobTests(TestCase):
         self.assertEqual(self.session.snapshot_name, "Jane Doe")
         self.assertEqual(self.session.snapshot_phone, PHONE)
         self.assertEqual(self.session.failed_attempts, 0)
-        mock_send_menu.assert_called_once_with(PHONE, "patient", CHANNEL, outbox, name="Jane Doe")
+        mock_send_menu.assert_called_once_with(self.session, PHONE, CHANNEL, outbox, name="Jane Doe")
         self.assertEqual(outbox, [])
 
     @patch("care_im_wrapper.conversation.handlers._send_candidate_menu")
@@ -138,6 +138,12 @@ class HandleAwaitingYobTests(TestCase):
 
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.AMBIGUOUS)
-        self.assertEqual(self.session.candidates, [self.candidate, second_candidate])
-        mock_send_candidate_menu.assert_called_once_with(PHONE, [self.candidate, second_candidate], CHANNEL, outbox)
+        # Stored as offered: the identity, plus the row id and number that pick it.
+        self.assertEqual([c["full_name"] for c in self.session.candidates], ["Jane Doe", "John Roe"])
+        self.assertEqual([c["row_id"] for c in self.session.candidates], ["candidate_0", "candidate_1"])
+        self.assertEqual([c["token"] for c in self.session.candidates], ["1", "2"])
+
+        phone, choices, channel, sent_outbox = mock_send_candidate_menu.call_args.args
+        self.assertEqual((phone, channel, sent_outbox), (PHONE, CHANNEL, outbox))
+        self.assertEqual([choice.title for choice in choices], ["Jane Doe", "John Roe"])
         self.assertEqual(outbox, [])

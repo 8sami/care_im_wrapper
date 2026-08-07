@@ -4,7 +4,7 @@ from care.security.authorization.base import (  # pyright: ignore[reportMissingI
 )
 
 from care_im_wrapper.models import NotificationEvent, NotificationTemplate
-from care_im_wrapper.security.facility_resolution import resolve_event_orgs
+from care_im_wrapper.security.facility_resolution import resolve_event_facility
 from care_im_wrapper.security.permissions import NotificationPermissions
 
 
@@ -19,28 +19,40 @@ class NotificationAccess(AuthorizationHandler):
             [NotificationPermissions.can_manage_notification_template.name], user
         )
 
+    def _check_in_event_facility(self, permission: str, user, event: NotificationEvent) -> bool:
+        """Whether `user` holds `permission` anywhere in the facility `event` belongs to.
+
+        An event belongs to a facility, not to a department inside it, so this scopes by
+        facility the way core's own facility-wide handlers do (see
+        care/security/authorization/invoice.py). Scoping by the root organization instead
+        admits only users with a membership row on that one org, locking out the
+        department-level staff these permissions are granted to.
+
+        An unresolvable facility is superuser-only. That has to be decided here: passing
+        facility=None to check_permission_in_facility_organization drops the filter
+        entirely, which would grant the event to anyone holding the permission in *any*
+        facility.
+        """
+        facility_id = resolve_event_facility(event)
+        if facility_id is None:
+            return bool(user.is_superuser)
+        return self.check_permission_in_facility_organization([permission], user, facility=facility_id)
+
     def can_read_notification_event(self, user, event: NotificationEvent) -> bool:
-        # No resolvable facility > empty orgs > superuser-only, falls out of the check below naturally.
-        return self.check_permission_in_facility_organization(
-            [NotificationPermissions.can_read_notification_event.name], user, orgs=resolve_event_orgs(event)
-        )
+        return self._check_in_event_facility(NotificationPermissions.can_read_notification_event.name, user, event)
 
     def can_create_notification_event(self, user, event_or_facility_context: NotificationEvent | None = None) -> bool:
-        # No context yet (facility_organization_cache is only computed in NotificationEvent.save()) > org-level check.
+        # No context yet (facility_id is only resolved in NotificationEvent.save()) > org-level check.
         if event_or_facility_context is None:
             return self.check_permission_in_organization(
                 [NotificationPermissions.can_create_notification_event.name], user
             )
-        return self.check_permission_in_facility_organization(
-            [NotificationPermissions.can_create_notification_event.name],
-            user,
-            orgs=resolve_event_orgs(event_or_facility_context),
+        return self._check_in_event_facility(
+            NotificationPermissions.can_create_notification_event.name, user, event_or_facility_context
         )
 
     def can_dispatch_notification_event(self, user, event: NotificationEvent) -> bool:
-        return self.check_permission_in_facility_organization(
-            [NotificationPermissions.can_dispatch_notification_event.name], user, orgs=resolve_event_orgs(event)
-        )
+        return self._check_in_event_facility(NotificationPermissions.can_dispatch_notification_event.name, user, event)
 
 
 def register_notification_authorization() -> None:

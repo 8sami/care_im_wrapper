@@ -7,8 +7,9 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 
 from care_im_wrapper.auth.actor import Actor
-from care_im_wrapper.data.exceptions import NoDataError
-from care_im_wrapper.data.medications import fetch_prescriptions
+from care_im_wrapper.data.common import ALL_PRESCRIPTIONS
+from care_im_wrapper.data.exceptions import MissingContextError, NoDataError
+from care_im_wrapper.data.medications import fetch_prescription_choices, fetch_prescriptions
 from care_im_wrapper.models import ConversationSession
 
 TABLET = {"code": "{tbl}", "display": "tablets", "system": "http://unitsofmeasure.org"}
@@ -67,8 +68,17 @@ class FetchPrescriptionsTests(CareAPITestBase):
         data.update(kwargs)
         return MedicationRequest.objects.create(**data)
 
-    def _session(self, active_patient_external_id=None):
-        return SimpleNamespace(active_patient_external_id=active_patient_external_id, data_offsets=[], data_shown=0)
+    def _session(self, active_patient_external_id=None, encounter=None, prescription_external_id=""):
+        """Medications are encounter-scoped, and narrowed further by the prescription filter.
+        The encounter defaults to the one setUp created; the filter defaults to unset."""
+        target = self.encounter if encounter is None else encounter
+        return SimpleNamespace(
+            active_patient_external_id=active_patient_external_id,
+            active_encounter_external_id=str(target.external_id),
+            active_prescription_external_id=prescription_external_id,
+            data_offsets=[],
+            data_shown=0,
+        )
 
     def _patient_actor(self):
         return Actor(user_type=ConversationSession.UserType.PATIENT.value, instance=self.patient)
@@ -230,3 +240,148 @@ class FetchPrescriptionsTests(CareAPITestBase):
             self.assertEqual(len(page.records), 4)
 
         self.assertLessEqual(len(ctx.captured_queries), 3)
+
+    def test_another_encounters_medications_are_not_returned(self):
+        other_encounter = self.create_encounter(
+            patient=self.patient, facility=self.facility, organization=self.organization
+        )
+        mine = self._prescription(name="This visit")
+        self._medication(mine, medication={"display": "Mine"})
+        theirs = self._prescription(name="Other visit", encounter=other_encounter)
+        self._medication(theirs, encounter=other_encounter, medication={"display": "Theirs"})
+
+        page = self._fetch()
+
+        self.assertEqual([p.name for p in page.records], ["This visit"])
+
+    def test_prescription_filter_narrows_to_one_group(self):
+        first = self._prescription(name="First")
+        self._medication(first, medication={"display": "Med A"})
+        second = self._prescription(name="Second")
+        self._medication(second, medication={"display": "Med B"})
+
+        page = self._fetch(session=self._session(prescription_external_id=str(second.external_id)))
+
+        self.assertEqual([p.name for p in page.records], ["Second"])
+        self.assertEqual([m.name for m in page.records[0].medications], ["Med B"])
+
+    def test_all_prescriptions_sentinel_does_not_narrow(self):
+        first = self._prescription(name="First")
+        self._medication(first, medication={"display": "Med A"})
+        second = self._prescription(name="Second")
+        self._medication(second, medication={"display": "Med B"})
+
+        page = self._fetch(session=self._session(prescription_external_id=ALL_PRESCRIPTIONS))
+
+        self.assertEqual(sorted(p.name for p in page.records), ["First", "Second"])
+
+    def test_unlinked_medications_appear_only_under_all_prescriptions(self):
+        prescription = self._prescription(name="Named")
+        self._medication(prescription, medication={"display": "Grouped"})
+        self._medication(None, medication={"display": "Standalone"})
+
+        narrowed = self._fetch(session=self._session(prescription_external_id=str(prescription.external_id)))
+        everything = self._fetch(session=self._session(prescription_external_id=ALL_PRESCRIPTIONS))
+
+        self.assertEqual([p.name for p in narrowed.records], ["Named"])
+        self.assertEqual(len(everything.records), 2)
+
+    def test_no_encounter_selected_raises_missing_context(self):
+        session = SimpleNamespace(
+            active_patient_external_id=None,
+            active_encounter_external_id="",
+            active_prescription_external_id="",
+            data_offsets=[],
+            data_shown=0,
+        )
+
+        with self.assertRaises(MissingContextError):
+            self._fetch(session=session)
+
+
+class FetchPrescriptionChoicesTests(CareAPITestBase):
+    """The picker's own fetcher: the prescriptions themselves, not the medications on them."""
+
+    def setUp(self):
+        super().setUp()
+        self.user = self.create_user(first_name="Ada", last_name="Lovelace")
+        self.patient = self.create_patient()
+        self.facility = self.create_facility(user=self.user)
+        self.organization = self.create_facility_organization(facility=self.facility)
+        self.encounter = self.create_encounter(
+            patient=self.patient, facility=self.facility, organization=self.organization
+        )
+
+    def _prescription(self, **kwargs):
+        from care.emr.models.medication_request import MedicationRequestPrescription
+
+        data = {
+            "encounter": self.encounter,
+            "patient": self.patient,
+            "status": "active",
+            "name": None,
+            "prescribed_by": self.user,
+        }
+        data.update(kwargs)
+        return MedicationRequestPrescription.objects.create(**data)
+
+    def _fetch(self, encounter=None):
+        actor = Actor(user_type=ConversationSession.UserType.PATIENT.value, instance=self.patient)
+        target = self.encounter if encounter is None else encounter
+        session = SimpleNamespace(
+            active_patient_external_id=None,
+            active_encounter_external_id=str(target.external_id),
+            active_prescription_external_id="",
+            data_offsets=[],
+            data_shown=0,
+        )
+        return fetch_prescription_choices.__wrapped__(actor, session)
+
+    def test_lists_prescriptions_newest_first_with_their_prescriber(self):
+        self._prescription(name="Older")
+        self._prescription(name="Newer")
+
+        page = self._fetch()
+
+        self.assertEqual([r.name for r in page.records], ["Newer", "Older"])
+        self.assertEqual(page.records[0].prescribed_by, "Ada Lovelace")
+
+    def test_unnamed_prescription_carries_its_prescribed_on_timestamp(self):
+        self._prescription()
+
+        record = self._fetch().records[0]
+
+        self.assertIsNone(record.name)
+        self.assertNotEqual(record.prescribed_on, "Not recorded")
+
+    def test_excludes_entered_in_error(self):
+        self._prescription(name="Real")
+        self._prescription(name="Mistake", status="entered_in_error")
+
+        page = self._fetch()
+
+        self.assertEqual([r.name for r in page.records], ["Real"])
+
+    def test_is_scoped_to_the_open_encounter(self):
+        other_encounter = self.create_encounter(
+            patient=self.patient, facility=self.facility, organization=self.organization
+        )
+        self._prescription(name="This visit")
+        self._prescription(name="Other visit", encounter=other_encounter)
+
+        page = self._fetch()
+
+        self.assertEqual([r.name for r in page.records], ["This visit"])
+
+    def test_no_prescriptions_raises_no_data_error(self):
+        with self.assertRaises(NoDataError):
+            self._fetch()
+
+    def test_another_patients_encounter_is_not_reachable(self):
+        other_patient = self.create_patient()
+        other_encounter = self.create_encounter(
+            patient=other_patient, facility=self.facility, organization=self.organization
+        )
+
+        with self.assertRaises(MissingContextError):
+            self._fetch(encounter=other_encounter)

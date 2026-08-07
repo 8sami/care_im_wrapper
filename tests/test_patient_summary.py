@@ -3,13 +3,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from care.utils.tests.base import CareAPITestBase
+from django.core.cache import cache
 from django.test import SimpleTestCase
 
 from care_im_wrapper.auth.actor import Actor
 from care_im_wrapper.core.sanitize import mask_phone_number
 from care_im_wrapper.data.patient_summary import _format_dob_or_yob, fetch_summary
 from care_im_wrapper.models import ConversationSession
-from tests.utils import OverrideCache  # noqa: F401 # pyright: ignore
 
 
 class FormatDobOrYobTests(SimpleTestCase):
@@ -34,8 +34,11 @@ class FormatDobOrYobTests(SimpleTestCase):
         self.assertIsNone(_format_dob_or_yob(patient))
 
 
-@OverrideCache
 class FetchSummaryTests(CareAPITestBase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+
     def test_patient_actor_returns_own_summary_with_humanized_fields_and_raw_phone(self):
         patient = self.create_patient(
             name="Jane Doe",

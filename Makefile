@@ -1,4 +1,4 @@
-.PHONY: clean clean-build clean-pyc clean-test coverage dist docs help install lint lint/flake8 lint/black
+.PHONY: clean clean-build clean-pyc clean-test coverage coverage-html dist docs docs-open help install lint lint-fix schema test test-one typecheck
 .DEFAULT_GOAL := help
 
 define BROWSER_PYSCRIPT
@@ -47,35 +47,47 @@ clean-test: ## remove test and coverage artifacts
 	rm -fr htmlcov/
 	rm -fr .pytest_cache
 
-lint/flake8: ## check style with flake8
-	flake8 care_care_im_wrapper tests
-lint/black: ## check style with black
-	black --check care_im_wrapper tests
+# The plugin imports care, so tests and docs run inside the backend container, which has
+# CARE and its dependencies installed. Run these from the care repo root's docker stack.
+DOCKER_RUN := docker compose -f ../docker-compose.yaml exec -T
+BACKEND    := $(DOCKER_RUN) -w /app/care_im_wrapper backend
 
-lint: lint/flake8 lint/black ## check style
+lint: ## check style with ruff
+	.venv/bin/ruff check .
+	.venv/bin/ruff format --check .
 
-test: ## run tests quickly with the default Python
-	python setup.py test
+lint-fix: ## auto-fix style with ruff
+	.venv/bin/ruff check --fix .
+	.venv/bin/ruff format .
 
-test-all: ## run tests on every Python version with tox
-	tox
+typecheck: ## run basedpyright
+	.venv/bin/basedpyright
 
-coverage: ## check code coverage quickly with the default Python
-	coverage run --source care_im_wrapper setup.py test
-	coverage report -m
-	coverage html
+test: ## run the test suite in the backend container
+	$(BACKEND) python /app/manage.py test tests --top-level-directory /app/care_im_wrapper
+
+test-one: ## run one module, e.g. make test-one T=tests.test_api_notifications
+	$(BACKEND) python /app/manage.py test $(T) --top-level-directory /app/care_im_wrapper
+
+coverage: ## run the test suite with a coverage report
+	$(BACKEND) python -m coverage run --source=/app/care_im_wrapper/src/care_im_wrapper \
+		/app/manage.py test tests --top-level-directory /app/care_im_wrapper
+	$(BACKEND) python -m coverage report --skip-empty
+
+coverage-html: coverage ## write an HTML coverage report to htmlcov/
+	$(BACKEND) python -m coverage html
 	$(BROWSER) htmlcov/index.html
 
-docs: ## generate Sphinx HTML documentation, including API docs
-	rm -f docs/care_im_wrapper.rst
-	rm -f docs/modules.rst
-	sphinx-apidoc -o docs/ care_im_wrapper
-	$(MAKE) -C docs clean
-	$(MAKE) -C docs html
+docs: ## generate Sphinx HTML documentation, including the API reference
+	$(DOCKER_RUN) -w /app/care_im_wrapper/docs backend sh -c "rm -rf _build reference && sphinx-build -M html . _build"
+	@echo "Docs written to docs/_build/html/index.html"
+
+docs-open: docs ## build the docs and open them in a browser
 	$(BROWSER) docs/_build/html/index.html
 
-servedocs: docs ## compile the docs watching for changes
-	watchmedo shell-command -p '*.rst' -c '$(MAKE) -C docs html' -R -D .
+schema: ## write CARE's OpenAPI schema (including this plugin's routes) to schema.yaml
+	$(DOCKER_RUN) -w /app backend python manage.py spectacular --file /app/care_im_wrapper/schema.yaml
+	@echo "OpenAPI schema written to schema.yaml"
 
 release: dist ## package and upload a release
 	twine upload dist/*

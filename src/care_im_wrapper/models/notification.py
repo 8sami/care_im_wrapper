@@ -5,7 +5,6 @@ from typing import Any
 from care.utils.models.base import BaseModel  # pyright: ignore[reportMissingImports]
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
-from django.contrib.postgres.fields import ArrayField
 from django.db import models
 
 from care_im_wrapper.models.conversation_session import ConversationSession
@@ -140,7 +139,11 @@ class NotificationEvent(BaseModel):
     related_object_content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, null=True, blank=True)
     related_object_id = models.PositiveIntegerField(null=True, blank=True)
     related_object = GenericForeignKey("related_object_content_type", "related_object_id")
-    facility_organization_cache = ArrayField(models.IntegerField(), default=list)
+    # care.facility.Facility.id the event belongs to, resolved from related_object at save
+    # time. IntegerField not FK, for the reason ConversationSession.user_id gives.
+    # An event is scoped to a whole facility, never to one department within it, so this --
+    # not a set of organization ids -- is what authorization reads.
+    facility_id = models.IntegerField(null=True, blank=True, db_index=True)
 
     class Meta:
         app_label = "care_im_wrapper"
@@ -150,20 +153,8 @@ class NotificationEvent(BaseModel):
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         related_object = self.related_object
-        if related_object is None:
-            self.facility_organization_cache = []
-        else:
-            facility = _resolve_facility(related_object)
-            if facility is None:
-                self.facility_organization_cache = []
-            else:
-                from care.emr.models.organization import FacilityOrganization  # pyright: ignore[reportMissingImports]
-
-                facility_root_org = FacilityOrganization.objects.filter(org_type="root", facility=facility).first()
-                orgs = set()
-                if facility_root_org:
-                    orgs = orgs.union({facility_root_org.id})
-                self.facility_organization_cache = list(orgs)
+        facility = None if related_object is None else _resolve_facility(related_object)
+        self.facility_id = None if facility is None else facility.id
         super().save(*args, **kwargs)
 
 

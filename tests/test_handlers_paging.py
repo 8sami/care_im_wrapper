@@ -8,10 +8,12 @@ from django.test import TestCase
 from care_im_wrapper.conversation.handlers import (
     _handle_authenticated,
     _paging_step,
-    _rows_with_paging,
 )
+from care_im_wrapper.conversation.menus import MenuOption
+from care_im_wrapper.conversation.replies import navigation_buttons, paging_rows
 from care_im_wrapper.data.pagination import Page, current_offset
 from care_im_wrapper.models import ConversationSession
+from tests.utils import channel_limits
 
 PHONE = "+919876543210"
 CHANNEL = "whatsapp"
@@ -25,6 +27,14 @@ def _page(records, *, number=0, has_next=False, offset=0, weights=()):
         has_next=has_next,
         offset=offset,
         source_weights=tuple(weights),
+    )
+
+
+def _option(fetcher):
+    return MenuOption(
+        label="Meds",
+        fetcher=fetcher,
+        renderer=lambda r, m, start=1, *, header="": SimpleNamespace(text="Meds"),
     )
 
 
@@ -45,33 +55,33 @@ class PagingStepTests(TestCase):
                 self.assertEqual(_paging_step(token), 0)
 
 
-class RowsWithPagingTests(TestCase):
-    def setUp(self):
-        self.menu_rows = [{"id": str(i), "title": f"Option {i}"} for i in range(1, 8)]
+class NavigationControlsTests(TestCase):
+    """Paging is buttons. Rows are the fallback for a provider that has no buttons at all."""
 
     def test_no_controls_when_there_is_nowhere_to_go(self):
-        rows = _rows_with_paging(_page([1]), self.menu_rows, CHANNEL)
+        self.assertEqual(navigation_buttons(_page([1])), [])
+        self.assertEqual(paging_rows(_page([1])), [])
 
-        self.assertEqual(rows, self.menu_rows)
+    def test_first_page_offers_next_then_menu(self):
+        self.assertEqual([b["id"] for b in navigation_buttons(_page([1], has_next=True))], ["page_next", "page_menu"])
 
-    def test_next_row_is_prepended(self):
-        rows = _rows_with_paging(_page([1], has_next=True), self.menu_rows, CHANNEL)
+    def test_a_middle_page_offers_both_directions(self):
+        buttons = navigation_buttons(_page([1], number=1, has_next=True))
 
-        self.assertEqual(rows[0]["id"], "page_next")
-        self.assertEqual(len(rows), len(self.menu_rows) + 1)
+        self.assertEqual([b["id"] for b in buttons], ["page_prev", "page_next", "page_menu"])
 
-    def test_both_controls_when_in_the_middle(self):
-        rows = _rows_with_paging(_page([1], number=1, has_next=True), self.menu_rows[:5], CHANNEL)
+    def test_a_picker_leaves_out_menu_because_its_rows_already_end_in_back(self):
+        buttons = navigation_buttons(_page([1], number=1, has_next=True), include_menu=False)
 
-        self.assertEqual([r["id"] for r in rows[:2]], ["page_next", "page_prev"])
+        self.assertEqual([b["id"] for b in buttons], ["page_prev", "page_next"])
 
-    def test_menu_is_never_truncated_to_fit_paging_rows(self):
-        """Over the provider's row cap the paging rows are dropped, not the menu -- typing."""
-        crowded = [{"id": str(i), "title": f"Option {i}"} for i in range(20)]
+    def test_a_provider_with_too_few_buttons_falls_back_to_rows(self):
+        """Three controls will not fit on two buttons, so they become rows instead -- the
+        reader is never left on a paged list with no way off it."""
+        middle = _page([1], number=1, has_next=True)
 
-        rows = _rows_with_paging(_page([1], number=1, has_next=True), crowded, CHANNEL)
-
-        self.assertEqual(rows, crowded)
+        self.assertGreater(len(navigation_buttons(middle)), channel_limits(max_buttons=2).max_buttons)
+        self.assertEqual([r["id"] for r in paging_rows(middle)], ["page_next", "page_prev"])
 
 
 class MenuPagingTests(TestCase):
@@ -117,8 +127,8 @@ class MenuPagingTests(TestCase):
         self.session.advance_page(40)
 
         with patch.dict(
-            "care_im_wrapper.conversation.menus._PATIENT_MENU",
-            {"2": ("Meds", lambda a, s: _page(["m"]), lambda r, m, start=1: SimpleNamespace(text="Meds"), None)},
+            "care_im_wrapper.conversation.menus._MAIN_MENU",
+            {"2": _option(lambda a, s: _page(["m"]))},
         ):
             self._run("2")
 
@@ -136,8 +146,8 @@ class MenuPagingTests(TestCase):
             return _page(["m"], number=session.data_page, has_next=True, offset=current_offset(session))
 
         with patch.dict(
-            "care_im_wrapper.conversation.menus._PATIENT_MENU",
-            {"2": ("Meds", fetcher, lambda r, m, start=1: SimpleNamespace(text="Meds"), None)},
+            "care_im_wrapper.conversation.menus._MAIN_MENU",
+            {"2": _option(fetcher)},
         ):
             self._run("n")
 
@@ -155,8 +165,8 @@ class MenuPagingTests(TestCase):
             return _page([], number=session.data_page, offset=current_offset(session))
 
         with patch.dict(
-            "care_im_wrapper.conversation.menus._PATIENT_MENU",
-            {"2": ("Meds", fetcher, lambda r, m, start=1: SimpleNamespace(text="Meds"), None)},
+            "care_im_wrapper.conversation.menus._MAIN_MENU",
+            {"2": _option(fetcher)},
         ):
             outbox = self._run("n")
 

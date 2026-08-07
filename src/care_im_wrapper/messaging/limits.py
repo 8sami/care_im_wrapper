@@ -10,6 +10,9 @@ Two surfaces, two sets of limits, and they are not interchangeable:
   its own limit, unrelated to the free-form body limit. Sending an over-long parameter
   fails the whole message, exactly as a blank one does.
 
+A provider describes itself here; `registry.get_channel_limits` is how callers ask for a
+channel's set, so nothing outside this package has to know which provider it is talking to.
+
 Enforcement is at the send boundary (`messaging/whatsapp.py`), not at the call sites.
 A caller that forgets to truncate is a bug that reaches the provider as a 400; a caller
 that *cannot* exceed a limit is not. Call sites may still truncate for layout reasons --
@@ -21,7 +24,6 @@ from __future__ import annotations
 import unicodedata
 from dataclasses import dataclass
 
-from care_im_wrapper.core.choices import Provider
 from care_im_wrapper.settings import plugin_settings
 
 # Truncation marker. One character, so it costs almost nothing of the budget it has to
@@ -56,6 +58,9 @@ class ChannelLimits:
     list_button_label: int
     max_rows: int
     max_buttons: int
+    # Not a cap the provider rejects on, but the point its client folds a message behind a
+    # "Read more". A page past it is delivered and unread, which is the same as lost.
+    preview_lines: int
     # Template / notification
     template_parameter: int
 
@@ -113,7 +118,7 @@ def clamp(value: object, limit: int, *, marker: str = ELLIPSIS) -> str:
     return text[:cut].rstrip() + suffix
 
 
-def _whatsapp_limits() -> ChannelLimits:
+def whatsapp_limits() -> ChannelLimits:
     """Read at call time, not import time, so PLUGIN_CONFIGS overrides apply."""
     button_title = int(plugin_settings.WHATSAPP_TITLE_TRUNCATE)
     return ChannelLimits(
@@ -128,33 +133,29 @@ def _whatsapp_limits() -> ChannelLimits:
         list_button_label=button_title,
         max_rows=int(plugin_settings.WHATSAPP_LIST_ROW_LIMIT),
         max_buttons=int(plugin_settings.WHATSAPP_REPLY_BUTTON_LIMIT),
+        preview_lines=int(plugin_settings.WHATSAPP_PREVIEW_LINE_LIMIT),
         template_parameter=int(plugin_settings.WHATSAPP_TEMPLATE_PARAMETER_CHAR_LIMIT),
     )
 
 
-def _default_limits() -> ChannelLimits:
-    """Fallback for a channel that has not described itself. Deliberately the most
-    restrictive reading of the generic defaults -- a provider we know nothing about is
-    safer under-filled than rejected."""
+def default_limits() -> ChannelLimits:
+    """Fallback for a channel that has not described itself. Reads only DEFAULT_* settings:
+    borrowing another provider's numbers would silently hand an unknown channel Meta's
+    limits, which is exactly the coupling ChannelLimits exists to prevent."""
     body = int(plugin_settings.DEFAULT_MAX_MESSAGE_CHARS)
+    button_title = int(plugin_settings.DEFAULT_BUTTON_TITLE_CHAR_LIMIT)
     return ChannelLimits(
         text_body=body,
-        interactive_body=min(body, int(plugin_settings.WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT)),
-        interactive_header=int(plugin_settings.WHATSAPP_HEADER_CHAR_LIMIT),
-        interactive_footer=int(plugin_settings.WHATSAPP_FOOTER_CHAR_LIMIT),
-        section_title=int(plugin_settings.WHATSAPP_SECTION_TITLE_CHAR_LIMIT),
-        row_title=int(plugin_settings.WHATSAPP_ROW_TITLE_CHAR_LIMIT),
-        row_description=int(plugin_settings.WHATSAPP_DESCRIPTION_TRUNCATE),
-        button_title=int(plugin_settings.WHATSAPP_TITLE_TRUNCATE),
-        list_button_label=int(plugin_settings.WHATSAPP_TITLE_TRUNCATE),
+        interactive_body=min(body, int(plugin_settings.DEFAULT_INTERACTIVE_BODY_CHAR_LIMIT)),
+        interactive_header=int(plugin_settings.DEFAULT_INTERACTIVE_HEADER_CHAR_LIMIT),
+        interactive_footer=int(plugin_settings.DEFAULT_INTERACTIVE_FOOTER_CHAR_LIMIT),
+        section_title=int(plugin_settings.DEFAULT_SECTION_TITLE_CHAR_LIMIT),
+        row_title=int(plugin_settings.DEFAULT_ROW_TITLE_CHAR_LIMIT),
+        row_description=int(plugin_settings.DEFAULT_ROW_DESCRIPTION_CHAR_LIMIT),
+        button_title=button_title,
+        list_button_label=button_title,
         max_rows=int(plugin_settings.DEFAULT_MAX_INTERACTIVE_ROWS),
         max_buttons=int(plugin_settings.DEFAULT_MAX_REPLY_BUTTONS),
-        template_parameter=int(plugin_settings.WHATSAPP_TEMPLATE_PARAMETER_CHAR_LIMIT),
+        preview_lines=int(plugin_settings.DEFAULT_PREVIEW_LINE_LIMIT),
+        template_parameter=int(plugin_settings.DEFAULT_TEMPLATE_PARAMETER_CHAR_LIMIT),
     )
-
-
-def limits_for(channel: str) -> ChannelLimits:
-    """The limits a channel imposes. Provider-agnostic entry point."""
-    if channel == Provider.WHATSAPP.value:
-        return _whatsapp_limits()
-    return _default_limits()

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from care.emr.reports.renderer.template_engine import TemplateEngine  # pyright: ignore[reportMissingImports]
 from jinja2 import nodes  # pyright: ignore[reportMissingImports]
 
-from care_im_wrapper.messaging.registry import validate_provider_expression
+from care_im_wrapper.messaging.registry import get_declared_placeholders, validate_provider_expression
 from care_im_wrapper.reports.schema import (
     _merge_field_trees,
     build_context_schema,
@@ -137,4 +137,12 @@ def validate_variable_mapping(
         )
         if message:
             errors[key] = message
+
+    # A mapping that fills only some placeholders sends fewer parameters than the approved
+    # body declares, which the provider rejects outright -- so a half-filled mapping is
+    # never savable. An empty one is: that is a template nobody has configured yet.
+    if variable_mapping:
+        for key in get_declared_placeholders(str(template.provider), template):
+            if key not in variable_mapping:
+                errors[key] = "A value is required; the template will not send without it."
     return errors
