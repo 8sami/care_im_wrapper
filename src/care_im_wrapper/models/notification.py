@@ -152,9 +152,16 @@ class NotificationEvent(BaseModel):
         ]
 
     def save(self, *args: Any, **kwargs: Any) -> None:
+        # A related object is the authoritative source of the facility, so it always wins:
+        # signal-created events resolve it here and cannot be pointed elsewhere by a caller.
+        # Without one -- every manually created event -- an explicitly assigned facility_id
+        # is kept. Recomputing unconditionally would overwrite it with None on every save,
+        # leaving the event unreachable from the facility-scoped list and readable only by
+        # a superuser (see NotificationAccess._check_in_event_facility).
         related_object = self.related_object
-        facility = None if related_object is None else _resolve_facility(related_object)
-        self.facility_id = None if facility is None else facility.id
+        if related_object is not None:
+            facility = _resolve_facility(related_object)
+            self.facility_id = None if facility is None else facility.id
         super().save(*args, **kwargs)
 
 

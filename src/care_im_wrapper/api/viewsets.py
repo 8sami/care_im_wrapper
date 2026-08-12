@@ -308,8 +308,15 @@ class NotificationEventViewSet(EMRCreateMixin, EMRListMixin, EMRRetrieveMixin, E
             raise PermissionDenied("You do not have permission to view this notification event.")
 
     def authorize_create(self, instance):
-        # Manually-created events have no related_object/facility context yet, so authorize at the org level only.
-        if not AuthorizationController.call("can_create_notification_event", self.request.user, None):
+        # `instance` here is the write spec, not the model -- core calls authorize_create before
+        # de_serialize (EMRCreateMixin.handle_create). The permission is checked in the facility
+        # the caller named: can_create_notification_event is declared PermissionContext.FACILITY
+        # and the UI gates on facility.permissions, so an org-level check would disagree with both.
+        facility = get_object_or_404(Facility, external_id=instance.facility)
+        # can_read/create only inspect facility_id, so an unsaved probe works (as in _authorized_facility_id).
+        facility_context = NotificationEvent(facility_id=facility.id)
+
+        if not AuthorizationController.call("can_create_notification_event", self.request.user, facility_context):
             raise PermissionDenied("You do not have permission to create notification events.")
 
     def perform_create(self, instance):
