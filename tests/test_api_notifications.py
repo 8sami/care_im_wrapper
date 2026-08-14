@@ -351,6 +351,7 @@ class TestNotificationEventCreate(NotificationAPITestBase):
             "title": "Clinic closed tomorrow",
             "trigger_slug": self.manual_trigger.slug,
             "template_slug": self.template.slug,
+            "facility": str(self.facility.external_id),
         }
         data.update(overrides)
         return data
@@ -362,7 +363,7 @@ class TestNotificationEventCreate(NotificationAPITestBase):
         self.assertFalse(NotificationEvent.objects.filter(title="Clinic closed tomorrow").exists())
 
     def test_create_with_permission(self):
-        self.grant_in_organization(NotificationPermissions.can_create_notification_event)
+        self.grant_in_facility(NotificationPermissions.can_create_notification_event)
 
         response = self.client.post(self.list_url, self._create_payload(), format="json")
 
@@ -370,8 +371,69 @@ class TestNotificationEventCreate(NotificationAPITestBase):
         event = NotificationEvent.objects.get(title="Clinic closed tomorrow")
         self.assertEqual(event.created_by_id, self.user.id)
 
+    def test_create_scopes_the_event_to_the_given_facility(self):
+        self.grant_in_facility(NotificationPermissions.can_create_notification_event)
+
+        response = self.client.post(
+            self.list_url,
+            self._create_payload(),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        event = NotificationEvent.objects.get(title="Clinic closed tomorrow")
+        self.assertEqual(event.facility_id, self.facility.id)
+
+    def test_a_created_event_is_readable_and_listable_by_its_creator(self):
+        """The invariant the facility field exists to protect: an event a non-superuser was
+        allowed to create must be one they can then find and open. Before the facility was
+        accepted here, save() forced facility_id to None, which dropped the event from the
+        facility-scoped list and 403'd its creator on retrieve."""
+        self.grant_in_facility(NotificationPermissions.can_create_notification_event)
+        self.grant_in_facility(NotificationPermissions.can_read_notification_event)
+
+        created = self.client.post(
+            self.list_url,
+            self._create_payload(),
+            format="json",
+        )
+        self.assertEqual(created.status_code, status.HTTP_200_OK)
+        event_id = created.json()["id"]
+
+        listed = self.client.get(self.list_url, {"facility": str(self.facility.external_id)})
+        self.assertEqual(listed.status_code, status.HTTP_200_OK)
+        self.assertIn(event_id, [row["id"] for row in listed.json()["results"]])
+
+        retrieved = self.client.get(reverse("notification-events-detail", kwargs={"external_id": event_id}))
+        self.assertEqual(retrieved.status_code, status.HTTP_200_OK)
+
+    def test_create_is_refused_in_a_facility_the_caller_has_no_permission_in(self):
+        other_facility = self.create_facility(user=self.create_user())
+        self.grant_in_facility(NotificationPermissions.can_create_notification_event)
+
+        response = self.client.post(
+            self.list_url,
+            self._create_payload(facility=str(other_facility.external_id)),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(NotificationEvent.objects.filter(title="Clinic closed tomorrow").exists())
+
+    def test_a_signal_event_still_takes_its_facility_from_the_related_object(self):
+        """save() must keep overriding facility_id whenever a related object is present, so a
+        signal-fired event cannot be pointed at a facility other than its object's."""
+        patient = self.create_patient()
+        event = NotificationEvent(template=self.template, trigger=self.trigger, title="Signal fired")
+        event.related_object = patient
+        event.facility_id = self.facility.id
+        event.save()
+
+        event.refresh_from_db()
+        self.assertNotEqual(event.facility_id, self.facility.id)
+
     def test_a_signal_trigger_cannot_be_fired_by_hand(self):
-        self.grant_in_organization(NotificationPermissions.can_create_notification_event)
+        self.grant_in_facility(NotificationPermissions.can_create_notification_event)
 
         response = self.client.post(
             self.list_url,
@@ -383,7 +445,7 @@ class TestNotificationEventCreate(NotificationAPITestBase):
         self.assertFalse(NotificationEvent.objects.filter(title="Clinic closed tomorrow").exists())
 
     def test_a_patient_the_caller_cannot_access_is_refused(self):
-        self.grant_in_organization(NotificationPermissions.can_create_notification_event)
+        self.grant_in_facility(NotificationPermissions.can_create_notification_event)
         stranger = self.create_patient()
 
         with patch("care_im_wrapper.api.viewsets.AuthorizationController.call") as mock_call:
