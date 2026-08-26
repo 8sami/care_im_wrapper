@@ -1,7 +1,7 @@
 """Fetch patient summary for the authenticated actor."""
 
 from care_im_wrapper.auth.actor import Actor
-from care_im_wrapper.core.sanitize import mask_phone_number
+from care_im_wrapper.core.sanitize import normalize_phone_number
 from care_im_wrapper.data.base import cached_fetch, humanize_choice, humanize_date
 from care_im_wrapper.data.common import resolve_target_patient
 from care_im_wrapper.data.records import PatientSummary
@@ -25,7 +25,7 @@ def fetch_summary(actor: Actor, session: ConversationSession) -> PatientSummary:
         date_of_birth=dob_display,
         blood_group=humanize_choice(getattr(patient, "blood_group", None)),
         gender=humanize_choice(getattr(patient, "gender", None)),
-        phone=mask_phone_number(getattr(patient, "phone_number", None) or ""),
+        phone=normalize_phone_number(getattr(patient, "phone_number", None) or ""),
     )
 
 

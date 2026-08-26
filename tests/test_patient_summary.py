@@ -7,7 +7,6 @@ from django.core.cache import cache
 from django.test import SimpleTestCase
 
 from care_im_wrapper.auth.actor import Actor
-from care_im_wrapper.core.sanitize import mask_phone_number
 from care_im_wrapper.data.patient_summary import _format_dob_or_yob, fetch_summary
 from care_im_wrapper.models import ConversationSession
 
@@ -57,7 +56,7 @@ class FetchSummaryTests(CareAPITestBase):
         self.assertEqual(summary.date_of_birth, "15 Jun 1990")
         self.assertEqual(summary.blood_group, "A Positive")
         self.assertEqual(summary.gender, "Female")
-        self.assertEqual(summary.phone, mask_phone_number("+919876543210"))
+        self.assertEqual(summary.phone, "+919876543210")
 
     def test_staff_actor_with_permission_returns_active_patient_summary(self):
         patient = self.create_patient(
@@ -79,4 +78,4 @@ class FetchSummaryTests(CareAPITestBase):
         self.assertEqual(summary.date_of_birth, "Year of birth: 1988")
         self.assertEqual(summary.blood_group, "O Negative")
         self.assertEqual(summary.gender, "Male")
-        self.assertEqual(summary.phone, mask_phone_number("+911111111111"))
+        self.assertEqual(summary.phone, "+911111111111")
