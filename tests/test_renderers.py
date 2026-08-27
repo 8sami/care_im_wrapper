@@ -31,11 +31,10 @@ def _line(dosage="1 tablets", frequency="1-0-1 (Twice a day)", duration="5 days"
     )
 
 
-def _medication(name="Amoxicillin", status="Active", lines=None, note=None, is_inactive=False):
+def _medication(name="Amoxicillin", status="Active", lines=None, note=None):
     return MedicationRecord(
         name=name,
         status=status,
-        is_inactive=is_inactive,
         lines=(_line(),) if lines is None else tuple(lines),
         note=note,
     )

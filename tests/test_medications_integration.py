@@ -150,21 +150,23 @@ class FetchPrescriptionsTests(CareAPITestBase):
 
         self.assertEqual([m.name for m in page.records[0].medications], ["Kept"])
 
-    def test_inactive_medication_is_listed_and_flagged(self):
-        """care_fe keeps inactive medications visible but dims them, so the record carries."""
-        prescription = self._prescription()
-        self._medication(prescription, medication={"display": "Finished"}, status="completed")
-
-        medication = self._fetch().records[0].medications[0]
-
-        self.assertTrue(medication.is_inactive)
-        self.assertEqual(medication.status, "Completed")
-
-    def test_active_medication_is_not_flagged_inactive(self):
+    def test_inactive_medication_is_excluded(self):
+        """Discontinuing a medication ends it; it is no longer a current medication."""
         prescription = self._prescription()
         self._medication(prescription, medication={"display": "Ongoing"}, status="active")
+        self._medication(prescription, medication={"display": "Stopped"}, status="ended")
+        self._medication(prescription, medication={"display": "Finished"}, status="completed")
 
-        self.assertFalse(self._fetch().records[0].medications[0].is_inactive)
+        page = self._fetch()
+
+        self.assertEqual([m.name for m in page.records[0].medications], ["Ongoing"])
+
+    def test_prescription_with_only_inactive_medications_is_not_shown(self):
+        prescription = self._prescription(name="All stopped")
+        self._medication(prescription, medication={"display": "Stopped"}, status="ended")
+
+        with self.assertRaises(NoDataError):
+            self._fetch()
 
     def test_prescription_with_no_medications_is_not_shown(self):
         """The query is driven off MedicationRequest, so an empty prescription has nothing."""

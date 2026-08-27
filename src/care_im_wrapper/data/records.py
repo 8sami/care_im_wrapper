@@ -27,7 +27,6 @@ class MedicationRecord:
 
     name: str  # care_fe's displayMedicationName
     status: str
-    is_inactive: bool  # care_fe dims these
     lines: tuple[DosageLine, ...]
     note: str | None = None
 

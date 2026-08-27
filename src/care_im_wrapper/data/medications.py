@@ -78,7 +78,7 @@ def fetch_prescriptions(actor: Actor, session: ConversationSession) -> Page:
     encounter = resolve_target_encounter(actor, session)
     queryset = (
         MedicationRequest.objects.filter(patient=encounter.patient, encounter=encounter)
-        .exclude(status=ENTERED_IN_ERROR_STATUS)
+        .exclude(status__in=INACTIVE_MEDICATION_STATUSES)
         # Also gone if the prescription above it was entered in error.
         .exclude(prescription__status=ENTERED_IN_ERROR_STATUS)
         .select_related(
@@ -205,11 +205,9 @@ def format_user_name(user: Any) -> str | None:
 
 def build_medication(med: Any) -> MedicationRecord:
     """One MedicationRequest and its dosage lines."""
-    status = getattr(med, "status", None)
     return MedicationRecord(
         name=display_medication_name(med),
-        status=humanize_choice(status),
-        is_inactive=status in INACTIVE_MEDICATION_STATUSES,
+        status=humanize_choice(getattr(med, "status", None)),
         lines=build_dosage_lines(med),
         note=getattr(med, "note", None) or None,
     )
