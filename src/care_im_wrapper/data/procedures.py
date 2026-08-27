@@ -21,8 +21,10 @@ def fetch_procedures(actor: Actor, session: ConversationSession) -> Page:
     from care.emr.models.service_request import ServiceRequest  # type: ignore[import-untyped]
 
     encounter = resolve_target_encounter(actor, session)
-    queryset = ServiceRequest.objects.filter(patient=encounter.patient, encounter=encounter).exclude(
-        status=ENTERED_IN_ERROR_STATUS
+    queryset = (
+        ServiceRequest.objects.filter(patient=encounter.patient, encounter=encounter)
+        .exclude(status=ENTERED_IN_ERROR_STATUS)
+        .select_related("activity_definition")
     )
     page = paginate_or_raise(queryset.order_by("-created_date"), session)
 
@@ -40,7 +42,15 @@ def _extract_service_name(sr) -> str:
     """
     Extracts a human-readable service name from ServiceRequest.
     """
+    activity_definition = getattr(sr, "activity_definition", None)
     code = getattr(sr, "code", None)
     if isinstance(code, dict):
-        return code.get("display") or code.get("text") or "Unspecified procedure"
-    return str(code) if code else "Unspecified procedure"
+        coded_name = code.get("display") or code.get("text")
+    else:
+        coded_name = str(code) if code else None
+    return (
+        getattr(sr, "title", None)
+        or getattr(activity_definition, "title", None)
+        or coded_name
+        or "Unspecified procedure"
+    )

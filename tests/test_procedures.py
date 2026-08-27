@@ -12,28 +12,28 @@ from care_im_wrapper.models import ConversationSession
 
 
 class ExtractServiceNameTests(SimpleTestCase):
-    def test_code_dict_with_display_returns_display(self):
-        sr = SimpleNamespace(code={"display": "Blood Test", "text": "Blood Test (CBC)"})
+    def test_title_wins_over_the_snomed_coding(self):
+        sr = SimpleNamespace(
+            title="CBC bloood",
+            activity_definition=None,
+            code={"display": "Percutaneous ligation of left atrial appendage"},
+        )
+        self.assertEqual(_extract_service_name(sr), "CBC bloood")
+
+    def test_falls_back_to_the_activity_definition_title(self):
+        sr = SimpleNamespace(
+            title="",
+            activity_definition=SimpleNamespace(title="CBC bloood"),
+            code={"display": "Percutaneous ligation of left atrial appendage"},
+        )
+        self.assertEqual(_extract_service_name(sr), "CBC bloood")
+
+    def test_falls_back_to_the_coding_when_nothing_names_it(self):
+        sr = SimpleNamespace(title=None, activity_definition=None, code={"display": "Blood Test"})
         self.assertEqual(_extract_service_name(sr), "Blood Test")
 
-    def test_code_dict_with_text_only_returns_text(self):
-        sr = SimpleNamespace(code={"text": "X-Ray Chest"})
-        self.assertEqual(_extract_service_name(sr), "X-Ray Chest")
-
-    def test_code_dict_without_display_or_text_returns_unspecified(self):
-        sr = SimpleNamespace(code={"system": "http://snomed.info"})
-        self.assertEqual(_extract_service_name(sr), "Unspecified procedure")
-
-    def test_code_as_plain_string_returns_string(self):
-        sr = SimpleNamespace(code="MRI Brain")
-        self.assertEqual(_extract_service_name(sr), "MRI Brain")
-
-    def test_code_none_returns_unspecified(self):
-        sr = SimpleNamespace(code=None)
-        self.assertEqual(_extract_service_name(sr), "Unspecified procedure")
-
-    def test_missing_code_attribute_returns_unspecified(self):
-        sr = SimpleNamespace()
+    def test_unnamed_and_uncoded_request_still_renders(self):
+        sr = SimpleNamespace(title=None, activity_definition=None, code=None)
         self.assertEqual(_extract_service_name(sr), "Unspecified procedure")
 
 
@@ -74,7 +74,7 @@ class FetchProceduresTests(CareAPITestBase):
             facility=self.facility,
             encounter=self.encounter,
             status="in_progress",
-            code={"display": "Blood Test"},
+            title="Blood Test",
         )
         session = self._session()
 
@@ -99,7 +99,7 @@ class FetchProceduresTests(CareAPITestBase):
             patient=self.patient,
             facility=self.facility,
             encounter=self.encounter,
-            code={"display": "Staff Visible Procedure"},
+            title="Staff Visible Procedure",
         )
         staff_user = self.create_user()
         actor = Actor(user_type=ConversationSession.UserType.STAFF.value, instance=staff_user)
@@ -116,10 +116,10 @@ class FetchProceduresTests(CareAPITestBase):
             patient=self.patient, facility=self.facility, organization=self.organization
         )
         self.create_service_request(
-            patient=self.patient, facility=self.facility, encounter=self.encounter, code={"display": "This visit"}
+            patient=self.patient, facility=self.facility, encounter=self.encounter, title="This visit"
         )
         self.create_service_request(
-            patient=self.patient, facility=self.facility, encounter=other_encounter, code={"display": "Other visit"}
+            patient=self.patient, facility=self.facility, encounter=other_encounter, title="Other visit"
         )
 
         records = fetch_procedures(self._patient_actor(), self._session())
