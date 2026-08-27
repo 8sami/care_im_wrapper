@@ -103,8 +103,6 @@ _MESSAGES: dict[str, str] = {
     "page_hint_prev": "Send *p* for the previous page",
     "next_page": "Next page",
     "prev_page": "Previous page",
-    "menu_button": "Menu",
-    "nav_prompt": "What next?",
     "page_last": "You're already on the last page.",
     "page_first": "You're already on the first page.",
     "page_nothing_open": "Pick something from the menu first, then use *n* and *p* to page through it.",

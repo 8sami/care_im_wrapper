@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
 from typing import Any
 
 from django.db import transaction
@@ -23,6 +22,7 @@ from care_im_wrapper.conversation.replies import (
     Choice,
     choices_as_text,
     enumerate_choices,
+    fit_to_rows,
     join,
     menu_reply,
     picker_reply,
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 _PAGE_NEXT_TOKENS = frozenset({"n", "next", "page_next"})
 _PAGE_PREV_TOKENS = frozenset({"p", "prev", "previous", "page_prev"})
-_MENU_TOKENS = frozenset({"menu", "page_menu"})
+_MENU_TOKENS = frozenset({"menu"})
 _ALL_TOKENS = frozenset({"a", "all", "prescription_all"})
 _ENCOUNTER_PICKER_KEY = "enc"
 _PRESCRIPTION_PICKER_KEY = "rx"
@@ -414,7 +414,7 @@ def _run_option(
     outbox: list[Outbound],
     advance: bool = False,
 ) -> None:
-    """Runs one menu option's fetcher and sends its page, with the menu or paging buttons."""
+    """Runs one menu option's fetcher and sends its page, with the menu and any paging."""
     fetcher, renderer = option.fetcher, option.renderer
     if fetcher is None or renderer is None:
         logger.error("_run_option: option %s has no fetcher/renderer", menu_key)
@@ -527,6 +527,7 @@ def _run_patient_search(
         _list_line_budget(limits),
         int(plugin_settings.DATA_PAGE_MIN_RECORDS),
     )
+    page = fit_to_rows(page, limits, reserved_rows=1)
     session.record_shown(len(page.records))
     results = page.records
     if not results and page.number > 0:
@@ -537,29 +538,14 @@ def _run_patient_search(
     choices = _choices_for(results, _describe_patient, page.offset + 1, prefix="patient")
     session.offer([choice.candidate for choice in choices], ConversationSession.State.SELECTING_PATIENT)
 
-    prompt = _msg("patient_search_results")
-    section_title = _msg("patients_title")
-
-    # A short, unpaged result set fits on buttons -- one tap, no list to open. Anything
-    # longer, or anything paged, needs the list so every result stays selectable.
-    if not page.is_paginated and len(results) <= limits.max_buttons:
-        interactive = InteractivePayload(
-            type=InteractiveType.REPLY_BUTTONS,
-            body=prompt,
-            action_data=[row(choice.row_id, choice.title) for choice in choices],
-        )
-        text = join(choices_as_text(section_title, choices, limits.text_body), prompt)
-        outbox.append(Outbound(phone_number, OutboundMessage(text=text, interactive=interactive)))
-        return
-
     outbox.extend(
         picker_reply(
             phone_number,
             limits,
-            prompt=prompt,
+            prompt=_msg("patient_search_results"),
             choices=choices,
             button_label=_msg("select_patient"),
-            section_title=section_title,
+            section_title=_msg("patients_title"),
             page=page,
         )
     )
@@ -736,8 +722,7 @@ def _fetch_picker_page(
     what the provider's list and the reader's screen can both hold.
 
     `reserved_rows` is what the non-record rows (Back, and any All) take out of the budget.
-    Paging costs no rows of its own -- it rides on buttons -- unless the provider has none,
-    which is the only case where it has to come out of the same budget.
+    Paging comes out of the same budget, since it is rows in this same list.
     """
     limits = get_channel_limits(channel)
     if advance == 0:
@@ -756,15 +741,7 @@ def _fetch_picker_page(
         _list_line_budget(limits),
         int(plugin_settings.DATA_PAGE_MIN_RECORDS),
     )
-    paging_row_cost = 0 if limits.max_buttons else int(page.has_next) + int(page.has_previous)
-    max_records = max(1, limits.max_rows - reserved_rows - paging_row_cost)
-    if len(page.records) > max_records:
-        page = replace(
-            page,
-            records=page.records[:max_records],
-            source_weights=page.source_weights[:max_records],
-            has_next=True,
-        )
+    page = fit_to_rows(page, limits, reserved_rows=reserved_rows)
     session.record_shown(page.consumed())
     return page
 
@@ -933,7 +910,9 @@ def _enter_prescription_selection(
                 advance,
                 list_key=_PRESCRIPTION_PICKER_KEY,
                 section_title=_msg("prescriptions_title"),
-                reserved_rows=2,
+                # All, Back, and the row the medications' own paging takes: these same
+                # choices are redrawn beside the medicines, and that list pages.
+                reserved_rows=3,
             )
         except NoDataError:
             _show_all_prescriptions(session, actor, menu_key, option, phone_number, channel, outbox)
@@ -1207,18 +1186,11 @@ def _send_candidate_menu(phone_number: str, choices: list[Choice], channel: str,
         limits.text_body,
     )
 
-    if len(choices) <= limits.max_buttons:
-        interactive = InteractivePayload(
-            type=InteractiveType.REPLY_BUTTONS,
-            body=prompt,
-            action_data=[{"id": choice.row_id, "title": choice.title} for choice in choices],
-        )
-    else:
-        interactive = InteractivePayload(
-            type=InteractiveType.LIST,
-            body=prompt,
-            button_label=_msg("select"),
-            action_data=[{"title": _msg("accounts_title"), "rows": [choice.row for choice in choices]}],
-        )
+    interactive = InteractivePayload(
+        type=InteractiveType.LIST,
+        body=prompt,
+        button_label=_msg("select"),
+        action_data=[{"title": _msg("accounts_title"), "rows": [choice.row for choice in choices]}],
+    )
 
     outbox.append(Outbound(phone_number, OutboundMessage(text=plain_text, interactive=interactive)))

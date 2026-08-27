@@ -104,7 +104,6 @@ DEFAULTS = {
     "DEFAULT_MAX_MESSAGE_CHARS": 4096,
     "DEFAULT_MIN_SEND_INTERVAL_SECONDS": 0,
     "DEFAULT_MAX_INTERACTIVE_ROWS": 10,
-    "DEFAULT_MAX_REPLY_BUTTONS": 3,
     "DEFAULT_PREVIEW_LINE_LIMIT": 20,  # lines a client shows before folding behind "Read more"
     "DEFAULT_INTERACTIVE_BODY_CHAR_LIMIT": 1024,
     "DEFAULT_INTERACTIVE_HEADER_CHAR_LIMIT": 60,
@@ -151,7 +150,6 @@ DEFAULTS = {
     "PAGING_FOOTER_RESERVE_LINES": 4,
     "DATA_PAGE_MIN_RECORDS": 2,
     "WHATSAPP_LIST_ROW_LIMIT": 10,  # max rows across all sections of one interactive list
-    "WHATSAPP_REPLY_BUTTON_LIMIT": 3,  # max reply buttons on one interactive message
     # Fallback channel when a recipient has no prior ConversationSession to consult.
     "NOTIFICATION_DEFAULT_PROVIDER": Provider.WHATSAPP.value,
     # Beat sweep interval (seconds); real-time dispatch happens via on_commit, this is a safety net.

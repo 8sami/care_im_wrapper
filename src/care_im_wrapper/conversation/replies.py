@@ -10,20 +10,17 @@ want shown.
 Two shapes cover every reply:
 
 ``menu_reply``    the rows are chrome -- the menu, offered next to whatever was just shown.
-                  A paged reply hands them over to Previous/Next/Menu buttons, because
-                  navigation is what the reader reaches for next.
 ``picker_reply``  the rows are the point -- an encounter, a prescription, a report to choose.
-                  They have to stay selectable, so paging arrives on its own buttons message
-                  underneath.
 
-Either way paging is buttons. Rows carry it only for a provider with too few reply buttons to
-hold the controls, where the alternative is no paging affordance whatsoever.
+Either way paging rides in the rows, above whatever the list already holds, never as a
+message of its own.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from care_im_wrapper.conversation.messages import (
@@ -37,21 +34,17 @@ from care_im_wrapper.conversation.templates import _msg
 from care_im_wrapper.data.pagination import Page
 from care_im_wrapper.messaging.limits import ChannelLimits
 
+logger = logging.getLogger(__name__)
+
 Row = dict[str, str]
 
 PAGE_NEXT_ID = "page_next"
 PAGE_PREV_ID = "page_prev"
-PAGE_MENU_ID = "page_menu"
 BACK_ID = "0"
 
 
 def _fits_body(limits: ChannelLimits, text: str) -> bool:
     return len(text) <= limits.interactive_body
-
-
-def _fits_buttons(limits: ChannelLimits, buttons: Sequence[Row]) -> bool:
-    """Whether this set of buttons can be sent at all -- an empty set never can."""
-    return 0 < len(buttons) <= limits.max_buttons
 
 
 @dataclass(frozen=True)
@@ -142,21 +135,9 @@ def _moves(page: Page | None, order: tuple[tuple[str, str], ...]) -> list[Row]:
     return [row(row_id, _msg(key)) for row_id, key in order if available[(row_id, key)]]
 
 
-def navigation_buttons(page: Page | None, *, include_menu: bool = True) -> list[Row]:
-    """Previous/Next for the moves this page has, and Menu to leave the list.
-
-    A picker asks for `include_menu=False`: its rows already end in Back, and two ways out of
-    one message is one too many.
-    """
-    buttons = _moves(page, (_PREVIOUS, _NEXT))
-    if buttons and include_menu:
-        buttons.append(row(PAGE_MENU_ID, _msg("menu_button")))
-    return buttons
-
-
 def paging_rows(page: Page | None) -> list[Row]:
-    """Paging as list rows -- only for a provider without the buttons to put it on. Forward
-    first: a reader on page one is far likelier to want the next page than a previous one."""
+    """Paging as list rows, which is the only place it goes. Forward first: a reader on page
+    one is far likelier to want the next page than a previous one."""
     return _moves(page, (_NEXT, _PREVIOUS))
 
 
@@ -170,6 +151,28 @@ def paging_hint(page: Page | None) -> str:
     if page.has_previous:
         parts.append(_msg("page_hint_prev"))
     return "\n".join(parts)
+
+
+def fit_to_rows(page: Page, limits: ChannelLimits, *, reserved_rows: int) -> Page:
+    """Trims `page` to the records the provider's list has rows left for.
+
+    `reserved_rows` is what the non-record rows take out of the budget -- Back, and any
+    leading row such as All. Paging comes out of the same budget, since it is rows in this
+    same list.
+    """
+    max_records = max(1, limits.max_rows - reserved_rows - int(page.has_previous))
+    # Trimming a page is what gives it a next page, so the row that move needs costs the same
+    # either way -- charge for it before deciding how many records are left affordable.
+    if page.has_next or len(page.records) > max_records:
+        max_records = max(1, max_records - 1)
+    if len(page.records) <= max_records:
+        return page
+    return replace(
+        page,
+        records=page.records[:max_records],
+        source_weights=page.source_weights[:max_records],
+        has_next=True,
+    )
 
 
 def rows_as_text(rows: Sequence[Row]) -> str:
@@ -192,10 +195,6 @@ def _list_payload(body: str, rows: Sequence[Row], button_label: str, section_tit
     )
 
 
-def _buttons_payload(body: str, buttons: Sequence[Row]) -> InteractivePayload:
-    return InteractivePayload(type=InteractiveType.REPLY_BUTTONS, body=body, action_data=list(buttons))
-
-
 def menu_reply(
     phone_number: str,
     limits: ChannelLimits,
@@ -213,10 +212,6 @@ def menu_reply(
     `content` is that fetched data, or the explanation for why there is none. `prompt` is the
     line above the controls -- the scope the reader is in, and the invitation to choose.
     """
-    buttons = navigation_buttons(page)
-    if _fits_buttons(limits, buttons):
-        return _paged_reply(phone_number, limits, content=content, prompt=prompt, buttons=buttons, pace=pace)
-
     hint = paging_hint(page)
     with_paging = [*paging_rows(page), *rows]
     rows = with_paging if len(with_paging) <= limits.max_rows else list(rows)
@@ -236,28 +231,6 @@ def menu_reply(
         Outbound(
             phone_number, OutboundMessage(text=join(prompt, rows_as_text(rows)), interactive=trailing), pace=False
         ),
-    ]
-
-
-def _paged_reply(
-    phone_number: str,
-    limits: ChannelLimits,
-    *,
-    content: str,
-    prompt: str,
-    buttons: Sequence[Row],
-    pace: bool,
-) -> list[Outbound]:
-    """A paged list: the data, and Previous/Next/Menu to move through it."""
-    if _fits_body(limits, content):
-        return [
-            Outbound(
-                phone_number, OutboundMessage(text=content, interactive=_buttons_payload(content, buttons)), pace=pace
-            )
-        ]
-    return [
-        Outbound(phone_number, OutboundMessage(text=content), pace=pace),
-        Outbound(phone_number, OutboundMessage(text=prompt, interactive=_buttons_payload(prompt, buttons)), pace=False),
     ]
 
 
@@ -291,37 +264,31 @@ def picker_reply(
     choices by default so a picker can never go out as a question with no visible answers.
     `options_text` overrides that only where a caller has a richer rendering to offer.
     `content` is anything shown above them, such as the medications a prescription filter is
-    being applied to.
+    being applied to. Paging, when there is any, is rows in the same list as the choices.
     """
     if options_text is None:
         options_text = choices_as_text(section_title, choices, limits.text_body)
-    buttons = navigation_buttons(page, include_menu=False)
-    paged_on_buttons = _fits_buttons(limits, buttons)
 
-    rows = [*leading_rows, *(choice.row for choice in choices)]
-    if not paged_on_buttons:
-        rows = [*paging_rows(page), *rows]
+    rows = [*paging_rows(page), *leading_rows, *(choice.row for choice in choices)]
     # Back is the only way out of a picker, so it has to survive the provider's row cap.
-    # Trim the choices to leave room for it rather than letting the send boundary drop
-    # whatever fell off the end -- which is always Back, since it is appended last.
-    rows = rows[: max(0, limits.max_rows - 1)]
+    # Reaching here over the cap means the caller sized its page without `fit_to_rows`, and
+    # choices are about to be dropped that the reader can then only reach by typing.
+    if len(rows) >= limits.max_rows:
+        logger.warning(
+            "picker_reply: %d rows for a list that takes %d; %d choice(s) will have no row",
+            len(rows) + 1,
+            limits.max_rows,
+            len(rows) + 1 - limits.max_rows,
+        )
+        rows = rows[: max(0, limits.max_rows - 1)]
     rows.append(row(BACK_ID, _msg("back")))
 
-    hint = "" if paged_on_buttons else paging_hint(page)
+    hint = paging_hint(page)
     body = join(content, hint, prompt)
     if not _fits_body(limits, body):
         body = prompt
     payload = _list_payload(body, rows, button_label, section_title)
 
-    messages = [
+    return [
         Outbound(phone_number, OutboundMessage(text=join(content, options_text, hint, prompt), interactive=payload))
     ]
-    if paged_on_buttons:
-        messages.append(
-            Outbound(
-                phone_number,
-                OutboundMessage(text=_msg("nav_prompt"), interactive=_buttons_payload(_msg("nav_prompt"), buttons)),
-                pace=False,
-            )
-        )
-    return messages

@@ -57,7 +57,6 @@ class ChannelLimits:
     button_title: int
     list_button_label: int
     max_rows: int
-    max_buttons: int
     # Not a cap the provider rejects on, but the point its client folds a message behind a
     # "Read more". A page past it is delivered and unread, which is the same as lost.
     preview_lines: int
@@ -132,7 +131,6 @@ def whatsapp_limits() -> ChannelLimits:
         button_title=button_title,
         list_button_label=button_title,
         max_rows=int(plugin_settings.WHATSAPP_LIST_ROW_LIMIT),
-        max_buttons=int(plugin_settings.WHATSAPP_REPLY_BUTTON_LIMIT),
         preview_lines=int(plugin_settings.WHATSAPP_PREVIEW_LINE_LIMIT),
         template_parameter=int(plugin_settings.WHATSAPP_TEMPLATE_PARAMETER_CHAR_LIMIT),
     )
@@ -155,7 +153,6 @@ def default_limits() -> ChannelLimits:
         button_title=button_title,
         list_button_label=button_title,
         max_rows=int(plugin_settings.DEFAULT_MAX_INTERACTIVE_ROWS),
-        max_buttons=int(plugin_settings.DEFAULT_MAX_REPLY_BUTTONS),
         preview_lines=int(plugin_settings.DEFAULT_PREVIEW_LINE_LIMIT),
         template_parameter=int(plugin_settings.DEFAULT_TEMPLATE_PARAMETER_CHAR_LIMIT),
     )

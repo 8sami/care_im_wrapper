@@ -8,7 +8,6 @@ from care_im_wrapper.models.notification import NotificationStatusState
 
 
 class InteractiveType(StrEnum):
-    REPLY_BUTTONS = "button"
     LIST = "list"
     CTA_URL = "cta_url"
 
@@ -20,18 +19,16 @@ class InteractivePayload:
     Providers translate it into their own shape, or fall back to plain text.
 
     action_data shapes by type:
-      REPLY_BUTTONS → [{"id": str, "title": str}, ...]
-      LIST          → [{"title": str, "rows": [{"id": str, "title": str,
-                        "description": str | None}, ...]}, ...]
-      CTA_URL       → [{"display_text": str, "url": str}]            exactly 1 item
+      LIST    → [{"title": str, "rows": [{"id": str, "title": str,
+                  "description": str | None}, ...]}, ...]
+      CTA_URL → [{"display_text": str, "url": str}]            exactly 1 item
 
-    How many buttons or rows a channel will take is not fixed here -- it is
-    `ChannelLimits.max_buttons` / `max_rows`, which callers read via
-    `registry.get_channel_limits`.
+    How many rows a channel will take is not fixed here -- it is `ChannelLimits.max_rows`,
+    which callers read via `registry.get_channel_limits`.
     """
 
     type: InteractiveType
-    body: str  # prompt text shown above the buttons
+    body: str  # prompt text shown above the rows
     action_data: list[dict[str, Any]] = field(default_factory=list)
     button_label: str = "View Options"  # list open-button label (LIST type only)
     footer: str | None = None

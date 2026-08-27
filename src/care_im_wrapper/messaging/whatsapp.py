@@ -185,24 +185,7 @@ class WhatsAppClient:
         limits = self.limits
         interactive_obj: dict[str, Any]
 
-        if iv.type == InteractiveType.REPLY_BUTTONS:
-            buttons = [
-                {
-                    "type": "reply",
-                    "reply": {
-                        "id": str(b["id"])[:_INTERACTIVE_ID_MAX_CHARS],
-                        "title": clamp(b["title"], limits.button_title),
-                    },
-                }
-                for b in iv.action_data[: limits.max_buttons]
-            ]
-            interactive_obj = {
-                "type": "button",
-                "body": {"text": clamp(iv.body, limits.interactive_body)},
-                "action": {"buttons": buttons},
-            }
-
-        elif iv.type == InteractiveType.LIST:
+        if iv.type == InteractiveType.LIST:
             sections = []
             total_rows = 0
             for section in iv.action_data:
