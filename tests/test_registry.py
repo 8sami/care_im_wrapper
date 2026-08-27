@@ -61,7 +61,7 @@ class SendMessageTests(SimpleTestCase):
         with patch.dict(registry._PROVIDERS, {"fake": lambda: fake_client}, clear=True):
             msg = OutboundMessage(
                 text="hi",
-                interactive=InteractivePayload(type=InteractiveType.REPLY_BUTTONS, body="test"),
+                interactive=InteractivePayload(type=InteractiveType.LIST, body="test"),
             )
             registry.send_message("fake", "+919876543210", msg)
             fake_client.send_text.assert_called_once_with("+919876543210", "hi")
@@ -73,7 +73,7 @@ class SendMessageTests(SimpleTestCase):
         with patch.dict(registry._PROVIDERS, {"fake": lambda: fake_client}, clear=True):
             msg = OutboundMessage(
                 text="hi",
-                interactive=InteractivePayload(type=InteractiveType.REPLY_BUTTONS, body="test"),
+                interactive=InteractivePayload(type=InteractiveType.LIST, body="test"),
             )
             registry.send_message("fake", "+919876543210", msg)
             fake_client.send_interactive.assert_called_once_with("+919876543210", msg)
@@ -95,7 +95,7 @@ class SendMessageTests(SimpleTestCase):
         with patch.dict(registry._PROVIDERS, {"fake": lambda: fake_client}, clear=True):
             msg = OutboundMessage(
                 text="hi",
-                interactive=InteractivePayload(type=InteractiveType.REPLY_BUTTONS, body="test"),
+                interactive=InteractivePayload(type=InteractiveType.LIST, body="test"),
             )
             registry.send_message("fake", "+919876543210", msg)
             fake_client.send_interactive.assert_called_once_with("+919876543210", msg)
@@ -150,7 +150,7 @@ class SendMessageInteractiveFallbackTests(SimpleTestCase):
         cache.clear()
         self.msg = OutboundMessage(
             text="fallback text",
-            interactive=InteractivePayload(type=InteractiveType.REPLY_BUTTONS, body="pick", action_data=[]),
+            interactive=InteractivePayload(type=InteractiveType.LIST, body="pick", action_data=[]),
         )
 
     def _send_with(self, interactive_error):

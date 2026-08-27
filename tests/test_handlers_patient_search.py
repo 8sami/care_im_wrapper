@@ -8,6 +8,7 @@ from care_im_wrapper.conversation.messages import InteractiveType
 from care_im_wrapper.data.exceptions import NoDataError, PermissionDeniedError
 from care_im_wrapper.data.pagination import Page
 from care_im_wrapper.models import ConversationSession
+from tests.utils import channel_limits
 
 
 def _page(records, *, has_next=False, number=0):
@@ -75,7 +76,7 @@ class HandleAwaitingPatientSearchTests(TestCase):
 
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")
     @patch("care_im_wrapper.conversation.handlers.patient_lookup.search_patients")
-    def test_three_or_fewer_results_uses_reply_buttons_and_saves_candidates(self, mock_search, mock_resolve_actor):
+    def test_a_short_result_set_still_uses_the_list_and_saves_candidates(self, mock_search, mock_resolve_actor):
         mock_resolve_actor.return_value = _make_actor()
         results = [
             {"id": 1, "external_id": "ext-1", "name": "Jane Doe", "phone_number": "+919****3210"},
@@ -95,22 +96,23 @@ class HandleAwaitingPatientSearchTests(TestCase):
         self.assertEqual(item.phone_number, PHONE)
         call_msg = item.message
 
-        # The plain-text half lists the same two results the buttons carry.
+        # The plain-text half lists the same two results the rows carry.
         self.assertIn("1.  Jane Doe", call_msg.text)
         self.assertIn("+919****3210", call_msg.text)
         self.assertIn("2.  John Roe", call_msg.text)
-        self.assertEqual(call_msg.interactive.type, InteractiveType.REPLY_BUTTONS)
+        self.assertEqual(call_msg.interactive.type, InteractiveType.LIST)
         self.assertEqual(
-            call_msg.interactive.action_data,
+            call_msg.interactive.action_data[0]["rows"],
             [
-                {"id": "patient_0", "title": "Jane Doe"},
-                {"id": "patient_1", "title": "John Roe"},
+                {"id": "patient_0", "title": "Jane Doe", "description": "+919****3210"},
+                {"id": "patient_1", "title": "John Roe", "description": "+911****1111"},
+                {"id": "0", "title": "Back to menu"},
             ],
         )
 
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")
     @patch("care_im_wrapper.conversation.handlers.patient_lookup.search_patients")
-    def test_more_than_three_results_uses_list_with_descriptions(self, mock_search, mock_resolve_actor):
+    def test_a_longer_result_set_lists_every_match_with_its_number(self, mock_search, mock_resolve_actor):
         mock_resolve_actor.return_value = _make_actor()
         results = [
             {"id": i, "external_id": f"ext-{i}", "name": f"Patient {i}", "phone_number": f"+91********{i:02d}"}
@@ -128,3 +130,25 @@ class HandleAwaitingPatientSearchTests(TestCase):
         # The four results, then the back row every picker ends on.
         self.assertEqual([r["id"] for r in rows], ["patient_0", "patient_1", "patient_2", "patient_3", "0"])
         self.assertEqual(rows[0], {"id": "patient_0", "title": "Patient 0", "description": "+91********00"})
+
+    @patch("care_im_wrapper.conversation.handlers.resolve_actor")
+    @patch("care_im_wrapper.conversation.handlers.patient_lookup.search_patients")
+    def test_a_full_page_of_results_keeps_a_row_for_every_result_it_offers(self, mock_search, mock_resolve_actor):
+        """A result offered with no row is one the reader can only reach by typing. The page
+        ends where the list runs out of rows, and the rest is one page away."""
+        mock_resolve_actor.return_value = _make_actor()
+        results = [
+            {"id": i, "external_id": f"ext-{i}", "name": f"Patient {i}", "phone_number": f"+91********{i:02d}"}
+            for i in range(10)
+        ]
+        mock_search.return_value = _page(results)
+        outbox: list[Outbound] = []
+
+        _handle_awaiting_patient_search(self.session, PHONE, "Patient", CHANNEL, outbox)
+
+        self.session.refresh_from_db()
+        rows = [r["id"] for r in outbox[0].message.interactive.action_data[0]["rows"]]
+        offered = [c["row_id"] for c in self.session.candidates]
+        self.assertLess(len(offered), len(results))
+        self.assertEqual(rows, ["page_next", *offered, "0"])
+        self.assertLessEqual(len(rows), channel_limits().max_rows)

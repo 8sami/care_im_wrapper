@@ -288,7 +288,7 @@ def _handle_ambiguous(
 
     match = session.select(choice)
     if match is None:
-        outbox.append(Outbound(phone_number, _msg("invalid_choice")))
+        _reprompt(session, phone_number, channel, outbox)
         return
 
     session.authenticate(
@@ -380,7 +380,7 @@ def _handle_authenticated(
     option = menu.get(choice)
 
     if option is None:
-        outbox.append(Outbound(phone_number, _msg("invalid_choice")))
+        _reprompt(session, phone_number, channel, outbox)
         return
 
     if option.action is Action.PATIENT_SEARCH:
@@ -439,12 +439,12 @@ def _run_option(
         if page is not None:
             page = fit_to_budget(
                 page,
-                lambda rows: renderer(rows, _UNBOUNDED_CHARS, page.offset + 1, header=header).text,
+                lambda rows: renderer(rows, _UNBOUNDED_CHARS, page.display_start, header=header).text,
                 budget,
                 _list_line_budget(limits),
                 int(plugin_settings.DATA_PAGE_MIN_RECORDS),
             )
-            session.record_shown(page.consumed())
+            session.record_shown(page.consumed(), len(page.records))
         records = page.records if page is not None else data
 
         if page is not None and not records and page.number > 0:
@@ -456,7 +456,7 @@ def _run_option(
             start = 1
             renderer_msg = renderer(records, limits.text_body, header=header)
         else:
-            start = page.offset + 1
+            start = page.display_start
             renderer_msg = renderer(records, budget, start, header=header)
 
         if option.document_resolver is not None and _enter_document_selection(
@@ -583,7 +583,7 @@ def _handle_selecting_patient(
 
     selected = session.select(choice)
     if selected is None:
-        outbox.append(Outbound(phone_number, _msg("invalid_choice")))
+        _reprompt(session, phone_number, channel, outbox)
         return
 
     # The name rides along on the session: every later reply names whose records these are.
@@ -659,7 +659,7 @@ def _handle_selecting_document(
 
     selected = session.select(choice)
     if selected is None:
-        outbox.append(Outbound(phone_number, _msg("invalid_choice")))
+        _reprompt(session, phone_number, channel, outbox)
         return
 
     option = menu_for(session).get(selected["menu_key"])
@@ -742,7 +742,7 @@ def _fetch_picker_page(
         int(plugin_settings.DATA_PAGE_MIN_RECORDS),
     )
     page = fit_to_rows(page, limits, reserved_rows=reserved_rows)
-    session.record_shown(page.consumed())
+    session.record_shown(page.consumed(), len(page.records))
     return page
 
 
@@ -875,7 +875,7 @@ def _handle_selecting_encounter(
 
     selected = session.select(choice)
     if selected is None:
-        outbox.append(Outbound(phone_number, _msg("invalid_choice")))
+        _reprompt(session, phone_number, channel, outbox)
         return
 
     # Reaching the picker at all means there was more than one to choose from.
@@ -1020,12 +1020,12 @@ def _show_medications_keeping_picker(
         page = fetcher(actor, session)
         page = fit_to_budget(
             page,
-            lambda rows: renderer(rows, _UNBOUNDED_CHARS, page.offset + 1, header=header).text,
+            lambda rows: renderer(rows, _UNBOUNDED_CHARS, page.display_start, header=header).text,
             budget,
             _list_line_budget(limits),
             int(plugin_settings.DATA_PAGE_MIN_RECORDS),
         )
-        session.record_shown(page.consumed())
+        session.record_shown(page.consumed(), len(page.records))
 
         if not page.records and page.number > 0:
             session.back_page()
@@ -1041,7 +1041,7 @@ def _show_medications_keeping_picker(
                 button_label=_msg("select_prescription"),
                 section_title=_msg("prescriptions_title"),
                 leading_rows=[_all_prescriptions_row()],
-                content=renderer(page.records, budget, page.offset + 1, header=header).text,
+                content=renderer(page.records, budget, page.display_start, header=header).text,
                 page=page,
             )
         )
@@ -1091,7 +1091,7 @@ def _handle_selecting_prescription(
 
     selected = session.select(choice)
     if selected is None:
-        outbox.append(Outbound(phone_number, _msg("invalid_choice")))
+        _reprompt(session, phone_number, channel, outbox)
         return
 
     session.set_prescription_scope(selected["external_id"], selected["title"])
@@ -1147,6 +1147,63 @@ def _menu_section_title(session: ConversationSession) -> str:
     return _msg("encounter_menu_title") if _in_encounter(session) else _msg("menu_title")
 
 
+#: prompt / list-button / section message keys, per picker state, so an unrecognised reply can
+#: put the same rows back on screen.
+_PICKER_REDRAW: dict[str, tuple[str, str, str]] = {
+    ConversationSession.State.SELECTING_PATIENT: ("patient_search_results", "select_patient", "patients_title"),
+    ConversationSession.State.SELECTING_DOCUMENT: ("select_document_prompt", "select_document", "documents_title"),
+    ConversationSession.State.SELECTING_ENCOUNTER: ("select_encounter_prompt", "select_encounter", "encounters_title"),
+    ConversationSession.State.SELECTING_PRESCRIPTION: (
+        "select_prescription_prompt",
+        "select_prescription",
+        "prescriptions_title",
+    ),
+}
+
+
+def _reprompt(session: ConversationSession, phone_number: str, channel: str, outbox: list[Outbound]) -> None:
+    """Answers an unrecognised reply with the choices it failed to pick from.
+
+    The rows come back from what the session stored when they were offered, so nothing is
+    re-fetched and a row still means what it meant on screen. Paging rows are not among them:
+    whether there is a next page is known only to the fetch that drew it, and re-running that
+    fetch would reset the reader to the first page. The typed `n`/`p` still page.
+    """
+    note = _msg("invalid_choice")
+    state = session.state
+
+    if state == ConversationSession.State.AMBIGUOUS:
+        choices = [Choice.from_candidate(candidate) for candidate in session.candidates or []]  # pyright: ignore[reportGeneralTypeIssues]
+        if choices:
+            _send_candidate_menu(phone_number, choices, channel, outbox, prefix=note)
+            return
+
+    elif state in _PICKER_REDRAW:
+        choices = [Choice.from_candidate(candidate) for candidate in session.candidates or []]  # pyright: ignore[reportGeneralTypeIssues]
+        if choices:
+            prompt_key, button_key, section_key = _PICKER_REDRAW[state]
+            leading = [_all_prescriptions_row()] if state == ConversationSession.State.SELECTING_PRESCRIPTION else []
+            outbox.extend(
+                picker_reply(
+                    phone_number,
+                    get_channel_limits(channel),
+                    prompt=_msg(prompt_key),
+                    choices=choices,
+                    button_label=_msg(button_key),
+                    section_title=_msg(section_key),
+                    leading_rows=leading,
+                    content=note,
+                )
+            )
+            return
+
+    elif state == ConversationSession.State.AUTHENTICATED:
+        _send_menu(session, phone_number, channel, outbox, prefix=note)
+        return
+
+    outbox.append(Outbound(phone_number, note))
+
+
 def _send_menu(
     session: ConversationSession,
     phone_number: str,
@@ -1175,11 +1232,17 @@ def _send_menu(
     )
 
 
-def _send_candidate_menu(phone_number: str, choices: list[Choice], channel: str, outbox: list[Outbound]) -> None:
+def _send_candidate_menu(
+    phone_number: str,
+    choices: list[Choice],
+    channel: str,
+    outbox: list[Outbound],
+    prefix: str = "",
+) -> None:
     """The accounts one phone number resolves to. Never paged -- one number maps to a handful
     of identities at most, so this stays a single message either way."""
     limits = get_channel_limits(channel)
-    prompt = _msg("select_account")
+    prompt = join(prefix, _msg("select_account"))
     plain_text = numbered_block(
         prompt,
         [_msg("account_line", name=choice.title, user_type=choice.description) for choice in choices],

@@ -10,10 +10,9 @@ from care_im_wrapper.conversation.handlers import (
     _paging_step,
 )
 from care_im_wrapper.conversation.menus import MenuOption
-from care_im_wrapper.conversation.replies import navigation_buttons, paging_rows
-from care_im_wrapper.data.pagination import Page, current_offset
+from care_im_wrapper.conversation.replies import paging_rows
+from care_im_wrapper.data.pagination import Page, current_offset, current_record_offset
 from care_im_wrapper.models import ConversationSession
-from tests.utils import channel_limits
 
 PHONE = "+919876543210"
 CHANNEL = "whatsapp"
@@ -56,31 +55,17 @@ class PagingStepTests(TestCase):
 
 
 class NavigationControlsTests(TestCase):
-    """Paging is buttons. Rows are the fallback for a provider that has no buttons at all."""
+    """Paging is rows in the list it pages, on every provider."""
 
     def test_no_controls_when_there_is_nowhere_to_go(self):
-        self.assertEqual(navigation_buttons(_page([1])), [])
         self.assertEqual(paging_rows(_page([1])), [])
 
-    def test_first_page_offers_next_then_menu(self):
-        self.assertEqual([b["id"] for b in navigation_buttons(_page([1], has_next=True))], ["page_next", "page_menu"])
+    def test_the_first_page_offers_only_the_move_it_has(self):
+        self.assertEqual([r["id"] for r in paging_rows(_page([1], has_next=True))], ["page_next"])
 
-    def test_a_middle_page_offers_both_directions(self):
-        buttons = navigation_buttons(_page([1], number=1, has_next=True))
-
-        self.assertEqual([b["id"] for b in buttons], ["page_prev", "page_next", "page_menu"])
-
-    def test_a_picker_leaves_out_menu_because_its_rows_already_end_in_back(self):
-        buttons = navigation_buttons(_page([1], number=1, has_next=True), include_menu=False)
-
-        self.assertEqual([b["id"] for b in buttons], ["page_prev", "page_next"])
-
-    def test_a_provider_with_too_few_buttons_falls_back_to_rows(self):
-        """Three controls will not fit on two buttons, so they become rows instead -- the
-        reader is never left on a paged list with no way off it."""
+    def test_a_middle_page_offers_both_directions_forward_first(self):
         middle = _page([1], number=1, has_next=True)
 
-        self.assertGreater(len(navigation_buttons(middle)), channel_limits(max_buttons=2).max_buttons)
         self.assertEqual([r["id"] for r in paging_rows(middle)], ["page_next", "page_prev"])
 
 
@@ -184,3 +169,62 @@ class MenuPagingTests(TestCase):
 
         self.assertEqual(self.session.data_page, 0)
         self.assertEqual(self.session.data_menu_choice, "")
+
+
+class RecordNumberingAcrossPagesTests(TestCase):
+    """The two stacks that page a list: source rows to resume the fetch, records to number it.
+
+    They differ only for a grouped fetcher, where one record carries several source rows.
+    """
+
+    def setUp(self):
+        self.session = ConversationSession.objects.create(
+            phone_number=PHONE,
+            provider=CHANNEL,
+            state=ConversationSession.State.AUTHENTICATED,
+            user_type="patient",
+            user_id=42,
+        )
+
+    def _shown(self, rows: int, records: int) -> None:
+        self.session.record_shown(rows, records)
+        self.session.advance_page(self.session.next_offset())
+
+    def test_the_offset_follows_rows_and_the_numbering_follows_records(self):
+        """One prescription of four medications is four rows but a single printed entry."""
+        self._shown(rows=5, records=2)
+
+        self.assertEqual(current_offset(self.session), 5)
+        self.assertEqual(current_record_offset(self.session), 2)
+
+    def test_the_count_accumulates_over_several_pages(self):
+        self._shown(rows=5, records=2)
+        self._shown(rows=3, records=3)
+
+        self.assertEqual(current_record_offset(self.session), 5)
+
+    def test_paging_back_restores_the_earlier_count(self):
+        self._shown(rows=5, records=2)
+        self._shown(rows=3, records=3)
+
+        self.session.back_page()
+
+        self.assertEqual(current_offset(self.session), 5)
+        self.assertEqual(current_record_offset(self.session), 2)
+
+    def test_opening_a_list_starts_the_count_over(self):
+        self._shown(rows=5, records=2)
+
+        self.session.open_data_list("2")
+
+        self.assertEqual(current_record_offset(self.session), 0)
+        self.assertEqual(self.session.data_records_shown, 0)
+
+    def test_an_ungrouped_page_keeps_the_two_in_step(self):
+        """`record_shown` defaults the record count to the row count, so a flat list is
+        numbered exactly as it was before the record stack existed."""
+        self.session.record_shown(4)
+        self.session.advance_page(self.session.next_offset())
+
+        self.assertEqual(current_offset(self.session), 4)
+        self.assertEqual(current_record_offset(self.session), 4)

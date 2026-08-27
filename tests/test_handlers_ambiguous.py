@@ -9,7 +9,7 @@ from care_im_wrapper.models import ConversationSession
 PHONE = "+919876543210"
 CHANNEL = "whatsapp"
 
-INVALID = "Please reply with a valid number from the list."
+INVALID = "Sorry, that wasn't one of the options. Please pick one from the list below."
 
 IDENTITY_A = {
     "user_type": "patient",
@@ -37,6 +37,14 @@ def _candidates():
             start=1,
         )
     ]
+
+
+def _assert_reprompted(case, outbox):
+    """An unrecognised reply puts the accounts back on screen rather than ending in text."""
+    [sent] = outbox
+    case.assertIn(INVALID, sent.message.text)
+    rows = sent.message.interactive.action_data[0]["rows"]
+    case.assertEqual([r["id"] for r in rows], ["candidate_0", "candidate_1"])
 
 
 class HandleAmbiguousTests(TestCase):
@@ -85,13 +93,13 @@ class HandleAmbiguousTests(TestCase):
 
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.AMBIGUOUS)
-        self.assertEqual(outbox, [Outbound(PHONE, INVALID)])
+        _assert_reprompted(self, outbox)
 
     def test_non_digit_non_candidate_text_sends_invalid_choice(self):
         outbox: list[Outbound] = []
         _handle_ambiguous(self.session, PHONE, "hello", CHANNEL, outbox)
 
-        self.assertEqual(outbox, [Outbound(PHONE, INVALID)])
+        _assert_reprompted(self, outbox)
 
     def test_a_row_id_past_the_end_sends_invalid_choice(self):
         outbox: list[Outbound] = []
@@ -99,17 +107,17 @@ class HandleAmbiguousTests(TestCase):
 
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.AMBIGUOUS)
-        self.assertEqual(outbox, [Outbound(PHONE, INVALID)])
+        _assert_reprompted(self, outbox)
 
     def test_zero_is_not_an_account_here(self):
         """Numbering starts at 1, so "0" matches no token and no row id."""
         outbox: list[Outbound] = []
         _handle_ambiguous(self.session, PHONE, "0", CHANNEL, outbox)
 
-        self.assertEqual(outbox, [Outbound(PHONE, INVALID)])
+        _assert_reprompted(self, outbox)
 
     def test_a_negative_row_id_sends_invalid_choice(self):
         outbox: list[Outbound] = []
         _handle_ambiguous(self.session, PHONE, "candidate_-1", CHANNEL, outbox)
 
-        self.assertEqual(outbox, [Outbound(PHONE, INVALID)])
+        _assert_reprompted(self, outbox)

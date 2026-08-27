@@ -22,7 +22,6 @@ from care_im_wrapper.data.common import ALL_PRESCRIPTIONS
 from care_im_wrapper.data.pagination import Page
 from care_im_wrapper.data.records import EncounterRecord, PrescriptionChoiceRecord, ProcedureRecord
 from care_im_wrapper.models import ConversationSession
-from tests.utils import patched_limits
 
 PHONE = "+919876543210"
 CHANNEL = "whatsapp"
@@ -165,9 +164,9 @@ class EncounterPickerTests(TestCase):
 
         self.assertEqual(self.session.data_page, 1)
         self.assertEqual(self.session.state, ConversationSession.State.SELECTING_ENCOUNTER)
-        self.assertIn("encounter_0", [r["id"] for r in _rows(outbox[0].message)])
-        # Paging is a buttons message of its own, so the rows stay entirely selectable.
-        self.assertEqual([b["id"] for b in outbox[1].message.interactive.action_data], ["page_prev", "page_next"])
+        self.assertEqual(len(outbox), 1)
+        row_ids = [r["id"] for r in _rows(outbox[0].message)]
+        self.assertEqual(row_ids, ["page_next", "page_prev", "encounter_0", "0"])
 
     def test_numbering_continues_across_pages(self):
         """Row ids restart per page, but the printed numbers do not -- and a typed number has
@@ -502,11 +501,9 @@ class PrescriptionPickerTests(TestCase):
         outbox = select("a")
 
         self.assertEqual(self.session.active_prescription_external_id, ALL_PRESCRIPTIONS)
-        # The rows stay purely selectable: paging rides on a second, buttons-only message.
+        self.assertEqual(len(outbox), 1)
         row_ids = [r["id"] for r in _rows(outbox[0].message)]
-        self.assertEqual(row_ids, ["prescription_all", "prescription_0", "prescription_1", "0"])
-        self.assertEqual([b["id"] for b in outbox[1].message.interactive.action_data], ["page_next"])
-        self.assertFalse(outbox[1].pace)
+        self.assertEqual(row_ids, ["page_next", "prescription_all", "prescription_0", "prescription_1", "0"])
 
         # Paging advances the medications, not the prescription list, and stays in the picker.
         select("n")
@@ -619,8 +616,8 @@ class PrescriptionPickerTests(TestCase):
 
 
 class PaginatedDataListTests(TestCase):
-    """A data list carries navigation as reply buttons: Previous/Next when paged, and always
-    Menu. Paging is on the buttons, not the list rows or the body text."""
+    """A data list carries navigation in its own rows: Previous/Next lead the menu options
+    when the list is paged. Nothing follows it as a second message."""
 
     def setUp(self):
         self.session = ConversationSession.objects.create(
@@ -631,8 +628,8 @@ class PaginatedDataListTests(TestCase):
             user_id=42,
         )
 
-    def _buttons(self, message):
-        return [b["id"] for b in message.interactive.action_data]
+    def _row_ids(self, message):
+        return [r["id"] for r in _rows(message)]
 
     def _run(self, page):
         option = MenuOption(
@@ -649,17 +646,16 @@ class PaginatedDataListTests(TestCase):
         self.session.refresh_from_db()
         return outbox
 
-    def test_first_page_offers_next_then_menu_and_no_previous(self):
+    def test_first_page_offers_next_above_the_menu_and_no_previous(self):
         outbox = self._run(_page(["a"], has_next=True))
 
         self.assertEqual(len(outbox), 1)
         message = outbox[0].message
-        self.assertEqual(message.interactive.type, InteractiveType.REPLY_BUTTONS)
-        self.assertEqual(self._buttons(message), ["page_next", "page_menu"])
-        # Paging affordance is the buttons, not a hint dumped in the body.
-        self.assertNotIn("Send", message.interactive.body)
+        self.assertEqual(message.interactive.type, InteractiveType.LIST)
+        self.assertEqual(self._row_ids(message), ["page_next", "2", "0"])
+        self.assertIn("Send *n*", message.interactive.body)
 
-    def test_a_middle_page_offers_previous_next_and_menu(self):
+    def test_a_middle_page_offers_both_directions_above_the_menu(self):
         self.session.open_data_list("2")
         self.session.advance_page(10)
 
@@ -675,46 +671,22 @@ class PaginatedDataListTests(TestCase):
         ):
             _handle_authenticated(self.session, PHONE, "n", CHANNEL, outbox)
 
-        self.assertEqual(self._buttons(outbox[0].message), ["page_prev", "page_next", "page_menu"])
+        self.assertEqual(self._row_ids(outbox[0].message), ["page_next", "page_prev", "2", "0"])
 
     def test_an_unpaginated_list_keeps_the_view_menu_list(self):
-        """No pagination -> no buttons; the reply is the View Menu interactive list, with
-        the menu option and Logout in its rows."""
+        """No pagination -> no paging rows; the reply is the View Menu interactive list,
+        with the menu option and Logout in its rows."""
         outbox = self._run(_page(["a"]))
 
         message = outbox[0].message
         self.assertEqual(message.interactive.type, InteractiveType.LIST)
         self.assertEqual([r["id"] for r in _rows(message)], ["2", "0"])
 
-    def test_the_menu_button_reopens_the_menu(self):
-        self._run(_page(["a"], has_next=True))
+    def test_the_menu_is_still_reachable_from_a_paged_list(self):
+        outbox = self._run(_page(["a"], has_next=True))
 
-        outbox: list[Outbound] = []
-        with patch("care_im_wrapper.conversation.handlers.resolve_actor", return_value=_make_actor()):
-            _handle_authenticated(self.session, PHONE, "page_menu", CHANNEL, outbox)
-
-        self.assertEqual(outbox[0].message.interactive.type, InteractiveType.LIST)
+        self.assertIn("2", self._row_ids(outbox[0].message))
         self.assertIn("Please choose an option:", outbox[0].message.text)
-
-    def test_a_provider_without_reply_buttons_falls_back_to_the_list(self):
-        option = MenuOption(
-            label="Appointments",
-            fetcher=MagicMock(return_value=_page(["a"], has_next=True)),
-            renderer=MagicMock(return_value=OutboundMessage(text="Your recent appointments:")),
-        )
-        outbox: list[Outbound] = []
-        with (
-            patch("care_im_wrapper.conversation.handlers.resolve_actor", return_value=_make_actor()),
-            patched_limits(max_buttons=0),
-            patch.dict("care_im_wrapper.conversation.menus._MAIN_MENU", {"2": option}, clear=True),
-        ):
-            _handle_authenticated(self.session, PHONE, "2", CHANNEL, outbox)
-
-        message = outbox[0].message
-        self.assertEqual(message.interactive.type, InteractiveType.LIST)
-        # Fallback puts paging in the rows and the typed hint in the text.
-        self.assertIn("page_next", [r["id"] for r in _rows(message)])
-        self.assertIn("Page 1", message.text)
 
 
 class SessionScopeFieldTests(TestCase):

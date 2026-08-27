@@ -141,14 +141,17 @@ def paging_rows(page: Page | None) -> list[Row]:
     return _moves(page, (_NEXT, _PREVIOUS))
 
 
-def paging_hint(page: Page | None) -> str:
-    """Which page this is and the typed commands that move off it. Works on any provider."""
+def paging_hint(page: Page | None, *, commands: bool = True) -> str:
+    """Which page this is and the typed commands that move off it. Works on any provider.
+
+    `commands=False` keeps only which page this is, for a body too full to hold the rest.
+    """
     if page is None or not page.is_paginated:
         return ""
     parts = [_msg("page_indicator", page=page.display_number)]
-    if page.has_next:
+    if commands and page.has_next:
         parts.append(_msg("page_hint_next"))
-    if page.has_previous:
+    if commands and page.has_previous:
         parts.append(_msg("page_hint_prev"))
     return "\n".join(parts)
 
@@ -186,6 +189,21 @@ def join(*parts: str) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
+def _body_that_fits(limits: ChannelLimits, content: str, page: Page | None, prompt: str) -> str | None:
+    """The fullest body within the provider's limit, or None if even the data alone is over.
+
+    What gives way does so in order of what the reader can least afford to lose. The typed
+    commands go first -- paging is rows in this same list, so they are a convenience, and they
+    survive in the plain-text half. Which page this is goes next, since without it a reader
+    deep in a list has no idea where they are. The data goes only if nothing else will do.
+    """
+    for hint in (paging_hint(page), paging_hint(page, commands=False), ""):
+        body = join(content, hint, prompt)
+        if _fits_body(limits, body):
+            return body
+    return None
+
+
 def _list_payload(body: str, rows: Sequence[Row], button_label: str, section_title: str) -> InteractivePayload:
     return InteractivePayload(
         type=InteractiveType.LIST,
@@ -216,11 +234,11 @@ def menu_reply(
     with_paging = [*paging_rows(page), *rows]
     rows = with_paging if len(with_paging) <= limits.max_rows else list(rows)
 
-    body = join(content, hint, prompt)
-    full_text = join(body, rows_as_text(rows))
-    payload = _list_payload(body, rows, button_label, section_title)
+    full_text = join(content, hint, prompt, rows_as_text(rows))
 
-    if _fits_body(limits, body):
+    body = _body_that_fits(limits, content, page, prompt)
+    if body is not None:
+        payload = _list_payload(body, rows, button_label, section_title)
         return [Outbound(phone_number, OutboundMessage(text=full_text, interactive=payload), pace=pace)]
 
     # Over the body limit the send degrades to plain text and the rows would go with it, so
@@ -284,9 +302,7 @@ def picker_reply(
     rows.append(row(BACK_ID, _msg("back")))
 
     hint = paging_hint(page)
-    body = join(content, hint, prompt)
-    if not _fits_body(limits, body):
-        body = prompt
+    body = _body_that_fits(limits, content, page, prompt) or prompt
     payload = _list_payload(body, rows, button_label, section_title)
 
     return [

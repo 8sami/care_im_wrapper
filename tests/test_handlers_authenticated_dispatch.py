@@ -61,14 +61,18 @@ class HandleAuthenticatedMenuDispatchTests(TestCase):
         )
 
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")
-    def test_choice_not_in_menu_sends_invalid_choice(self, mock_resolve_actor):
+    def test_choice_not_in_menu_sends_the_menu_back_with_the_note(self, mock_resolve_actor):
+        """The reader gets the options again, not a line of text with nothing to tap."""
         mock_resolve_actor.return_value = _make_actor()
+        menu = {"7": MenuOption(label="Patient lookup", action=Action.PATIENT_SEARCH)}
         outbox: list[Outbound] = []
 
-        with patch.dict("care_im_wrapper.conversation.menus._MAIN_MENU", {}, clear=True):
+        with patch.dict("care_im_wrapper.conversation.menus._MAIN_MENU", menu, clear=True):
             _handle_authenticated(self.session, PHONE, "99", CHANNEL, outbox)
 
-        self.assertEqual(outbox, [Outbound(PHONE, "Please reply with a valid number from the list.")])
+        [sent] = outbox
+        self.assertIn("Sorry, that wasn't one of the options.", sent.message.text)
+        self.assertEqual([r["id"] for r in sent.message.interactive.action_data[0]["rows"]], ["7", "0"])
 
     @patch("care_im_wrapper.conversation.handlers.resolve_actor")
     def test_entry_with_none_fetcher_moves_to_awaiting_patient_search(self, mock_resolve_actor):

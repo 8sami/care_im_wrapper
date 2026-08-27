@@ -7,6 +7,8 @@ from django.test import SimpleTestCase
 from care_im_wrapper.data.exceptions import NoDataError
 from care_im_wrapper.data.pagination import (
     Page,
+    current_record_offset,
+    fit_to_budget,
     map_page,
     paginate,
     paginate_or_raise,
@@ -168,3 +170,97 @@ class PageConstructionTests(SimpleTestCase):
     def test_has_previous_is_derived_not_stored(self):
         self.assertFalse(Page(records=[], number=0, page_size=10, has_next=False).has_previous)
         self.assertTrue(Page(records=[], number=1, page_size=10, has_next=False).has_previous)
+
+
+def _render(rows: list[int]) -> str:
+    """Two lines per record, so a line budget and a character budget can be told apart."""
+    return "\n".join(f"record {r}\n  detail" for r in rows)
+
+
+class FitToBudgetTests(SimpleTestCase):
+    def _page(self, count: int, *, weights: tuple[int, ...] = (), offset: int = 0) -> Page:
+        return Page(
+            records=list(range(count)),
+            number=0,
+            page_size=10,
+            has_next=False,
+            offset=offset,
+            source_weights=weights,
+        )
+
+    def test_a_page_that_fits_is_left_alone(self):
+        page = self._page(3)
+
+        self.assertIs(fit_to_budget(page, _render, 10**6, 100), page)
+
+    def test_the_surplus_moves_to_the_next_page(self):
+        fitted = fit_to_budget(self._page(10), _render, len(_render([0, 1])), 100)
+
+        self.assertEqual(len(fitted.records), 2)
+        self.assertTrue(fitted.has_next)
+
+    def test_the_line_budget_binds_an_ungrouped_page(self):
+        """A flat record is a line or two, so keeping the page above the fold costs little."""
+        fitted = fit_to_budget(self._page(10), _render, 10**6, 6)
+
+        self.assertEqual(len(fitted.records), 3)
+
+    def test_the_line_budget_is_dropped_for_a_grouped_page(self):
+        """A grouped record clears the fold on its own; holding to the budget would spend a
+        page per record with the character budget barely touched."""
+        fitted = fit_to_budget(self._page(10, weights=(4,) + (1,) * 9), _render, 10**6, 6)
+
+        self.assertEqual(len(fitted.records), 10)
+
+    def test_a_grouped_page_still_obeys_the_character_budget(self):
+        fitted = fit_to_budget(self._page(10, weights=(4,) + (1,) * 9), _render, len(_render([0, 1])), 6)
+
+        self.assertEqual(len(fitted.records), 2)
+
+    def test_one_record_over_budget_lands_alone_rather_than_dragging_a_second_along(self):
+        """The floor is 1: a record too big for the page is clamped by the renderer, and it
+        is the only one there. A floor of 2 put a second record on and cut both."""
+        fitted = fit_to_budget(self._page(10), _render, 1, 100, min_records=1)
+
+        self.assertEqual(len(fitted.records), 1)
+
+
+class DisplayStartTests(SimpleTestCase):
+    """The number printed beside the first record of a page."""
+
+    def test_an_ungrouped_page_continues_from_the_offset(self):
+        page = Page(records=[1], number=1, page_size=5, has_next=False, offset=5)
+
+        self.assertEqual(page.display_start, 6)
+
+    def test_a_grouped_page_continues_from_the_records_shown(self):
+        """`offset` counts source rows there -- medications, not the prescriptions on screen --
+        so numbering follows the records actually printed."""
+        page = Page(
+            records=[1],
+            number=1,
+            page_size=5,
+            has_next=False,
+            offset=5,
+            record_offset=2,
+            source_weights=(4, 1),
+        )
+
+        self.assertEqual(page.display_start, 3)
+
+    def test_a_grouped_first_page_starts_at_one(self):
+        page = Page(records=[1], number=0, page_size=5, has_next=True, source_weights=(4,))
+
+        self.assertEqual(page.display_start, 1)
+
+
+class CurrentRecordOffsetTests(SimpleTestCase):
+    def test_no_history_means_nothing_has_been_shown(self):
+        self.assertEqual(current_record_offset(SimpleNamespace(data_record_offsets=[])), 0)
+
+    def test_the_current_page_is_the_top_of_the_stack(self):
+        self.assertEqual(current_record_offset(SimpleNamespace(data_record_offsets=[1, 4])), 4)
+
+    def test_a_session_predating_the_field_numbers_from_the_start(self):
+        """An in-flight session upgraded mid-conversation has no stack yet."""
+        self.assertEqual(current_record_offset(SimpleNamespace()), 0)

@@ -9,7 +9,7 @@ from care_im_wrapper.models import ConversationSession
 PHONE = "+919876543210"
 CHANNEL = "whatsapp"
 
-INVALID = "Please reply with a valid number from the list."
+INVALID = "Sorry, that wasn't one of the options. Please pick one from the list below."
 
 
 def _candidates(start=1):
@@ -25,6 +25,14 @@ def _candidates(start=1):
             start=start,
         )
     ]
+
+
+def _assert_reprompted(case, outbox):
+    """An unrecognised reply puts the results back on screen rather than ending in text."""
+    [sent] = outbox
+    case.assertIn(INVALID, sent.message.text)
+    rows = sent.message.interactive.action_data[0]["rows"]
+    case.assertEqual([r["id"] for r in rows], ["patient_0", "patient_1", "0"])
 
 
 class HandleSelectingPatientTests(TestCase):
@@ -93,7 +101,7 @@ class HandleSelectingPatientTests(TestCase):
 
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.SELECTING_PATIENT)
-        self.assertEqual(outbox, [Outbound(PHONE, INVALID)])
+        _assert_reprompted(self, outbox)
 
     def test_a_malformed_row_id_sends_invalid_choice(self):
         outbox: list[Outbound] = []
@@ -101,13 +109,13 @@ class HandleSelectingPatientTests(TestCase):
 
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.SELECTING_PATIENT)
-        self.assertEqual(outbox, [Outbound(PHONE, INVALID)])
+        _assert_reprompted(self, outbox)
 
     def test_non_digit_non_patient_text_sends_invalid_choice(self):
         outbox: list[Outbound] = []
         _handle_selecting_patient(self.session, PHONE, "hello", CHANNEL, outbox)
 
-        self.assertEqual(outbox, [Outbound(PHONE, INVALID)])
+        _assert_reprompted(self, outbox)
 
     def test_a_row_id_past_the_end_sends_invalid_choice(self):
         outbox: list[Outbound] = []
@@ -115,13 +123,13 @@ class HandleSelectingPatientTests(TestCase):
 
         self.session.refresh_from_db()
         self.assertEqual(self.session.state, ConversationSession.State.SELECTING_PATIENT)
-        self.assertEqual(outbox, [Outbound(PHONE, INVALID)])
+        _assert_reprompted(self, outbox)
 
     def test_a_negative_row_id_sends_invalid_choice(self):
         outbox: list[Outbound] = []
         _handle_selecting_patient(self.session, PHONE, "patient_-1", CHANNEL, outbox)
 
-        self.assertEqual(outbox, [Outbound(PHONE, INVALID)])
+        _assert_reprompted(self, outbox)
 
     @patch("care_im_wrapper.conversation.handlers._send_menu")
     def test_zero_backs_out_to_the_menu(self, mock_send_menu):

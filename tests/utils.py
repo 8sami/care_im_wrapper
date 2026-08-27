@@ -20,7 +20,7 @@ def channel_limits(**overrides) -> ChannelLimits:
 
 def patched_limits(module: str = "care_im_wrapper.conversation.handlers", **overrides):
     """Patches the channel limits a module resolves, for a test that needs a tighter cap
-    than the real provider has -- a shorter body, no reply buttons, fewer rows."""
+    than the real provider has -- a shorter body, fewer rows."""
     return patch(f"{module}.get_channel_limits", return_value=channel_limits(**overrides))
 
 

@@ -18,7 +18,7 @@ _MESSAGES: dict[str, str] = {
     "yob_wrong": "That doesn't match. You have *{remaining}* attempt(s) remaining.",
     "cooldown": "Your account is locked. Please try again in {minutes} minutes.",
     "select_account": "Multiple accounts found. Please select one by replying with its number:",
-    "invalid_choice": "Please reply with a valid number from the list.",
+    "invalid_choice": "Sorry, that wasn't one of the options. Please pick one from the list below.",
     "choose_option": "Please choose an option:",
     "logout_confirm": "You have been logged out. Send any message to start again.",
     "session_expired": "Your session has expired. Please send any message to re-authenticate.",

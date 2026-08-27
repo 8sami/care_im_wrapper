@@ -61,6 +61,8 @@ class ConversationSession(models.Model):
     data_offsets = models.JSONField(default=list, blank=True)
     # The page size after trimming, so "next" knows where the current page ended.
     data_shown = models.PositiveIntegerField(default=0)  # pyright: ignore[reportArgumentType]
+    data_record_offsets = models.JSONField(default=list, blank=True)
+    data_records_shown = models.PositiveIntegerField(default=0)  # pyright: ignore[reportArgumentType]
     # The staff lookup query, so its results can be re-run a page along without retyping.
     search_query = models.CharField(max_length=255, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -150,7 +152,13 @@ class ConversationSession(models.Model):
 
     def _reset_paging(self) -> dict[str, object]:
         """Paging state for a list that has not been opened yet."""
-        return {"data_menu_choice": "", "data_offsets": [], "data_shown": 0}
+        return {
+            "data_menu_choice": "",
+            "data_offsets": [],
+            "data_shown": 0,
+            "data_record_offsets": [],
+            "data_records_shown": 0,
+        }
 
     def _encounter_scope(
         self, external_id: str = "", label: str = "", has_alternatives: bool = False
@@ -271,14 +279,35 @@ class ConversationSession(models.Model):
         self.data_menu_choice = menu_choice
         self.data_offsets = []
         self.data_shown = 0
-        self.save(update_fields=["data_menu_choice", "data_offsets", "data_shown"])
+        self.data_record_offsets = []
+        self.data_records_shown = 0
+        self.save(
+            update_fields=[
+                "data_menu_choice",
+                "data_offsets",
+                "data_shown",
+                "data_record_offsets",
+                "data_records_shown",
+            ]
+        )
 
-    def record_shown(self, shown: int) -> None:
-        """Remember the size of the page just rendered, so `advance_page` can step exactly."""
+    def record_shown(self, shown: int, records: int | None = None) -> None:
+        """Remember the size of the page just rendered, so `advance_page` can step exactly.
+
+        `shown` is source rows -- what the next fetch resumes from. `records` is how many
+        entries were printed, which is the same number until a fetcher groups its rows.
+        """
         shown = max(0, int(shown))
+        records = shown if records is None else max(0, int(records))
+        fields = []
         if self.data_shown != shown:
             self.data_shown = shown
-            self.save(update_fields=["data_shown"])
+            fields.append("data_shown")
+        if self.data_records_shown != records:
+            self.data_records_shown = records
+            fields.append("data_records_shown")
+        if fields:
+            self.save(update_fields=fields)
 
     def next_offset(self) -> int:
         """Where the page after the current one begins."""
@@ -289,12 +318,18 @@ class ConversationSession(models.Model):
     def advance_page(self, next_offset: int) -> None:
         """Move forward to the page starting at `next_offset`, remembering where this one
         began so `back_page` can return to it."""
+        from care_im_wrapper.data.pagination import current_record_offset
+
         self.data_offsets = [*(self.data_offsets or []), max(0, int(next_offset))]
-        self.save(update_fields=["data_offsets"])
+        # Both stacks move together, so a page always has a record offset to number from.
+        next_record_offset = current_record_offset(self) + int(self.data_records_shown or 0)
+        self.data_record_offsets = [*(self.data_record_offsets or []), next_record_offset]
+        self.save(update_fields=["data_offsets", "data_record_offsets"])
 
     def back_page(self) -> None:
         self.data_offsets = (self.data_offsets or [])[:-1]
-        self.save(update_fields=["data_offsets"])
+        self.data_record_offsets = (self.data_record_offsets or [])[:-1]
+        self.save(update_fields=["data_offsets", "data_record_offsets"])
 
     @property
     def data_page(self) -> int:
@@ -306,4 +341,14 @@ class ConversationSession(models.Model):
         self.search_query = query
         self.data_offsets = []
         self.data_shown = 0
-        self.save(update_fields=["search_query", "data_offsets", "data_shown"])
+        self.data_record_offsets = []
+        self.data_records_shown = 0
+        self.save(
+            update_fields=[
+                "search_query",
+                "data_offsets",
+                "data_shown",
+                "data_record_offsets",
+                "data_records_shown",
+            ]
+        )

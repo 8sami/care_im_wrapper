@@ -148,7 +148,7 @@ DEFAULTS = {
     "PAGING_FOOTER_RESERVE_CHARS": 160,
     "WHATSAPP_PREVIEW_LINE_LIMIT": 20,
     "PAGING_FOOTER_RESERVE_LINES": 4,
-    "DATA_PAGE_MIN_RECORDS": 2,
+    "DATA_PAGE_MIN_RECORDS": 1,
     "WHATSAPP_LIST_ROW_LIMIT": 10,  # max rows across all sections of one interactive list
     # Fallback channel when a recipient has no prior ConversationSession to consult.
     "NOTIFICATION_DEFAULT_PROVIDER": Provider.WHATSAPP.value,

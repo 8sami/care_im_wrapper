@@ -19,6 +19,8 @@ class Page:
     page_size: int
     has_next: bool
     offset: int = 0
+    # Records printed before this page. Equal to `offset` until a fetcher groups its rows.
+    record_offset: int = 0
     # Source rows per record, for grouped fetchers. Empty means one row per record.
     source_weights: tuple[int, ...] = ()
     # The row after this page, so a grouping fetcher can tell if the window split a group.
@@ -34,6 +36,16 @@ class Page:
     @property
     def has_previous(self) -> bool:
         return self.number > 0
+
+    @property
+    def display_start(self) -> int:
+        """The number to print beside this page's first record.
+
+        `offset` counts source rows, which is where the next fetch resumes from. On a grouped
+        page those are not the records on screen -- one prescription can hold four medications
+        -- so numbering follows `record_offset`, which counts what was actually printed.
+        """
+        return (self.record_offset if self.source_weights else self.offset) + 1
 
     @property
     def display_number(self) -> int:
@@ -70,6 +82,12 @@ def current_offset(session: Any) -> int:
     return max(0, int(offsets[-1])) if offsets else 0
 
 
+def current_record_offset(session: Any) -> int:
+    """How many records the reader has already been shown, before the current page."""
+    offsets = getattr(session, "data_record_offsets", None) or []
+    return max(0, int(offsets[-1])) if offsets else 0
+
+
 def current_page_number(session: Any) -> int:
     """1-based position in the reader's paging history, for display."""
     return max(0, len(getattr(session, "data_offsets", None) or []))
@@ -97,6 +115,7 @@ def paginate_or_raise(source: Sequence[Any] | Any, session: Any, page_size: int 
     an empty later page means the reader walked off the end."""
     start = current_offset(session)
     page = paginate(source, current_page_number(session), page_size, offset=start)
+    page = replace(page, record_offset=current_record_offset(session))
     if not page.records and start == 0:
         raise NoDataError
     return page
@@ -110,6 +129,13 @@ def fit_to_budget(
     min_records: int = 1,
 ) -> Page:
     """Trims `page` to the leading records that fit in `budget` characters."""
+
+    # The line budget keeps a page above the reader's "Read more" fold, which works while a
+    # record is a line or two. A grouped record is not: one prescription carries its
+    # medications, so a single one already clears the fold and holding to the budget would
+    # spend a page per record with the character budget barely touched.
+    if page.source_weights:
+        max_lines = None
 
     def fits(count: int) -> bool:
         text = render(page.records[:count])

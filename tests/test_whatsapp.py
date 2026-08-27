@@ -96,50 +96,6 @@ class WhatsAppClientSendInteractiveTests(SimpleTestCase):
         self.assertEqual(kwargs["json"]["text"]["body"], "fallback text")
 
     @patch("care_im_wrapper.messaging.whatsapp.httpx.post")
-    def test_reply_buttons_builds_correct_payload_and_caps_at_three(self, mock_post):
-        mock_post.return_value = MagicMock()
-        client = WhatsAppClient()
-        payload = InteractivePayload(
-            type=InteractiveType.REPLY_BUTTONS,
-            body="Pick one",
-            action_data=[
-                {"id": "OPT_1", "title": "Option 1"},
-                {"id": "OPT_2", "title": "Option 2"},
-                {"id": "OPT_3", "title": "Option 3"},
-                {"id": "OPT_4", "title": "Option 4"},
-            ],
-        )
-        msg = OutboundMessage(text="fallback", interactive=payload)
-        client.send_interactive("+919876543210", msg)
-
-        _, kwargs = mock_post.call_args
-        sent = kwargs["json"]
-        self.assertEqual(sent["type"], "interactive")
-        self.assertEqual(sent["interactive"]["type"], "button")
-        self.assertEqual(sent["interactive"]["body"]["text"], "Pick one")
-        buttons = sent["interactive"]["action"]["buttons"]
-        self.assertEqual(len(buttons), 3)
-        self.assertEqual(buttons[0], {"type": "reply", "reply": {"id": "OPT_1", "title": "Option 1"}})
-        self.assertEqual(buttons[2], {"type": "reply", "reply": {"id": "OPT_3", "title": "Option 3"}})
-
-    @patch("care_im_wrapper.messaging.whatsapp.httpx.post")
-    def test_reply_button_title_truncated_to_twenty_chars(self, mock_post):
-        mock_post.return_value = MagicMock()
-        client = WhatsAppClient()
-        long_title = "A" * 30
-        payload = InteractivePayload(
-            type=InteractiveType.REPLY_BUTTONS,
-            body="Pick one",
-            action_data=[{"id": "OPT_1", "title": long_title}],
-        )
-        msg = OutboundMessage(text="fallback", interactive=payload)
-        client.send_interactive("+919876543210", msg)
-
-        _, kwargs = mock_post.call_args
-        button = kwargs["json"]["interactive"]["action"]["buttons"][0]
-        self.assertEqual(button["reply"]["title"], "A" * 19 + "\u2026")
-
-    @patch("care_im_wrapper.messaging.whatsapp.httpx.post")
     def test_list_type_caps_rows_at_ten_across_sections(self, mock_post):
         mock_post.return_value = MagicMock()
         client = WhatsAppClient()
@@ -220,9 +176,9 @@ class WhatsAppClientSendInteractiveTests(SimpleTestCase):
         mock_post.return_value = MagicMock()
         client = WhatsAppClient()
         payload = InteractivePayload(
-            type=InteractiveType.REPLY_BUTTONS,
+            type=InteractiveType.LIST,
             body="Pick one",
-            action_data=[{"id": "OPT_1", "title": "Option 1"}],
+            action_data=[{"title": "Options", "rows": [{"id": "OPT_1", "title": "Option 1"}]}],
             footer="Footer text",
         )
         msg = OutboundMessage(text="fallback", interactive=payload)
@@ -237,9 +193,9 @@ class WhatsAppClientSendInteractiveTests(SimpleTestCase):
         mock_post.return_value = MagicMock()
         client = WhatsAppClient()
         payload = InteractivePayload(
-            type=InteractiveType.REPLY_BUTTONS,
+            type=InteractiveType.LIST,
             body="Pick one",
-            action_data=[{"id": "OPT_1", "title": "Option 1"}],
+            action_data=[{"title": "Options", "rows": [{"id": "OPT_1", "title": "Option 1"}]}],
         )
         msg = OutboundMessage(text="fallback", interactive=payload)
         client.send_interactive("+919876543210", msg)

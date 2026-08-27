@@ -59,10 +59,16 @@ hidden because there is nowhere to change to.
 | `n` | next page |
 | `p` | previous page |
 
-Lists are cut to 10 records a page (`DATA_FETCH_LIMIT`). Numbering continues across pages
-rather than restarting, so a number always selects the row it is printed beside. Paged data
-lists carry Previous/Next/Menu as reply buttons; paged pickers keep their rows selectable
-and put the paging controls on a second message.
+Lists are cut to at most 10 records a page (`DATA_FETCH_LIMIT`), and to fewer where the
+screen or the provider's row cap allows fewer -- a page ends where the reader's screen does,
+and the rest is one page away rather than dropped. Numbering continues across pages rather
+than restarting, so a number always selects the row it is printed beside.
+
+Paging arrives as *Next page* / *Previous page* rows at the top of the same interactive list
+it pages, never as a message of its own, so a reply is always one message. Where the list is
+already full -- a menu with no room to spare -- the rows give way and `n` / `p` are what is
+left to page with, which is why the page indicator and those commands are printed in every
+paged reply.
 
 ## Filter medications by prescription
 

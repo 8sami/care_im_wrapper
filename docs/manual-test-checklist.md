@@ -149,8 +149,9 @@ Everywhere
 - [ ] `entered_in_error` records are excluded everywhere
 - [ ] at most `[DATA_FETCH_LIMIT = 10]` records per page
 - [ ] `n` and `p` page forward and back; `n` on the last page says so
-- [ ] a paged data list carries Previous/Next/Menu as reply buttons, not rows
-- [ ] a paged picker keeps its rows and puts Previous/Next on a second message
+- [ ] paging is *Next page* / *Previous page* rows leading the same list, not a second message
+- [ ] every record offered on a page has a row of its own; a full page pages, it does not drop
+- [ ] a picker's rows still end in *Back*, whatever else is in the list
 - [ ] numbering continues across pages instead of restarting
 - [ ] nothing repeats or is skipped paging forward then back
 - [ ] invalid choice (`9`, `abc`, emoji) → invalid choice, still `AUTHENTICATED`
@@ -168,7 +169,8 @@ Everywhere
 - [ ] no matches → no-patients-found
 - [ ] matches → pick-list, state `SELECTING_PATIENT`
 - [ ] result rows are 0-based
-- [ ] more than `[WHATSAPP_LIST_ROW_LIMIT = 10]` matches caps the list rather than failing
+- [ ] more matches than `[WHATSAPP_LIST_ROW_LIMIT = 10]` rows can hold → the page ends where
+      the rows do, led by *Next page*; no match is offered without a row of its own
 - [ ] selecting sets `active_patient_external_id`, and every later reply names the patient
 - [ ] later menu options return that patient's data, not the staff member's
 - [ ] out-of-range or free-text selection → invalid choice
