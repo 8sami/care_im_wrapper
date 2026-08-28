@@ -198,7 +198,10 @@ DEFAULTS = {
             "document_type": "{{ document_type|replace('_', ' ')|title }}",
             "sr_name": "{{ object.service_request.title }}",
             "sr_created_at_date": "{{ object.service_request.created_date|date('%d %b %Y') }}",
-            # Resolves to the link's path segment; whatsapp.py prepends the base URL.
+            # The DocumentLink token, sent as the URL button's one positional parameter.
+            # The base it is appended to lives in the template's button definition in the
+            # provider console, not here -- the wrapper only ever pulls templates. Point
+            # it at the care_fe document page, e.g. https://<care_fe>/public/documents/{{1}}.
             "url_suffix": "{{ document_url_suffix }}",
         },
         "patient_updates": {

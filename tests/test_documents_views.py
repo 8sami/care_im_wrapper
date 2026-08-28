@@ -15,10 +15,13 @@ def _url(token: str) -> str:
 
 
 def _make_link(**kwargs):
+    # A stored-file document by default: this view only mints presigns for those. A
+    # rendered document has no file and is bounced to the care_fe page instead, which is
+    # covered in test_documents_public_view.
     data = {
-        "object_kind": DocumentLinkObjectKind.FILE_UPLOAD,
+        "object_kind": DocumentLinkObjectKind.REPORT_UPLOAD,
         "object_external_id": uuid.uuid4(),
-        "document_type": "diagnostic_report",
+        "document_type": "discharge_summary",
         "patient_external_id": uuid.uuid4(),
         "provider": "whatsapp",
         "expires_at": timezone.now() + timedelta(hours=1),

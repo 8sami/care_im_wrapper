@@ -1,5 +1,11 @@
-"""Public, unauthenticated signed-URL entry point. The token is the capability; there is
-no user auth here, by design."""
+"""Public, unauthenticated signed-URL entry point for a stored document.
+
+The token is the capability; there is no user auth here, by design.
+
+Only stored-file documents resolve here. A rendered one (a lab report) has no file to
+presign -- it is drawn by the care_fe page, and its link points there directly. Such a
+token 404s here rather than being forwarded, so a message template still addressed at
+this route fails visibly instead of quietly working through a redirect."""
 
 from __future__ import annotations
 

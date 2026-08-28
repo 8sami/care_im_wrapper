@@ -182,6 +182,15 @@ class PublicDocumentViewTests(CareAPITestBase):
 
         self.assertEqual(body["files"], [])
 
+    def test_the_presign_redirect_does_not_serve_a_rendered_document(self):
+        """A lab report has no stored file, so the stored-document route must refuse it
+        rather than quietly forward -- a message template pointed here should fail loudly."""
+        link = self._create_link(self._create_report())
+
+        response = self.client.get(f"/api/care_im_wrapper/documents/{link.token}/")
+
+        self.assertEqual(response.status_code, 404)
+
     def test_unknown_token_is_not_distinguishable_from_an_expired_one(self):
         """Both 404 identically: a caller must not be able to learn that a token existed."""
         expired = self._create_link(self._create_report(), expires_at=timezone.now() - timedelta(seconds=1))
