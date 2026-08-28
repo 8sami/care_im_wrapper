@@ -12,12 +12,10 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from django.conf import settings
-from django.urls import reverse
 from django.utils import timezone
 
 from care_im_wrapper.data.common import authorize_patient_access
 from care_im_wrapper.data.exceptions import PermissionDeniedError
-from care_im_wrapper.documents import kinds
 from care_im_wrapper.documents.exceptions import DocumentUnavailableError
 from care_im_wrapper.models import ConversationSession, DocumentLink, DocumentLinkObjectKind
 from care_im_wrapper.settings import plugin_settings
@@ -280,17 +278,15 @@ def _absolute_origin(configured: str, fallback: str) -> str:
 
 
 def build_document_url(link: DocumentLink) -> str:
-    """The URL to send the patient for this document.
+    """The URL to send the patient, for any kind of document.
 
-    A rendered document (a lab report) goes to the care_fe page, which reads the record
-    through the public payload endpoint and draws CARE's own print view. A stored file
-    keeps going to the backend redirect, which mints a presign per hit. Never a presigned
-    URL itself -- the token is the durable capability.
+    Always the care_fe page: one address to configure in a provider's message template
+    and one to get wrong, and a document type added later needs no change here. The page
+    reads the record through the public payload endpoint and either draws CARE's print
+    view or hands the browser the stored file.
+
+    Never a presigned URL itself -- the token is the durable capability, and presigns are
+    minted per request behind it.
     """
-    kind = kinds.get(link.document_type)
-    if kind is not None and kind.mode == kinds.RENDER:
-        origin = _absolute_origin(plugin_settings.DOCUMENT_PAGE_BASE_URL, settings.CURRENT_DOMAIN)
-        return f"{origin}/public/documents/{link.token}"
-
-    origin = _absolute_origin(plugin_settings.DOCUMENT_LINK_BASE_URL, settings.BACKEND_DOMAIN)
-    return f"{origin}{reverse('im-wrapper-document-redirect', args=[link.token])}"
+    origin = _absolute_origin(plugin_settings.DOCUMENT_PAGE_BASE_URL, settings.CURRENT_DOMAIN)
+    return f"{origin}/public/documents/{link.token}"

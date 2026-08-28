@@ -245,61 +245,32 @@ class DocumentServiceTests(CareAPITestBase):
             expires_at=timezone.now() + timedelta(hours=1),
         )
 
-    def test_build_document_url_uses_base_url_setting(self):
-        link = self._link()
+    def test_document_url_is_the_care_fe_page_for_every_kind(self):
+        """One address for every document type: the page decides what to do with the
+        token, so a provider template needs no per-type base url."""
+        rendered = self._link(
+            document_type="diagnostic_report",
+            object_kind=DocumentLinkObjectKind.DIAGNOSTIC_REPORT,
+        )
+        stored = self._link()
 
         with patch(
-            "care_im_wrapper.documents.service.plugin_settings.DOCUMENT_LINK_BASE_URL", "https://care.example.org"
+            "care_im_wrapper.documents.service.plugin_settings.DOCUMENT_PAGE_BASE_URL",
+            "https://care.example.org",
         ):
-            url = build_document_url(link)
+            self.assertEqual(
+                build_document_url(rendered),
+                f"https://care.example.org/public/documents/{rendered.token}",
+            )
+            self.assertEqual(
+                build_document_url(stored),
+                f"https://care.example.org/public/documents/{stored.token}",
+            )
 
-        self.assertEqual(url, f"https://care.example.org/api/care_im_wrapper/documents/{link.token}/")
-
-    def test_build_document_url_falls_back_to_backend_domain_when_unset(self):
-        """An unset base URL must never yield a bare path -- the link goes straight out over
-        a messaging provider, where a relative URL is unusable."""
+    def test_document_url_falls_back_to_current_domain(self):
+        """An unset base must never yield a bare path -- the link goes straight out over a
+        messaging provider, where a relative url is unusable."""
         link = self._link()
-
-        with (
-            patch("care_im_wrapper.documents.service.plugin_settings.DOCUMENT_LINK_BASE_URL", ""),
-            self.settings(BACKEND_DOMAIN="care.example.org"),
-        ):
-            url = build_document_url(link)
-
-        self.assertEqual(url, f"https://care.example.org/api/care_im_wrapper/documents/{link.token}/")
-
-    def test_build_document_url_keeps_an_explicit_scheme(self):
-        link = self._link()
-
-        with patch(
-            "care_im_wrapper.documents.service.plugin_settings.DOCUMENT_LINK_BASE_URL", "http://localhost:9000/"
-        ):
-            url = build_document_url(link)
-
-        self.assertEqual(url, f"http://localhost:9000/api/care_im_wrapper/documents/{link.token}/")
-
-    def test_system_document_link_does_not_require_actor(self):
-        report = self._create_diagnostic_report()
-
-        link = get_system_document_link(self.patient, self._lab_report_request(report), provider="whatsapp")
-
-        self.assertEqual(link.object_kind, DocumentLinkObjectKind.DIAGNOSTIC_REPORT)
-        self.assertEqual(link.object_external_id, report.external_id)
-
-    def test_rendered_document_url_points_at_the_care_fe_page(self):
-        """A rendered document is drawn by care_fe, so its link must go to the frontend
-        page, not the backend redirect (which has no file to redirect to)."""
-        link = self._link(document_type="diagnostic_report", object_kind=DocumentLinkObjectKind.DIAGNOSTIC_REPORT)
-
-        with patch(
-            "care_im_wrapper.documents.service.plugin_settings.DOCUMENT_PAGE_BASE_URL", "https://care.example.org"
-        ):
-            url = build_document_url(link)
-
-        self.assertEqual(url, f"https://care.example.org/public/documents/{link.token}")
-
-    def test_rendered_document_url_falls_back_to_current_domain(self):
-        link = self._link(document_type="diagnostic_report", object_kind=DocumentLinkObjectKind.DIAGNOSTIC_REPORT)
 
         with (
             patch("care_im_wrapper.documents.service.plugin_settings.DOCUMENT_PAGE_BASE_URL", ""),
@@ -308,3 +279,22 @@ class DocumentServiceTests(CareAPITestBase):
             url = build_document_url(link)
 
         self.assertEqual(url, f"https://care.example.org/public/documents/{link.token}")
+
+    def test_document_url_keeps_an_explicit_scheme(self):
+        link = self._link()
+
+        with patch(
+            "care_im_wrapper.documents.service.plugin_settings.DOCUMENT_PAGE_BASE_URL",
+            "http://localhost:4000/",
+        ):
+            url = build_document_url(link)
+
+        self.assertEqual(url, f"http://localhost:4000/public/documents/{link.token}")
+
+    def test_system_document_link_does_not_require_actor(self):
+        report = self._create_diagnostic_report()
+
+        link = get_system_document_link(self.patient, self._lab_report_request(report), provider="whatsapp")
+
+        self.assertEqual(link.object_kind, DocumentLinkObjectKind.DIAGNOSTIC_REPORT)
+        self.assertEqual(link.object_external_id, report.external_id)
