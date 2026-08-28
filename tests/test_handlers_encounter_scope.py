@@ -119,8 +119,8 @@ class EncounterPickerTests(TestCase):
         self.session.refresh_from_db()
 
         self.assertEqual(self.session.active_encounter_external_id, "enc-2")
-        # The label carries the status too, so the sub-menu header shows it.
-        self.assertEqual(self.session.active_encounter_label, "Rural Clinic — 12 Jul 2026 (Completed)")
+        # The label carries the class and status too, so the sub-menu header shows them.
+        self.assertEqual(self.session.active_encounter_label, "Rural Clinic — 12 Jul 2026 (Inpatient, Completed)")
         self.assertEqual(self.session.state, ConversationSession.State.AUTHENTICATED)
         self.assertEqual([r["title"] for r in _rows(outbox[0].message)][:2], ["Medications", "Procedures"])
 
@@ -478,6 +478,31 @@ class PrescriptionPickerTests(TestCase):
         self.assertEqual(self.session.active_prescription_external_id, ALL_PRESCRIPTIONS)
         # Stays in the picker so the reader can switch again without backing out.
         self.assertEqual(self.session.state, ConversationSession.State.SELECTING_PRESCRIPTION)
+
+    def test_a_fetch_error_while_keeping_the_picker_open_returns_to_the_menu(self):
+        """The reader sees the menu on a fetch failure, not the picker -- the session must
+        leave SELECTING_PRESCRIPTION too, or the next reply is misrouted to the stale picker
+        (and its stale candidates) instead of the menu it was actually shown."""
+        from care_im_wrapper.data.exceptions import NoDataError
+
+        self._open_medications(_page([_prescription("rx-1"), _prescription("rx-2")]))
+        failing = MenuOption(
+            label="Medications",
+            fetcher=MagicMock(side_effect=NoDataError),
+            renderer=MagicMock(return_value=OutboundMessage(text="Your medications:")),
+            scope=Scope.PRESCRIPTION,
+        )
+
+        outbox: list[Outbound] = []
+        with (
+            patch("care_im_wrapper.conversation.handlers.resolve_actor", return_value=_make_actor()),
+            patch.dict("care_im_wrapper.conversation.menus._ENCOUNTER_MENU", {"1": failing}, clear=True),
+        ):
+            _handle_selecting_prescription(self.session, PHONE, "a", CHANNEL, outbox)
+        self.session.refresh_from_db()
+
+        self.assertEqual(self.session.state, ConversationSession.State.AUTHENTICATED)
+        self.assertEqual(self.session.candidates, [])
 
     def test_all_prescriptions_medications_paginate_alongside_the_picker(self):
         self._open_medications(_page([_prescription("rx-1"), _prescription("rx-2")]))

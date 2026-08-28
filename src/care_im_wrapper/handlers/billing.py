@@ -120,6 +120,7 @@ def on_invoice_post_save(sender: type[Invoice], instance: Invoice, created: bool
             amount=instance.total_gross,
             account=instance.account,
             invoice=instance,
+            title_noun="Invoice",
         )
         return
 

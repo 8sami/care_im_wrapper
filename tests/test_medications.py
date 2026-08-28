@@ -152,6 +152,13 @@ class FormatFrequencyTests(SimpleTestCase):
             ("STAT", "STAT (Immediately)"),
             ("WK", "WK (Weekly)"),
             ("MO", "MO (Monthly)"),
+            ("Q1H", "Q1H (Every 1 hour)"),
+            ("Q2H", "Q2H (Every 2 hours)"),
+            ("Q3H", "Q3H (Every 3 hours)"),
+            ("Q4H", "Q4H (Every 4 hours)"),
+            ("Q6H", "Q6H (Every 6 hours)"),
+            ("Q8H", "Q8H (Every 8 hours)"),
+            ("Q12H", "Q12H (Every 12 hours)"),
         ):
             with self.subTest(code=code):
                 self.assertEqual(_format_frequency({"timing": {"code": {"code": code}}}), expected)

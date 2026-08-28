@@ -168,6 +168,81 @@ class FetchPrescriptionsTests(CareAPITestBase):
         with self.assertRaises(NoDataError):
             self._fetch()
 
+    def _product(self, product_type, name="Test Product"):
+        from care.emr.models.product_knowledge import ProductKnowledge
+
+        return ProductKnowledge.objects.create(
+            slug=f"test-{product_type}-{name.lower().replace(' ', '-')}",
+            status="active",
+            product_type=product_type,
+            name=name,
+        )
+
+    def test_nutritional_products_and_consumables_are_excluded(self):
+        """care_fe's medications tab is medications_only; nutritional_product/consumable
+        requests belong to the wider prescriptions view, not this one."""
+        prescription = self._prescription()
+        self._medication(
+            prescription, medication={"display": "Real medicine"}, requested_product=self._product("medication")
+        )
+        self._medication(
+            prescription,
+            medication={"display": "Protein shake"},
+            requested_product=self._product("nutritional_product"),
+        )
+        self._medication(prescription, medication={"display": "Gauze"}, requested_product=self._product("consumable"))
+
+        page = self._fetch()
+
+        self.assertEqual([m.name for m in page.records[0].medications], ["Real medicine"])
+
+    def test_nutritional_products_and_consumables_stay_excluded_under_all_prescriptions(self):
+        """The ALL_PRESCRIPTIONS sentinel is still the aggregate view, medications-only same
+        as the unset default -- only narrowing to one prescription lifts the filter."""
+        first = self._prescription(name="First")
+        self._medication(first, medication={"display": "Real medicine"}, requested_product=self._product("medication"))
+        second = self._prescription(name="Second")
+        self._medication(
+            second,
+            medication={"display": "Protein shake"},
+            requested_product=self._product("nutritional_product"),
+        )
+
+        page = self._fetch(session=self._session(prescription_external_id=ALL_PRESCRIPTIONS))
+
+        self.assertEqual([p.name for p in page.records], ["First"])
+
+    def test_nutritional_products_and_consumables_are_shown_within_one_prescription(self):
+        """care_fe's individual-prescription view shows medications, nutritional_product and
+        consumable together -- only the aggregate "all medications" view is medications-only."""
+        prescription = self._prescription()
+        self._medication(
+            prescription, medication={"display": "Real medicine"}, requested_product=self._product("medication")
+        )
+        self._medication(
+            prescription,
+            medication={"display": "Protein shake"},
+            requested_product=self._product("nutritional_product"),
+        )
+        self._medication(prescription, medication={"display": "Gauze"}, requested_product=self._product("consumable"))
+
+        page = self._fetch(session=self._session(prescription_external_id=str(prescription.external_id)))
+
+        self.assertEqual(
+            sorted(m.name for m in page.records[0].medications),
+            ["Gauze", "Protein shake", "Real medicine"],
+        )
+
+    def test_a_request_with_no_linked_product_is_still_shown(self):
+        """Manually/questionnaire-entered requests have no requested_product at all -- not
+        having one is not the same as having a non-medication one."""
+        prescription = self._prescription()
+        self._medication(prescription, medication={"display": "Free text entry"})
+
+        page = self._fetch()
+
+        self.assertEqual([m.name for m in page.records[0].medications], ["Free text entry"])
+
     def test_prescription_with_no_medications_is_not_shown(self):
         """The query is driven off MedicationRequest, so an empty prescription has nothing."""
         self._prescription(name="Empty")

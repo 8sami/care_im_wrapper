@@ -10,34 +10,28 @@ from care_im_wrapper.models import ConversationSession
 
 
 class ExtractReportNameTests(SimpleTestCase):
-    def test_code_dict_with_text_returns_text(self):
-        report = SimpleNamespace(code={"text": "Complete Blood Count"})
-        self.assertEqual(_extract_report_name(report), "Complete Blood Count")
+    def test_the_service_request_title_wins_over_the_coding(self):
+        report = SimpleNamespace(
+            service_request=SimpleNamespace(title="CBC bloood", activity_definition=None),
+            code={"text": "Complete Blood Count"},
+        )
+        self.assertEqual(_extract_report_name(report), "CBC bloood")
 
-    def test_code_dict_with_display_only_returns_display(self):
-        report = SimpleNamespace(code={"display": "Liver Function Test"})
-        self.assertEqual(_extract_report_name(report), "Liver Function Test")
+    def test_falls_back_to_the_activity_definition_title(self):
+        report = SimpleNamespace(
+            service_request=SimpleNamespace(title="", activity_definition=SimpleNamespace(title="CBC bloood")),
+            code={"text": "Complete Blood Count"},
+        )
+        self.assertEqual(_extract_report_name(report), "CBC bloood")
 
-    def test_code_dict_prefers_text_over_display(self):
+    def test_falls_back_to_the_coding_preferring_text_over_display(self):
         # NOTE: unlike procedures._extract_service_name, this prefers "text" first,
-        # then "display" — the exact opposite order. Do not assume they match.
-        report = SimpleNamespace(code={"text": "Text Name", "display": "Display Name"})
+        # then "display" -- the exact opposite order. Do not assume they match.
+        report = SimpleNamespace(service_request=None, code={"text": "Text Name", "display": "Display Name"})
         self.assertEqual(_extract_report_name(report), "Text Name")
 
-    def test_code_dict_without_text_or_display_returns_lab_report(self):
-        report = SimpleNamespace(code={"system": "http://loinc.org"})
-        self.assertEqual(_extract_report_name(report), "Lab report")
-
-    def test_code_as_plain_string_returns_string(self):
-        report = SimpleNamespace(code="HbA1c")
-        self.assertEqual(_extract_report_name(report), "HbA1c")
-
-    def test_code_none_returns_lab_report(self):
-        report = SimpleNamespace(code=None)
-        self.assertEqual(_extract_report_name(report), "Lab report")
-
-    def test_missing_code_attribute_returns_lab_report(self):
-        report = SimpleNamespace()
+    def test_an_unnamed_and_uncoded_report_still_renders(self):
+        report = SimpleNamespace(service_request=None, code=None)
         self.assertEqual(_extract_report_name(report), "Lab report")
 
 

@@ -216,6 +216,15 @@ DEFAULTS = {
             "status": "{{ status }}",
             "invoice_number": "{{ invoice_number }}",
         },
+        # Invoice-shaped counterpart to payment_status, taking the identical variables.
+        "invoice_status": {
+            "header_status": "{{ header_status }}",
+            "patient_name": "{{ patient_name }}",
+            "amount": "{{ amount }}",
+            "patient_account_name": "{{ patient_account_name }}",
+            "status": "{{ status }}",
+            "invoice_number": "{{ invoice_number }}",
+        },
         # related_object: TokenBooking -- the same shape appointment_update already uses.
         "event_reminder": {
             "event_header": "{{ event_header }}",

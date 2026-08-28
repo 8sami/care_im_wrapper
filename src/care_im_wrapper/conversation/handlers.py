@@ -333,6 +333,7 @@ def _reporting_data_errors(
     else:
         return
 
+    session.return_to_menu()
     _send_menu(session, phone_number, channel, outbox, prefix=prefix)
 
 
@@ -418,6 +419,7 @@ def _run_option(
     fetcher, renderer = option.fetcher, option.renderer
     if fetcher is None or renderer is None:
         logger.error("_run_option: option %s has no fetcher/renderer", menu_key)
+        session.return_to_menu()
         _send_menu(session, phone_number, channel, outbox, prefix=_msg("fetch_error"))
         return
 
@@ -704,7 +706,13 @@ def _handle_selecting_document(
 
 def _encounter_label(record: Any) -> str:
     """The one-line identity of an encounter, for the sub-menu header."""
-    return _msg("encounter_label", facility=record.facility, date=record.date, status=record.status)
+    return _msg(
+        "encounter_label",
+        facility=record.facility,
+        date=record.date,
+        encounter_class=record.encounter_class,
+        status=record.status,
+    )
 
 
 def _fetch_picker_page(
@@ -793,10 +801,10 @@ def _paged_past_the_end(session: ConversationSession, page: Page, phone_number: 
 
 
 def _describe_encounter(record: Any) -> tuple[str, str, dict[str, Any]]:
-    """An encounter as the picker offers it: where it happened, when, and how it ended."""
+    """An encounter as the picker offers it: where it happened, when, its type, and how it ended."""
     return (
         record.facility,
-        f"{record.date} ({record.status})",
+        f"{record.date} ({record.encounter_class}, {record.status})",
         {"external_id": record.external_id, "label": _encounter_label(record)},
     )
 
@@ -1000,6 +1008,7 @@ def _show_medications_keeping_picker(
     fetcher, renderer = option.fetcher, option.renderer
     if fetcher is None or renderer is None:
         logger.error("_show_medications_keeping_picker: option %s has no fetcher/renderer", option.label)
+        session.return_to_menu()
         _send_menu(session, phone_number, channel, outbox, prefix=_msg("fetch_error"))
         return
 

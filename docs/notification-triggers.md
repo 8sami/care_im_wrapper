@@ -16,8 +16,8 @@ the API or the Django shell all work the same way.
 | `appointment_fulfilled` | `appointment_update` | a booking moves to `fulfilled` |
 | `appointment_reminder` | `event_reminder` | the sweep finds a `booked` slot starting within 24h |
 | `wait_time_update` | `wait_time_update` | a queue Token is issued to a patient |
-| `invoice_issued` | `payment_status` | an Invoice moves to `issued` |
-| `invoice_cancelled` | `payment_status` | an `issued` or `balanced` Invoice moves to `cancelled` or `entered_in_error` |
+| `invoice_issued` | `invoice_status` | an Invoice moves to `issued` |
+| `invoice_cancelled` | `invoice_status` | an `issued` or `balanced` Invoice moves to `cancelled` or `entered_in_error` |
 | `payment_recorded` | `payment_status` | a PaymentReconciliation reaches `complete` |
 | `document_ready_update` | `document_ready_update` | a ServiceRequest completes with a final DiagnosticReport |
 

@@ -21,9 +21,11 @@ def fetch_lab_reports(actor: Actor, session: ConversationSession) -> Page:
     from care.emr.resources.diagnostic_report.spec import DiagnosticReportStatusChoices  # type: ignore[import-untyped]
 
     encounter = resolve_target_encounter(actor, session)
-    all_records = DiagnosticReport.objects.filter(patient=encounter.patient, encounter=encounter).order_by(
-        "-created_date"
-    )[: scan_bound(session, DEDUPE_SCAN_FACTOR)]
+    all_records = (
+        DiagnosticReport.objects.filter(patient=encounter.patient, encounter=encounter)
+        .select_related("service_request", "service_request__activity_definition")
+        .order_by("-created_date")[: scan_bound(session, DEDUPE_SCAN_FACTOR)]
+    )
 
     latest_by_group: dict[str, DiagnosticReport] = {}
     for r in all_records:
@@ -47,7 +49,22 @@ def fetch_lab_reports(actor: Actor, session: ConversationSession) -> Page:
 
 
 def _extract_report_name(report) -> str:
+    """
+    Extracts a human-readable report name from DiagnosticReport.
+
+    The ordering care_fe's encounter tab uses: the requesting service request's title, which
+    is the activity definition the report was ordered from, before the report's own coding.
+    """
+    service_request = getattr(report, "service_request", None)
+    activity_definition = getattr(service_request, "activity_definition", None)
     code = getattr(report, "code", None)
     if isinstance(code, dict):
-        return code.get("text") or code.get("display") or "Lab report"
-    return str(code) if code else "Lab report"
+        coded_name = code.get("text") or code.get("display")
+    else:
+        coded_name = str(code) if code else None
+    return (
+        getattr(service_request, "title", None)
+        or getattr(activity_definition, "title", None)
+        or coded_name
+        or "Lab report"
+    )

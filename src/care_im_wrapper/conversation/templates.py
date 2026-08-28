@@ -41,7 +41,7 @@ _MESSAGES: dict[str, str] = {
     "select_encounter_prompt": "Which encounter would you like to open?",
     "select_encounter": "Select encounter",
     "encounters_title": "Encounters",
-    "encounter_label": "{facility} — {date} ({status})",
+    "encounter_label": "{facility} — {date} ({encounter_class}, {status})",
     "encounter_menu_title": "Encounter",
     "back_to_main_menu": "Back to main menu",
     "back_to_main_menu_hint": "Leave this encounter",

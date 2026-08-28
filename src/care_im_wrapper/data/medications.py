@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
+from django.db.models import Q
 from django.utils import timezone
 
 from care_im_wrapper.auth.actor import Actor
@@ -48,6 +49,13 @@ _TIMING_CODE_TO_MAN: dict[str, str] = {
 _TIMING_CODE_DISPLAYS: dict[str, str] = {
     "QD": "QD (Once a day)",
     "QOD": "QOD (Alternate days)",
+    "Q1H": "Q1H (Every 1 hour)",
+    "Q2H": "Q2H (Every 2 hours)",
+    "Q3H": "Q3H (Every 3 hours)",
+    "Q4H": "Q4H (Every 4 hours)",
+    "Q6H": "Q6H (Every 6 hours)",
+    "Q8H": "Q8H (Every 8 hours)",
+    "Q12H": "Q12H (Every 12 hours)",
     "BED": "BED (0-0-1)",
     "WK": "WK (Weekly)",
     "MO": "MO (Monthly)",
@@ -74,6 +82,7 @@ def fetch_prescriptions(actor: Actor, session: ConversationSession) -> Page:
     unset scope) means all of them.
     """
     from care.emr.models.medication_request import MedicationRequest  # type: ignore[import-untyped]
+    from care.emr.resources.inventory.product_knowledge.spec import ProductTypeOptions  # type: ignore[import-untyped]
 
     encounter = resolve_target_encounter(actor, session)
     queryset = (
@@ -92,7 +101,15 @@ def fetch_prescriptions(actor: Actor, session: ConversationSession) -> Page:
 
     selected = getattr(session, "active_prescription_external_id", "") or ""
     if selected and selected != ALL_PRESCRIPTIONS:
+        # care_fe's individual-prescription view: every product type, not just medications.
         queryset = queryset.filter(prescription__external_id=selected)
+    else:
+        # care_fe's All medications tab: medications_only, i.e. product_type=medication OR
+        # no linked product at all (a manually/questionnaire-entered request has none).
+        queryset = queryset.filter(
+            Q(requested_product__product_type__iexact=ProductTypeOptions.medication.value)
+            | Q(requested_product__isnull=True)
+        )
 
     page = paginate_or_raise(queryset.order_by("-created_date", "-id"), session)
 
