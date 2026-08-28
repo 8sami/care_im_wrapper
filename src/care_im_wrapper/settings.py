@@ -255,7 +255,6 @@ DEFAULTS = {
     "DOCUMENT_LINK_TTL_SECONDS": 60 * 60 * 24 * 7,  # 7 days
     # Presign TTL per request -- short, since the token is the durable capability.
     "DOCUMENT_PRESIGN_TTL_SECONDS": 60 * 5,  # 5 minutes
-    "DOCUMENT_LINK_BASE_URL": "",
     # Public origin of the care_fe that serves the patient-facing document page.
     # Blank falls back to CURRENT_DOMAIN.
     "DOCUMENT_PAGE_BASE_URL": "",

@@ -5,16 +5,12 @@ slug in the plugin frontend. Nothing else in the pull, push, or public-view path
 
 Two modes exist because CARE itself draws the line:
 
-* ``RENDER`` -- care_fe owns a print view for this document and no PDF exists anywhere
-  (the browser makes one when staff hit Print). The link carries the *subject* and the
-  public endpoint returns its data, so the page can draw the same view for a patient.
-  ``template_slug`` is the facility print_templates key care_fe uses for that view, so
-  the patient's page gets the facility's configured letterhead.
-* ``FILE`` -- the document is a pre-rendered artifact in object storage (a template-builder
-  report, or a file a lab uploaded). The link carries that artifact and the page displays it.
-
-Slugs for RENDER kinds mirror care_fe's ``PrintTemplateType``; a FILE kind has no print
-view and so no template slug.
+* ``RENDER`` -- care_fe has a print view and no PDF exists anywhere; the browser makes
+  one when staff hit Print. The link carries the subject, and the page draws it from the
+  data. ``template_slug`` is the facility print_templates key care_fe uses for that view,
+  so the patient sees the same letterhead. Slugs mirror care_fe's ``PrintTemplateType``.
+* ``FILE`` -- a pre-rendered artifact in object storage (a template-builder report, or a
+  file a lab uploaded). No print view, so no template slug.
 """
 
 from __future__ import annotations
@@ -66,9 +62,8 @@ def get(slug: str) -> DocumentKind | None:
 def _facility_payload(facility: Any) -> dict[str, Any]:
     """Only what care_fe's print layout reads off a facility.
 
-    Deliberately not FacilityRetrieveSpec: that carries a permissions mixin that needs a
-    user, and this endpoint has none. Four fields is also all an anonymous holder of the
-    link should learn about the facility.
+    Deliberately not FacilityRetrieveSpec: that carries a permissions mixin needing a
+    user, and it would tell an anonymous link holder far more than a letterhead does.
     """
     if facility is None:
         return {}
@@ -84,7 +79,7 @@ def _attachment_payloads(file_type: str, associating_id: str) -> list[dict[str, 
     """Every completed, unarchived attachment, oldest first, each with a short-TTL URL.
 
     Every one, not just the newest: care_fe's print view renders them all, and a report
-    whose attachments are silently dropped is a different document from the one staff see.
+    missing its attachments is a different document from the one staff see.
     """
     from care.emr.models.file_upload import FileUpload  # pyright: ignore[reportMissingImports]
 
@@ -166,9 +161,9 @@ def _resolve_condition_tag_displays(observations: list[dict[str, Any]]) -> None:
 def _build_diagnostic_report(link: DocumentLink) -> dict[str, Any]:
     """The same body care_fe's authenticated retrieve endpoint returns, plus attachments.
 
-    Reusing core's own read spec is the point: the public page renders a copy of care_fe's
-    print view, so it must receive the shape that view already consumes. Hand-rolling a
-    parallel payload here would be a second thing to keep in step with core.
+    Reusing core's read spec is the point: the page renders a copy of care_fe's print
+    view, so it must receive the shape that view already consumes. A hand-rolled payload
+    would be a second thing to keep in step with core.
     """
     from care.emr.models.diagnostic_report import DiagnosticReport  # pyright: ignore[reportMissingImports]
     from care.emr.resources.diagnostic_report.spec import (  # pyright: ignore[reportMissingImports]

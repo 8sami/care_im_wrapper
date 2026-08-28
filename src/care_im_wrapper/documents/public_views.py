@@ -1,8 +1,7 @@
 """Public, unauthenticated document payload for the patient-facing page.
 
-Sibling of ``document_redirect``: same capability model, same failure discipline, but it
-returns the document's data rather than bouncing to storage, so the page can draw
-care_fe's print view for a patient who has no CARE account.
+The one entry point for a document, whatever kind it is: the page reads the record
+through here and either draws care_fe's print view or is handed the stored file.
 
 There is no user here by design. The token in the URL is the capability; everything this
 endpoint will disclose is fixed by the DocumentLink that was minted for one patient and
@@ -29,10 +28,10 @@ def public_document(request: HttpRequest, token: str) -> JsonResponse:
     Missing, invalid, expired, and unknown-kind tokens all 404 identically -- a caller
     learns nothing from the difference, including whether a token ever existed.
 
-    Rate-limited per token rather than per client IP, for the reason given in
-    ``document_redirect``: behind a reverse proxy every request shares one REMOTE_ADDR,
-    so an IP-keyed limit is a single global one. The token is 256 bits, so guessing is
-    not the threat; capping reuse of a forwarded link is.
+    Rate-limited per token rather than per client IP: behind a reverse proxy every
+    request shares one REMOTE_ADDR, so an IP-keyed limit is really a single global one.
+    The token is 256 bits, so guessing is not the threat; capping reuse of a forwarded
+    link is.
     """
     if is_rate_limited(
         f"doc_payload:{token}",
