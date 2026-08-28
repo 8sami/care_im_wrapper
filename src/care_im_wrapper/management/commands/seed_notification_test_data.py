@@ -1,22 +1,29 @@
-"""Seeds the fixtures the frontend end-to-end suite needs.
+"""Seeds the fixtures the frontend end-to-end suite needs, and creates events for it.
 
-Two of them cannot come from anywhere else:
+Two things cannot come from anywhere else:
 
-* **A manual trigger.** Every trigger seeded by migration is ``signal``-typed, and
-  ``NotificationEventViewSet.perform_create`` rejects anything else, so without this the
-  create-notification screen has an empty trigger dropdown and a disabled submit button.
 * **Templates.** Real templates arrive from the provider through ``sync_notification_templates``,
   which needs Meta credentials. CI has none, so the suite seeds its own -- one active and one
-  inactive, because the create screen must be shown to offer only active ones.
+  inactive, because the templates screen must be shown to offer only active ones.
+* **Dispatchable events.** Events are only ever created by signal handlers, each of which needs
+  its own domain object (a booking, an invoice) to fire. ``--create-event`` makes one directly
+  so the dispatch tests have something pending without staging that whole domain setup.
 
-Idempotent: re-running updates the same rows rather than duplicating them.
+Seeding is idempotent: re-running updates the same rows rather than duplicating them.
 """
 
-from django.core.management.base import BaseCommand
+import uuid
 
+from care.emr.models.patient import Patient  # pyright: ignore[reportMissingImports]
+from care.facility.models.facility import Facility  # pyright: ignore[reportMissingImports]
+from django.contrib.contenttypes.models import ContentType
+from django.core.management.base import BaseCommand, CommandError
+
+from care_im_wrapper.messaging.registry import resolve_channel
 from care_im_wrapper.models.notification import (
     NotificationCategory,
     NotificationEvent,
+    NotificationRecipient,
     NotificationTemplate,
     NotificationTrigger,
     TemplateApprovalStatus,
@@ -24,7 +31,7 @@ from care_im_wrapper.models.notification import (
     TriggerType,
 )
 
-TRIGGER_SLUG = "e2e_manual_notification"
+TRIGGER_SLUG = "e2e_seeded_notification"
 ACTIVE_TEMPLATE_SLUG = "e2e_active_template"
 INACTIVE_TEMPLATE_SLUG = "e2e_inactive_template"
 
@@ -65,9 +72,12 @@ INACTIVE_TEMPLATE_PAYLOAD = {
 
 
 class Command(BaseCommand):
+    """Progress messages go to stderr so stdout carries only the created event's id."""
+
     help = (
-        "Seeds the manual trigger and the two templates the frontend Playwright suite needs. "
-        "Idempotent. Pass --reset to also delete events created against the seeded trigger."
+        "Seeds the trigger and the two templates the frontend Playwright suite needs. "
+        "Idempotent. --create-event adds one event for the dispatch tests and prints its id; "
+        "--reset deletes every event created against the seeded trigger."
     )
 
     def add_arguments(self, parser) -> None:
@@ -76,8 +86,35 @@ class Command(BaseCommand):
             action="store_true",
             help="Delete every event created against the seeded trigger first, for a repeatable list.",
         )
+        parser.add_argument(
+            "--create-event",
+            metavar="TITLE",
+            help="Create one event with this title and print its external id.",
+        )
+        parser.add_argument(
+            "--facility",
+            metavar="EXTERNAL_ID",
+            help="Facility the created event belongs to. Required with --create-event.",
+        )
+        parser.add_argument(
+            "--no-recipient",
+            action="store_true",
+            help="Create the event with no recipients, for the 'nothing pending' states.",
+        )
 
     def handle(self, *args, **options) -> None:
+        # --create-event is a read-only mode on purpose. Re-running the seeding below on every
+        # call would rewrite the shared template rows mid-suite -- resetting is_active and
+        # variable_mapping under the admin specs, which run in parallel and assert on exactly
+        # those fields.
+        if options["create_event"]:
+            self._create_event(
+                title=options["create_event"],
+                facility_external_id=options["facility"],
+                with_recipient=not options["no_recipient"],
+            )
+            return
+
         active_template, created = NotificationTemplate.objects.update_or_create(
             slug=ACTIVE_TEMPLATE_SLUG,
             defaults={
@@ -113,13 +150,13 @@ class Command(BaseCommand):
         trigger, created = NotificationTrigger.objects.update_or_create(
             slug=TRIGGER_SLUG,
             defaults={
-                "name": "E2E Manual Notification",
-                "description": "Manual trigger used by the frontend end-to-end suite.",
-                "trigger_type": TriggerType.MANUAL,
+                "name": "E2E Seeded Notification",
+                "description": "Trigger the frontend end-to-end suite files its events under.",
+                "trigger_type": TriggerType.SIGNAL,
                 "is_active": True,
                 "template_slug": active_template.slug,
-                # No context_slug: a manual event has no related object to build a context from,
-                # and a non-empty value is validated against NOTIFICATION_CONTEXT_REGISTRY on save.
+                # No context_slug: these events carry no related object to build a context
+                # from, and a non-empty value is validated against the registry on save.
                 "context_slug": "",
             },
         )
@@ -127,8 +164,56 @@ class Command(BaseCommand):
 
         if options["reset"]:
             deleted, _ = NotificationEvent.objects.filter(trigger=trigger).delete()
-            self.stdout.write(self.style.WARNING(f"deleted {deleted} row(s) for trigger '{TRIGGER_SLUG}'"))  # pyright: ignore[reportAttributeAccessIssue]
+            self.stderr.write(f"deleted {deleted} row(s) for trigger '{TRIGGER_SLUG}'")
+
+    def _create_event(
+        self,
+        *,
+        title: str,
+        facility_external_id: str | None,
+        with_recipient: bool,
+    ) -> None:
+        if not facility_external_id:
+            raise CommandError("--facility is required with --create-event.")
+        try:
+            # Facility.external_id is a UUIDField: filtering on a malformed value raises
+            # before the row lookup, so parse it here to fail with a readable message.
+            facility_uuid = uuid.UUID(str(facility_external_id))
+        except ValueError as exc:
+            raise CommandError(f"--facility must be a UUID, got '{facility_external_id}'.") from exc
+        facility = Facility.objects.filter(external_id=facility_uuid).first()
+        if facility is None:
+            raise CommandError(f"No facility with external_id '{facility_external_id}'.")
+
+        trigger = NotificationTrigger.objects.filter(slug=TRIGGER_SLUG).first()
+        template = NotificationTemplate.objects.filter(slug=ACTIVE_TEMPLATE_SLUG).first()
+        if trigger is None or template is None:
+            raise CommandError("Run this command with no arguments first, to seed the trigger and templates.")
+
+        # No related object, so NotificationEvent.save() keeps the facility assigned here --
+        # without it the event is invisible in the facility-scoped list the tests read.
+        event = NotificationEvent.objects.create(
+            trigger=trigger,
+            template=template,
+            title=title,
+            facility_id=facility.id,
+        )
+
+        if with_recipient:
+            patient = Patient.objects.exclude(phone_number="").first()
+            if patient is None:
+                raise CommandError("No patient with a phone number to notify; load fixtures first.")
+            NotificationRecipient.objects.create(
+                event=event,
+                recipient_content_type=ContentType.objects.get_for_model(Patient),
+                recipient_object_id=patient.id,
+                phone_number=patient.phone_number,
+                provider=resolve_channel(patient.phone_number),
+            )
+
+        # Bare id on its own line: the Playwright helper reads it off stdout.
+        self.stdout.write(str(event.external_id))
 
     def _report(self, kind: str, slug: str, created: bool) -> None:
         verb = "created" if created else "updated"
-        self.stdout.write(self.style.SUCCESS(f"{verb} {kind} '{slug}'"))  # pyright: ignore[reportAttributeAccessIssue]
+        self.stderr.write(f"{verb} {kind} '{slug}'")

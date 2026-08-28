@@ -12,7 +12,6 @@ from care_im_wrapper.models.conversation_session import ConversationSession
 
 class TriggerType(models.TextChoices):
     SIGNAL = "signal", "Signal"  # pyright: ignore[reportAssignmentType]
-    MANUAL = "manual", "Manual"  # pyright: ignore[reportAssignmentType]
 
 
 class NotificationTrigger(BaseModel):
@@ -127,7 +126,7 @@ class NotificationTemplate(BaseModel):
 
 
 class NotificationEvent(BaseModel):
-    # care.users.User.id of staff member. NULL for automatic signal-triggered events.
+    # care.users.User.id. Always NULL: every event is created by a signal handler, not a user.
     created_by_id = models.IntegerField(null=True, blank=True)
     updated_by_id = models.IntegerField(null=True, blank=True)
     template = models.ForeignKey(NotificationTemplate, on_delete=models.PROTECT)
@@ -154,10 +153,10 @@ class NotificationEvent(BaseModel):
     def save(self, *args: Any, **kwargs: Any) -> None:
         # A related object is the authoritative source of the facility, so it always wins:
         # signal-created events resolve it here and cannot be pointed elsewhere by a caller.
-        # Without one -- every manually created event -- an explicitly assigned facility_id
-        # is kept. Recomputing unconditionally would overwrite it with None on every save,
-        # leaving the event unreachable from the facility-scoped list and readable only by
-        # a superuser (see NotificationAccess._check_in_event_facility).
+        # An event without one keeps whatever facility_id was assigned to it. Recomputing
+        # unconditionally would overwrite that with None on every save, leaving the event
+        # unreachable from the facility-scoped list and readable only by a superuser
+        # (see NotificationAccess._check_in_event_facility).
         related_object = self.related_object
         if related_object is not None:
             facility = _resolve_facility(related_object)

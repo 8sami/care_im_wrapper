@@ -41,16 +41,6 @@ class NotificationAccess(AuthorizationHandler):
     def can_read_notification_event(self, user, event: NotificationEvent) -> bool:
         return self._check_in_event_facility(NotificationPermissions.can_read_notification_event.name, user, event)
 
-    def can_create_notification_event(self, user, event_or_facility_context: NotificationEvent | None = None) -> bool:
-        # No context yet (facility_id is only resolved in NotificationEvent.save()) > org-level check.
-        if event_or_facility_context is None:
-            return self.check_permission_in_organization(
-                [NotificationPermissions.can_create_notification_event.name], user
-            )
-        return self._check_in_event_facility(
-            NotificationPermissions.can_create_notification_event.name, user, event_or_facility_context
-        )
-
     def can_dispatch_notification_event(self, user, event: NotificationEvent) -> bool:
         return self._check_in_event_facility(NotificationPermissions.can_dispatch_notification_event.name, user, event)
 

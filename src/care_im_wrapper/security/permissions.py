@@ -30,12 +30,6 @@ class NotificationPermissions(enum.Enum):
         PermissionContext.FACILITY,
         [ADMIN_ROLE, STAFF_ROLE, FACILITY_ADMIN_ROLE, DOCTOR_ROLE, NURSE_ROLE, ADMINISTRATOR],
     )
-    can_create_notification_event = Permission(
-        "Can manually create a notification event for a manual-type trigger",
-        "",
-        PermissionContext.FACILITY,
-        [ADMIN_ROLE, STAFF_ROLE, FACILITY_ADMIN_ROLE, ADMINISTRATOR],
-    )
     can_dispatch_notification_event = Permission(
         "Can manually trigger dispatch of pending recipients for an event",
         "",

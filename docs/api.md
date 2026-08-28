@@ -28,7 +28,7 @@ docker compose exec backend python manage.py spectacular --file schema.yaml
 | `notification-templates/{id}/set_variable_mapping/` | POST | Save a placeholder → expression mapping. |
 | `notification-templates/{id}/preview_variable_mapping/` | POST | Dry-run a mapping against a preview stub. |
 | `notification-templates/sync/` | POST | Queue a pull of the provider's template catalogue. |
-| `notification-events/` | list, retrieve, create | Fired notifications. |
+| `notification-events/` | list, retrieve | Fired notifications. |
 | `notification-events/{id}/dispatch/` | POST | Queue pending recipients for delivery. |
 | `notification-recipients/` | list, retrieve | Per-recipient delivery log and status history. |
 
@@ -68,7 +68,6 @@ handler in {py:mod}`care_im_wrapper.security.authorization`.
 | `can_read_notification_template` | Generic | Read templates and their field schema. |
 | `can_manage_notification_template` | Generic | Toggle, sync, and set variable mappings. |
 | `can_read_notification_event` | Facility | Read events and recipients. |
-| `can_create_notification_event` | Facility | Create a manual-trigger event. |
 | `can_dispatch_notification_event` | Facility | Trigger delivery of pending recipients. |
 
 ## Facility scoping
