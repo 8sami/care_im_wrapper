@@ -10,21 +10,17 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Branch of ohcnetwork/care the plugin is tested against.
   CARE_REF: develop
 
-  # care discovers plugs through this variable: install_plugins.py pip-installs them at
-  # image build time, and PlugManager puts them in INSTALLED_APPS at runtime. It is
-  # therefore needed both as a build arg and in the container environment.
+  # Read when building the image (install_plugins.py) and again at runtime (INSTALLED_APPS),
+  # so it is needed both as a build arg and in the container environment.
   #
-  # The WhatsApp values are placeholders. They exist because
-  # care_im_wrapper.settings.REQUIRED_SETTINGS refuses to import without them, and the
-  # API URL points at a reserved TLD that cannot resolve, so a send that escaped a test's
+  # The WhatsApp values are placeholders: REQUIRED_SETTINGS refuses to import without them,
+  # and the API URL is a reserved TLD that cannot resolve, so a send that escaped a test's
   # patching has nowhere to go. tests/__init__.py guards the same boundary in-process.
   ADDITIONAL_PLUGS: >-
     [{"name":"care_im_wrapper","package_name":"/app/care_im_wrapper","version":"","configs":{"WHATSAPP_API_URL":"https://graph.invalid/v25.0","WHATSAPP_ACCESS_TOKEN":"ci-placeholder-token","WHATSAPP_PHONE_NUMBER_ID":"ci-placeholder-phone-id","WHATSAPP_BUSINESS_ACCOUNT_ID":"ci-placeholder-waba-id","WHATSAPP_WEBHOOK_VERIFY_TOKEN":"ci-placeholder-verify-token","WHATSAPP_APP_SECRET":"ci-placeholder-app-secret"}}]
 
-  # Applies to every `docker compose` call below, and to care's own make targets.
   COMPOSE_FILE: docker-compose.yaml:docker-compose.local.yaml
 
 jobs:
@@ -70,9 +66,8 @@ jobs:
       - name: Start care
         run: docker compose up -d --wait || (docker compose logs && exit 1)
 
-      # A worker would run the dispatch sweep against the development database while the
-      # suite runs. Nothing may send from CI, so the worker goes away before the tests
-      # start; the backend container keeps running, depends_on only gates startup.
+      # Nothing may send from CI, and a worker would run the dispatch sweep while the suite
+      # runs. The backend container stays up; depends_on only gates startup.
       - name: Stop the celery worker
         run: docker compose stop celery
 
