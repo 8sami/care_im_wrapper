@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from care_im_wrapper.auth.resolver import ResolutionResult, ResolvedIdentity
 from care_im_wrapper.conversation.handlers import Outbound, _handle_awaiting_yob, _handle_new
@@ -82,6 +82,7 @@ class HandleAwaitingYobTests(TestCase):
 
         self.assertEqual(outbox, [Outbound(PHONE, "Please enter a valid 4-digit year (e.g. 1990).")])
 
+    @override_settings(PLUGIN_CONFIGS={"care_im_wrapper": {"MAX_FAILED_ATTEMPTS": 3}})
     def test_wrong_year_increments_failed_attempts_and_sends_remaining_count(self):
         outbox: list[Outbound] = []
         _handle_awaiting_yob(self.session, PHONE, "1985", CHANNEL, outbox)
@@ -91,6 +92,7 @@ class HandleAwaitingYobTests(TestCase):
         self.assertEqual(self.session.failed_attempts, 1)
         self.assertEqual(outbox, [Outbound(PHONE, "That doesn't match. You have *2* attempt(s) remaining.")])
 
+    @override_settings(PLUGIN_CONFIGS={"care_im_wrapper": {"MAX_FAILED_ATTEMPTS": 5}})
     def test_fifth_wrong_attempt_triggers_cooldown(self):
         self.session.failed_attempts = 4
         self.session.save(update_fields=["failed_attempts"])

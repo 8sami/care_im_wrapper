@@ -1,0 +1,86 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARE_REF: develop
+
+  # Read when building the image (install_plugins.py) and again at runtime (INSTALLED_APPS),
+  # so it is needed both as a build arg and in the container environment.
+  #
+  # The WhatsApp values are placeholders: REQUIRED_SETTINGS refuses to import without them,
+  # and the API URL is a reserved TLD that cannot resolve, so a send that escaped a test's
+  # patching has nowhere to go. tests/__init__.py guards the same boundary in-process.
+  ADDITIONAL_PLUGS: >-
+    [{"name":"care_im_wrapper","package_name":"/app/care_im_wrapper","version":"","configs":{"WHATSAPP_API_URL":"https://graph.invalid/v25.0","WHATSAPP_ACCESS_TOKEN":"ci-placeholder-token","WHATSAPP_PHONE_NUMBER_ID":"ci-placeholder-phone-id","WHATSAPP_BUSINESS_ACCOUNT_ID":"ci-placeholder-waba-id","WHATSAPP_WEBHOOK_VERIFY_TOKEN":"ci-placeholder-verify-token","WHATSAPP_APP_SECRET":"ci-placeholder-app-secret"}}]
+
+  COMPOSE_FILE: docker-compose.yaml:docker-compose.local.yaml
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: care
+
+    steps:
+      - name: Check out care
+        uses: actions/checkout@v5
+        with:
+          repository: ohcnetwork/care
+          ref: ${{ env.CARE_REF }}
+          path: care
+
+      # The plug is installed from /app/care_im_wrapper, so it has to sit inside the care
+      # checkout that becomes /app in the image.
+      - name: Check out the plugin inside care
+        uses: actions/checkout@v5
+        with:
+          path: care/care_im_wrapper
+
+      - name: Register the plugin for the running containers
+        run: echo "ADDITIONAL_PLUGS=$ADDITIONAL_PLUGS" >> docker/.local.env
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the care dev image
+        uses: docker/build-push-action@v6
+        with:
+          context: care
+          file: care/docker/dev.Dockerfile
+          tags: care_local
+          load: true
+          build-args: ADDITIONAL_PLUGS=${{ env.ADDITIONAL_PLUGS }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start care
+        run: docker compose up -d --wait || (docker compose logs && exit 1)
+
+      # Nothing may send from CI, and a worker would run the dispatch sweep while the suite
+      # runs. The backend container stays up; depends_on only gates startup.
+      - name: Stop the celery worker
+        run: docker compose stop celery
+
+      - name: Check for missing plugin migrations
+        run: >-
+          docker compose exec -T backend
+          python manage.py makemigrations care_im_wrapper --check --dry-run
+
+      - name: Run plugin tests
+        run: >-
+          docker compose exec -T backend
+          python manage.py test care_im_wrapper --settings=config.settings.test --parallel --shuffle
+
+      - name: Container logs
+        if: failure()
+        run: docker compose logs --no-color --tail=200
