@@ -60,19 +60,21 @@ class DocumentRequest:
     diagnostic_report: DiagnosticReport | None = None
 
 
-def _resolve_encounter_template(encounter: Encounter) -> Any:
+def _resolve_encounter_template(encounter: Encounter, report_type: str) -> Any:
+    """The facility's active Template for this report type, else the global one.
+
+    Filtered on template_type as well as context, matching how care_fe's template picker
+    scopes the list (TemplateList passes report_type through as template_type). Context
+    alone is too loose: an encounter report and a discharge summary are both authored
+    against encounter_base, so without this the first row of either type would win.
+    """
     from care.emr.models.report.template import Template  # pyright: ignore[reportMissingImports]
 
-    template = (
-        Template.objects.filter(
-            context=ENCOUNTER_TEMPLATE_CONTEXT, status="active", facility=encounter.facility
-        ).first()
-        or Template.objects.filter(context=ENCOUNTER_TEMPLATE_CONTEXT, status="active", facility=None).first()
-    )
+    candidates = Template.objects.filter(context=ENCOUNTER_TEMPLATE_CONTEXT, template_type=report_type, status="active")
+    template = candidates.filter(facility=encounter.facility).first() or candidates.filter(facility=None).first()
     if template is None:
         raise DocumentUnavailableError(
-            f"No active '{ENCOUNTER_TEMPLATE_CONTEXT}' Template configured for "
-            f"facility={encounter.facility_id} or globally."
+            f"No active '{report_type}' Template configured for facility={encounter.facility_id} or globally."
         )
     return template
 
@@ -103,7 +105,7 @@ def _find_existing_encounter_report(encounter: Encounter, report_type: str) -> A
 def _generate_encounter_report(encounter: Encounter, report_type: str) -> Any:
     from care.emr.reports.report_utils import generate_and_upload_report  # pyright: ignore[reportMissingImports]
 
-    template = _resolve_encounter_template(encounter)
+    template = _resolve_encounter_template(encounter, report_type)
     try:
         return generate_and_upload_report(
             template=template,

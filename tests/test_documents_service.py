@@ -40,7 +40,8 @@ class DocumentServiceTests(CareAPITestBase):
             "name": "Encounter Base",
             "status": "active",
             "template_data": "<html></html>",
-            "template_type": "encounter_report",
+            # Matches the report_type the encounter path asks for; resolution filters on it.
+            "template_type": DISCHARGE_SUMMARY_REPORT_TYPE,
             "default_format": "pdf",
             "context": "encounter_base",
             "facility": None,
@@ -183,6 +184,16 @@ class DocumentServiceTests(CareAPITestBase):
         )
 
         self.assertEqual(link.object_external_id, report.external_id)
+
+    def test_a_template_of_another_type_is_not_used(self):
+        """Encounter reports and discharge summaries share the encounter_base context, so
+        context alone would let either stand in for the other."""
+        self._create_template(template_type="encounter_report")
+
+        with self.assertRaises(DocumentUnavailableError):
+            get_or_create_document_link(
+                self._patient_actor(), self.patient, self._encounter_request(), provider="whatsapp"
+            )
 
     def test_no_active_template_raises_document_unavailable_error(self):
         document_request = DocumentRequest(document_type="patient_summary", encounter=self.encounter)
