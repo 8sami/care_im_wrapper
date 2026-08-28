@@ -46,15 +46,15 @@ class DocumentRequest:
     """Describes which document a flow wants a link for.
 
     ``encounter`` resolves the Template and is the associating_id for generation.
-    ``diagnostic_report``, when set, is checked first for an uploaded FileUpload; if one
-    exists the link references it and nothing is generated.
+    ``diagnostic_report``, when set, references the file uploaded against that report;
+    that path never generates.
     """
 
     document_type: str
     encounter: Encounter
     # core ReportTypeRegistry key used for the generate path: gates staff authorization
-    # (write_report_authorizer) and tags the ReportUpload. Ignored when an uploaded
-    # diagnostic file is referenced instead of generating.
+    # (write_report_authorizer) and tags the ReportUpload. Ignored whenever
+    # diagnostic_report is set, since that path never generates.
     report_type: str = ENCOUNTER_REPORT_TYPE
     diagnostic_report: DiagnosticReport | None = None
 
@@ -216,11 +216,14 @@ def _locate_or_generate_document_link(
     document_request: DocumentRequest,
     provider: str,
 ) -> DocumentLink:
-    file_upload = None
     if document_request.diagnostic_report is not None:
+        # A lab report is the file uploaded against it and nothing else: no encounter
+        # report fallback, which would deliver a document about a different subject.
         file_upload = _find_uploaded_diagnostic_file(document_request.diagnostic_report)
-
-    if file_upload is not None:
+        if file_upload is None:
+            raise DocumentUnavailableError(
+                f"No uploaded document for diagnostic report {document_request.diagnostic_report.external_id}."
+            )
         # An uploaded diagnostic file, not a generated report: core has no report authorizer
         # for it, so the identity/view scope is the applicable check.
         if actor is not None:
@@ -255,8 +258,8 @@ def get_or_create_document_link(
     document_request: DocumentRequest,
     provider: str,
 ) -> DocumentLink:
-    """Pull path: uploaded file first, else encounter-scoped generation, then issue or
-    reuse a patient-scoped DocumentLink. Authorization is per-branch (see
+    """Pull path: a lab report's uploaded file, or encounter-scoped generation, then issue
+    or reuse a patient-scoped DocumentLink. Authorization is per-branch (see
     _locate_or_generate_document_link): a referenced uploaded file uses the patient view
     scope, a generated report matches core's report-generation authorizer.
 

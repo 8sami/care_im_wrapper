@@ -23,8 +23,8 @@ def resolve_diagnostic_report_document(patient: Patient, external_id: str) -> Do
     """The DiagnosticReport the user picked off the lab-reports list.
 
     Scoped to `patient` so a stale or guessed external_id cannot reach another patient's
-    record. Reports sharing an encounter with no uploaded file of their own resolve to the
-    same encounter PDF -- core has no per-test report type.
+    record. A report with no uploaded file of its own is unavailable; there is no
+    encounter-PDF fallback.
     """
     from care.emr.models.diagnostic_report import DiagnosticReport  # pyright: ignore[reportMissingImports]
 

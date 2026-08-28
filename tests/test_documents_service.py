@@ -9,6 +9,7 @@ from care_im_wrapper.auth.actor import Actor
 from care_im_wrapper.data.exceptions import PermissionDeniedError
 from care_im_wrapper.documents.exceptions import DocumentUnavailableError
 from care_im_wrapper.documents.service import (
+    DISCHARGE_SUMMARY_REPORT_TYPE,
     DocumentRequest,
     build_document_url,
     get_or_create_document_link,
@@ -59,6 +60,30 @@ class DocumentServiceTests(CareAPITestBase):
         data.update(kwargs)
         return DiagnosticReport.objects.create(**data)
 
+    def _create_diagnostic_file(self, report, **kwargs):
+        from care.emr.models.file_upload import FileUpload
+
+        data = {
+            "name": "lab-result",
+            "associating_id": str(report.external_id),
+            "file_type": "diagnostic_report",
+            "file_category": "unspecified",
+            "upload_completed": True,
+        }
+        data.update(kwargs)
+        return FileUpload.objects.create(**data)
+
+    def _encounter_request(self):
+        """The shape resolve_encounter_document builds: an encounter, generated as a discharge summary."""
+        return DocumentRequest(
+            document_type="discharge_summary",
+            encounter=self.encounter,
+            report_type=DISCHARGE_SUMMARY_REPORT_TYPE,
+        )
+
+    def _lab_report_request(self, report):
+        return DocumentRequest(document_type="diagnostic_report", encounter=self.encounter, diagnostic_report=report)
+
     def _patient_actor(self, patient=None):
         return Actor(user_type=ConversationSession.UserType.PATIENT.value, instance=patient or self.patient)
 
@@ -78,7 +103,7 @@ class DocumentServiceTests(CareAPITestBase):
         from rest_framework.exceptions import PermissionDenied as DRFPermissionDenied
 
         actor = self._staff_actor()
-        document_request = DocumentRequest(document_type="discharge_summary", encounter=self.encounter)
+        document_request = self._encounter_request()
 
         with patch(
             "care.emr.reports.authorizers.utils.write_report_authorizer",
@@ -94,62 +119,50 @@ class DocumentServiceTests(CareAPITestBase):
     def test_staff_generation_proceeds_when_the_report_authorizer_allows(self):
         self._create_template()
         actor = self._staff_actor()
-        document_request = DocumentRequest(document_type="discharge_summary", encounter=self.encounter)
+        document_request = self._encounter_request()
         fake_report_upload = MagicMock(external_id=uuid.uuid4())
 
         with (
             patch("care.emr.reports.authorizers.utils.write_report_authorizer") as mock_authz,
-            patch("care.emr.reports.report_utils.generate_and_upload_report", return_value=fake_report_upload),
+            patch(
+                "care.emr.reports.report_utils.generate_and_upload_report", return_value=fake_report_upload
+            ) as mock_generate,
         ):
             link = get_or_create_document_link(actor, self.patient, document_request, provider="whatsapp")
 
         mock_authz.assert_called_once()
+        self.assertEqual(mock_generate.call_args.kwargs["report_type"], "discharge_summary")
+        self.assertEqual(mock_generate.call_args.kwargs["associating_id"], str(self.encounter.external_id))
+        self.assertEqual(link.object_kind, DocumentLinkObjectKind.REPORT_UPLOAD)
         self.assertEqual(link.object_external_id, fake_report_upload.external_id)
 
-    def test_uploaded_diagnostic_file_is_preferred_over_generation(self):
-        from care.emr.models.file_upload import FileUpload
-
+    def test_lab_report_links_to_its_uploaded_file(self):
         report = self._create_diagnostic_report()
-        file_upload = FileUpload.objects.create(
-            name="lab-result",
-            associating_id=str(report.external_id),
-            file_type="diagnostic_report",
-            file_category="unspecified",
-            upload_completed=True,
-        )
-        document_request = DocumentRequest(
-            document_type="diagnostic_report", encounter=self.encounter, diagnostic_report=report
-        )
+        file_upload = self._create_diagnostic_file(report)
 
         with patch("care.emr.reports.report_utils.generate_and_upload_report") as mock_generate:
             link = get_or_create_document_link(
-                self._patient_actor(), self.patient, document_request, provider="whatsapp"
+                self._patient_actor(), self.patient, self._lab_report_request(report), provider="whatsapp"
             )
 
         mock_generate.assert_not_called()
         self.assertEqual(link.object_kind, DocumentLinkObjectKind.FILE_UPLOAD)
         self.assertEqual(link.object_external_id, file_upload.external_id)
 
-    def test_no_uploaded_file_falls_back_to_generation(self):
+    def test_lab_report_without_an_uploaded_file_is_unavailable_and_never_generates(self):
+        # An encounter Template exists and would render, but a lab report must not fall
+        # back to an encounter/discharge document (issue #21).
         self._create_template()
         report = self._create_diagnostic_report()
-        document_request = DocumentRequest(
-            document_type="diagnostic_report", encounter=self.encounter, diagnostic_report=report
-        )
-        fake_report_upload = MagicMock(external_id=uuid.uuid4())
 
-        with patch(
-            "care.emr.reports.report_utils.generate_and_upload_report", return_value=fake_report_upload
-        ) as mock_generate:
-            link = get_or_create_document_link(
-                self._patient_actor(), self.patient, document_request, provider="whatsapp"
-            )
+        with patch("care.emr.reports.report_utils.generate_and_upload_report") as mock_generate:
+            with self.assertRaises(DocumentUnavailableError):
+                get_or_create_document_link(
+                    self._patient_actor(), self.patient, self._lab_report_request(report), provider="whatsapp"
+                )
 
-        mock_generate.assert_called_once()
-        self.assertEqual(mock_generate.call_args.kwargs["report_type"], "encounter_report")
-        self.assertEqual(mock_generate.call_args.kwargs["associating_id"], str(self.encounter.external_id))
-        self.assertEqual(link.object_kind, DocumentLinkObjectKind.REPORT_UPLOAD)
-        self.assertEqual(link.object_external_id, fake_report_upload.external_id)
+        mock_generate.assert_not_called()
+        self.assertFalse(DocumentLink.objects.exists())
 
     def test_no_active_template_raises_document_unavailable_error(self):
         document_request = DocumentRequest(document_type="patient_summary", encounter=self.encounter)
@@ -159,10 +172,7 @@ class DocumentServiceTests(CareAPITestBase):
 
     def test_existing_valid_link_is_reused_not_recreated(self):
         self._create_template()
-        report = self._create_diagnostic_report()
-        document_request = DocumentRequest(
-            document_type="diagnostic_report", encounter=self.encounter, diagnostic_report=report
-        )
+        document_request = self._encounter_request()
         fake_report_upload = MagicMock(external_id=uuid.uuid4())
 
         with patch("care.emr.reports.report_utils.generate_and_upload_report", return_value=fake_report_upload):
@@ -177,16 +187,8 @@ class DocumentServiceTests(CareAPITestBase):
         self.assertEqual(DocumentLink.objects.filter(object_external_id=fake_report_upload.external_id).count(), 1)
 
     def test_expired_existing_link_is_not_reused(self):
-        from care.emr.models.file_upload import FileUpload
-
         report = self._create_diagnostic_report()
-        file_upload = FileUpload.objects.create(
-            name="lab-result",
-            associating_id=str(report.external_id),
-            file_type="diagnostic_report",
-            file_category="unspecified",
-            upload_completed=True,
-        )
+        file_upload = self._create_diagnostic_file(report)
         DocumentLink.objects.create(
             object_kind=DocumentLinkObjectKind.FILE_UPLOAD,
             object_external_id=file_upload.external_id,
@@ -195,11 +197,10 @@ class DocumentServiceTests(CareAPITestBase):
             provider="whatsapp",
             expires_at=timezone.now() - timedelta(seconds=1),
         )
-        document_request = DocumentRequest(
-            document_type="diagnostic_report", encounter=self.encounter, diagnostic_report=report
-        )
 
-        link = get_or_create_document_link(self._patient_actor(), self.patient, document_request, provider="whatsapp")
+        link = get_or_create_document_link(
+            self._patient_actor(), self.patient, self._lab_report_request(report), provider="whatsapp"
+        )
 
         self.assertEqual(DocumentLink.objects.filter(object_external_id=file_upload.external_id).count(), 2)
         self.assertTrue(link.is_valid())
@@ -248,14 +249,18 @@ class DocumentServiceTests(CareAPITestBase):
         self.assertEqual(url, f"http://localhost:9000/api/care_im_wrapper/documents/{link.token}/")
 
     def test_system_document_link_does_not_require_actor(self):
+        report = self._create_diagnostic_report()
+        file_upload = self._create_diagnostic_file(report)
+
+        link = get_system_document_link(self.patient, self._lab_report_request(report), provider="whatsapp")
+
+        self.assertEqual(link.object_kind, DocumentLinkObjectKind.FILE_UPLOAD)
+        self.assertEqual(link.object_external_id, file_upload.external_id)
+
+    def test_system_document_link_for_a_lab_report_without_an_upload_is_unavailable(self):
+        # The push path must not notify about a report it cannot deliver.
         self._create_template()
         report = self._create_diagnostic_report()
-        document_request = DocumentRequest(
-            document_type="diagnostic_report", encounter=self.encounter, diagnostic_report=report
-        )
-        fake_report_upload = MagicMock(external_id=uuid.uuid4())
 
-        with patch("care.emr.reports.report_utils.generate_and_upload_report", return_value=fake_report_upload):
-            link = get_system_document_link(self.patient, document_request, provider="whatsapp")
-
-        self.assertEqual(link.object_kind, DocumentLinkObjectKind.REPORT_UPLOAD)
+        with self.assertRaises(DocumentUnavailableError):
+            get_system_document_link(self.patient, self._lab_report_request(report), provider="whatsapp")
