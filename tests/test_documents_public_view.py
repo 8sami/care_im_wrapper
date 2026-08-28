@@ -102,6 +102,42 @@ class PublicDocumentViewTests(CareAPITestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["facility"]["name"], self.facility.name)
 
+    def test_has_tag_condition_names_are_resolved_server_side(self):
+        """care_fe resolves these through an authenticated tag_config call, which a patient
+        cannot make. Both the observation's own definition and its components are walked."""
+        from care.emr.models.tag_config import TagConfig
+
+        tag = TagConfig.objects.create(
+            status="active", display="Paediatric", category="patient", facility=self.facility
+        )
+        condition = {"metric": "patient_tag", "operation": "has_tag", "value": {"value": str(tag.external_id)}}
+        report = self._create_report()
+        link = self._create_link(report)
+
+        serialized = {
+            "observations": [
+                {
+                    "observation_definition": {
+                        "qualified_ranges": [{"conditions": [dict(condition)]}],
+                        "component": [{"qualified_ranges": [{"conditions": [dict(condition)]}]}],
+                    }
+                }
+            ]
+        }
+        with patch(
+            "care.emr.resources.diagnostic_report.spec.DiagnosticReportRetrieveSpec.serialize"
+        ) as mock_serialize:
+            mock_serialize.return_value.to_json.return_value = serialized
+            body = self._get(link.token).json()
+
+        definition = body["report"]["observations"][0]["observation_definition"]
+        self.assertEqual(definition["qualified_ranges"][0]["conditions"][0]["tag_displays"], ["Paediatric"])
+        # The component branch is a separate walk; a bug there is invisible otherwise.
+        self.assertEqual(
+            definition["component"][0]["qualified_ranges"][0]["conditions"][0]["tag_displays"],
+            ["Paediatric"],
+        )
+
     def test_every_attachment_is_returned_not_just_the_newest(self):
         from care.emr.models.file_upload import FileUpload
 
