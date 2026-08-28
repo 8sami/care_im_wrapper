@@ -12,6 +12,8 @@ Two things cannot come from anywhere else:
 Seeding is idempotent: re-running updates the same rows rather than duplicating them.
 """
 
+import uuid
+
 from care.emr.models.patient import Patient  # pyright: ignore[reportMissingImports]
 from care.facility.models.facility import Facility  # pyright: ignore[reportMissingImports]
 from django.contrib.contenttypes.models import ContentType
@@ -101,6 +103,18 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options) -> None:
+        # --create-event is a read-only mode on purpose. Re-running the seeding below on every
+        # call would rewrite the shared template rows mid-suite -- resetting is_active and
+        # variable_mapping under the admin specs, which run in parallel and assert on exactly
+        # those fields.
+        if options["create_event"]:
+            self._create_event(
+                title=options["create_event"],
+                facility_external_id=options["facility"],
+                with_recipient=not options["no_recipient"],
+            )
+            return
+
         active_template, created = NotificationTemplate.objects.update_or_create(
             slug=ACTIVE_TEMPLATE_SLUG,
             defaults={
@@ -152,29 +166,29 @@ class Command(BaseCommand):
             deleted, _ = NotificationEvent.objects.filter(trigger=trigger).delete()
             self.stderr.write(f"deleted {deleted} row(s) for trigger '{TRIGGER_SLUG}'")
 
-        if options["create_event"]:
-            self._create_event(
-                trigger=trigger,
-                template=active_template,
-                title=options["create_event"],
-                facility_external_id=options["facility"],
-                with_recipient=not options["no_recipient"],
-            )
-
     def _create_event(
         self,
         *,
-        trigger: NotificationTrigger,
-        template: NotificationTemplate,
         title: str,
         facility_external_id: str | None,
         with_recipient: bool,
     ) -> None:
         if not facility_external_id:
             raise CommandError("--facility is required with --create-event.")
-        facility = Facility.objects.filter(external_id=facility_external_id).first()
+        try:
+            # Facility.external_id is a UUIDField: filtering on a malformed value raises
+            # before the row lookup, so parse it here to fail with a readable message.
+            facility_uuid = uuid.UUID(str(facility_external_id))
+        except ValueError as exc:
+            raise CommandError(f"--facility must be a UUID, got '{facility_external_id}'.") from exc
+        facility = Facility.objects.filter(external_id=facility_uuid).first()
         if facility is None:
             raise CommandError(f"No facility with external_id '{facility_external_id}'.")
+
+        trigger = NotificationTrigger.objects.filter(slug=TRIGGER_SLUG).first()
+        template = NotificationTemplate.objects.filter(slug=ACTIVE_TEMPLATE_SLUG).first()
+        if trigger is None or template is None:
+            raise CommandError("Run this command with no arguments first, to seed the trigger and templates.")
 
         # No related object, so NotificationEvent.save() keeps the facility assigned here --
         # without it the event is invisible in the facility-scoped list the tests read.

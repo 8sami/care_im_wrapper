@@ -263,6 +263,21 @@ class TestNotificationEventListScoping(NotificationAPITestBase):
         self.event = self._create_event(facility_id=self.root_org.facility_id)
         self.list_url = reverse("notification-events-list")
 
+    def test_an_event_without_a_related_object_keeps_its_assigned_facility(self):
+        """The other half of save(): with no related object there is nothing to derive a
+        facility from, so an assigned one must survive. Events seeded by
+        seed_notification_test_data --create-event have no related object, and are invisible
+        in the facility-scoped list if this stops holding."""
+        event = NotificationEvent.objects.create(
+            template=self.template,
+            trigger=self.trigger,
+            title="Seeded by hand",
+            facility_id=self.facility.id,
+        )
+
+        event.refresh_from_db()
+        self.assertEqual(event.facility_id, self.facility.id)
+
     def test_a_signal_event_takes_its_facility_from_the_related_object(self):
         """save() must keep overriding facility_id whenever a related object is present, so a
         signal-fired event cannot be pointed at a facility other than its object's."""
