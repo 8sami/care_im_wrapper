@@ -2,21 +2,12 @@ from datetime import timedelta
 
 from care.emr.api.viewsets.base import (  # pyright: ignore[reportMissingImports]
     EMRBaseViewSet,
-    EMRCreateMixin,
     EMRListMixin,
     EMRRetrieveMixin,
 )
-from care.emr.models.organization import (  # pyright: ignore[reportMissingImports]
-    FacilityOrganization,
-    FacilityOrganizationUser,
-)
-from care.emr.models.patient import Patient  # pyright: ignore[reportMissingImports]
 from care.facility.models.facility import Facility  # pyright: ignore[reportMissingImports]
 from care.security.authorization.base import AuthorizationController  # pyright: ignore[reportMissingImports]
-from care.users.models import User  # pyright: ignore[reportMissingImports]
 from care.utils.shortcuts import get_object_or_404  # pyright: ignore[reportMissingImports]
-from django.contrib.contenttypes.models import ContentType
-from django.db import transaction
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
@@ -26,19 +17,16 @@ from rest_framework.response import Response
 
 from care_im_wrapper.api.spec import (
     NotificationEventReadSpec,
-    NotificationEventWriteSpec,
     NotificationRecipientReadSpec,
     NotificationTemplateReadSpec,
     NotificationTriggerReadSpec,
 )
-from care_im_wrapper.messaging.registry import resolve_channel
 from care_im_wrapper.messaging.variables import resolve_variable
 from care_im_wrapper.models.notification import (
     NotificationEvent,
     NotificationRecipient,
     NotificationTemplate,
     NotificationTrigger,
-    TriggerType,
 )
 from care_im_wrapper.reports.schema import (
     build_notification_schema,
@@ -267,9 +255,8 @@ class NotificationTemplateViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet
         ]
     )
 )
-class NotificationEventViewSet(EMRCreateMixin, EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet):
+class NotificationEventViewSet(EMRListMixin, EMRRetrieveMixin, EMRBaseViewSet):
     database_model = NotificationEvent
-    pydantic_model = NotificationEventWriteSpec
     pydantic_read_model = NotificationEventReadSpec
 
     def get_queryset(self):
@@ -306,97 +293,6 @@ class NotificationEventViewSet(EMRCreateMixin, EMRListMixin, EMRRetrieveMixin, E
     def authorize_retrieve(self, instance):
         if not AuthorizationController.call("can_read_notification_event", self.request.user, instance):
             raise PermissionDenied("You do not have permission to view this notification event.")
-
-    def authorize_create(self, instance):
-        # `instance` here is the write spec, not the model -- core calls authorize_create before
-        # de_serialize (EMRCreateMixin.handle_create). The permission is checked in the facility
-        # the caller named: can_create_notification_event is declared PermissionContext.FACILITY
-        # and the UI gates on facility.permissions, so an org-level check would disagree with both.
-        facility = get_object_or_404(Facility, external_id=instance.facility)
-        # can_read/create only inspect facility_id, so an unsaved probe works (as in _authorized_facility_id).
-        facility_context = NotificationEvent(facility_id=facility.id)
-
-        if not AuthorizationController.call("can_create_notification_event", self.request.user, facility_context):
-            raise PermissionDenied("You do not have permission to create notification events.")
-
-    def perform_create(self, instance):
-        if instance.trigger.trigger_type != TriggerType.MANUAL:
-            raise ValidationError("Only manual-type triggers can be used to create events via this endpoint.")
-
-        instance.created_by_id = self.request.user.id
-        instance.updated_by_id = self.request.user.id
-
-        patient_external_ids = getattr(instance, "_recipient_patient_ids", [])
-        user_external_ids = getattr(instance, "_recipient_user_ids", [])
-
-        # Resolve + authorize every recipient before touching the DB, so a caller can't target
-        # patients/users outside their accessible facility organizations.
-        patients_by_external_id = self._authorized_recipient_patients(patient_external_ids)
-        users_by_external_id = self._authorized_recipient_users(user_external_ids)
-
-        with transaction.atomic():  # pyright: ignore[reportGeneralTypeIssues]
-            instance.save()
-
-            patient_content_type = ContentType.objects.get_for_model(Patient)
-            for patient in patients_by_external_id.values():
-                NotificationRecipient.objects.create(
-                    event=instance,
-                    recipient_content_type=patient_content_type,
-                    recipient_object_id=patient.id,
-                    phone_number=patient.phone_number,
-                    # Match the signal path: send on the recipient's own channel, not a
-                    # hardcoded default (registry.resolve_channel is provider-agnostic).
-                    provider=resolve_channel(patient.phone_number),
-                )
-
-            user_content_type = ContentType.objects.get_for_model(User)
-            for recipient_user in users_by_external_id.values():
-                NotificationRecipient.objects.create(
-                    event=instance,
-                    recipient_content_type=user_content_type,
-                    recipient_object_id=recipient_user.id,
-                    phone_number=recipient_user.phone_number,
-                    provider=resolve_channel(recipient_user.phone_number),
-                )
-
-    def _authorized_recipient_patients(self, external_ids):
-        if not external_ids:
-            return {}
-        candidates = Patient.objects.filter(external_id__in=external_ids)
-        accessible = AuthorizationController.call("get_filtered_patients", candidates, self.request.user)
-        by_external_id = {str(p.external_id): p for p in accessible}
-        missing = {str(eid) for eid in external_ids} - by_external_id.keys()
-        if missing:
-            raise PermissionDenied(f"You do not have permission to target patient(s): {', '.join(sorted(missing))}.")
-        return by_external_id
-
-    def _authorized_recipient_users(self, external_ids):
-        if not external_ids:
-            return {}
-        candidates = {str(u.external_id): u for u in User.objects.filter(external_id__in=external_ids)}
-        missing = {str(eid) for eid in external_ids} - candidates.keys()
-        if missing:
-            raise ValidationError(f"Unknown user id(s): {', '.join(sorted(missing))}.")
-
-        # Bulk-fetch every candidate's org memberships in one query, then group by user,
-        # rather than two queries per user in the loop below.
-        memberships = FacilityOrganizationUser.objects.filter(user__in=candidates.values()).values_list(
-            "user_id", "organization_id"
-        )
-        org_ids_by_user_id: dict[int, set[int]] = {}
-        for user_id, org_id in memberships:
-            org_ids_by_user_id.setdefault(user_id, set()).add(org_id)
-        all_org_ids = {org_id for org_ids in org_ids_by_user_id.values() for org_id in org_ids}
-        orgs_by_id = {org.id: org for org in FacilityOrganization.objects.filter(id__in=all_org_ids)}
-
-        for external_id, recipient_user in candidates.items():
-            orgs = [orgs_by_id[oid] for oid in org_ids_by_user_id.get(recipient_user.id, set())]
-            if not any(
-                AuthorizationController.call("can_list_facility_organization_users_obj", self.request.user, org)
-                for org in orgs
-            ):
-                raise PermissionDenied(f"You do not have permission to target user {external_id}.")
-        return candidates
 
     # Named dispatch_recipients: an @action literally named `dispatch` would shadow View.dispatch and break routing.
     @extend_schema(

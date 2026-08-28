@@ -2,8 +2,6 @@ import datetime
 from typing import Any
 
 from care.emr.resources.base import EMRResource  # pyright: ignore[reportMissingImports]
-from care.facility.models.facility import Facility  # pyright: ignore[reportMissingImports]
-from care.utils.shortcuts import get_object_or_404  # pyright: ignore[reportMissingImports]
 from pydantic import UUID4
 
 from care_im_wrapper.core.sanitize import mask_phone_number
@@ -108,7 +106,8 @@ class NotificationEventReadSpec(EMRResource):
     description: str | None = None
     is_urgent: bool
     variable_values: dict[str, Any] | None = None
-    # Staff member who created a manual event; None for automatic signal-triggered events.
+    # Always None: events are created by signal handlers, never by a user. Kept so the
+    # audit-user shape stays consistent with every other EMR read spec.
     created_by: dict | None = None
     created_date: datetime.datetime | None = None
     recipients: list[NotificationRecipientReadSpec] = []
@@ -120,35 +119,3 @@ class NotificationEventReadSpec(EMRResource):
         mapping["template_id"] = obj.template.external_id
         mapping["recipients"] = [NotificationRecipientReadSpec.serialize(r) for r in obj.recipients.all()]
         cls.serialize_audit_users(mapping, obj)
-
-
-class NotificationEventWriteSpec(EMRResource):
-    __model__ = NotificationEvent
-    __exclude__ = []
-
-    title: str
-    description: str | None = None
-    is_urgent: bool = False
-    variable_values: dict[str, Any] | None = None
-    # Write-only lookup keys, resolved to trigger/template FKs in de_serialize.
-    trigger_slug: str
-    template_slug: str
-    # The facility this event belongs to. Signal-created events derive it from their related
-    # object; a manual one has none, so the caller must name it. Required rather than
-    # optional: an event with no facility is invisible in that facility's list and readable
-    # only by a superuser, and re-saving cannot repair it -- so a caller that forgets is
-    # better off with a 400 than with an event nobody can see.
-    facility: UUID4
-    # Write-only, consumed by the viewset's perform_create to build NotificationRecipient rows.
-    recipient_patient_ids: list[UUID4] = []
-    recipient_user_ids: list[UUID4] = []
-
-    def de_serialize(self, obj=None, partial=False):
-        obj = super().de_serialize(obj=obj, partial=partial)
-        obj.trigger = get_object_or_404(NotificationTrigger, slug=self.trigger_slug)
-        obj.template = get_object_or_404(NotificationTemplate, slug=self.template_slug)
-        obj.facility_id = get_object_or_404(Facility, external_id=self.facility).id
-        # Stashed for perform_create, which only receives the model instance, not this spec.
-        obj._recipient_patient_ids = self.recipient_patient_ids  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
-        obj._recipient_user_ids = self.recipient_user_ids  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
-        return obj
