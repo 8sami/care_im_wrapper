@@ -12,7 +12,6 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from django.conf import settings
-from django.urls import reverse
 from django.utils import timezone
 
 from care_im_wrapper.data.common import authorize_patient_access
@@ -46,8 +45,8 @@ class DocumentRequest:
     """Describes which document a flow wants a link for.
 
     ``encounter`` resolves the Template and is the associating_id for generation.
-    ``diagnostic_report``, when set, references the file uploaded against that report;
-    that path never generates.
+    ``diagnostic_report``, when set, makes the link address that report directly for
+    rendering; that path never generates.
     """
 
     document_type: str
@@ -59,34 +58,21 @@ class DocumentRequest:
     diagnostic_report: DiagnosticReport | None = None
 
 
-def _find_uploaded_diagnostic_file(diagnostic_report: DiagnosticReport) -> Any | None:
-    from care.emr.models.file_upload import FileUpload  # pyright: ignore[reportMissingImports]
+def _resolve_encounter_template(encounter: Encounter, report_type: str) -> Any:
+    """The facility's active Template for this report type, else the global one.
 
-    return (
-        FileUpload.objects.filter(
-            file_type="diagnostic_report",
-            associating_id=str(diagnostic_report.external_id),
-            upload_completed=True,
-            is_archived=False,
-        )
-        .order_by("-created_date")
-        .first()
-    )
-
-
-def _resolve_encounter_template(encounter: Encounter) -> Any:
+    Filtered on template_type as well as context, matching how care_fe's template picker
+    scopes the list (TemplateList passes report_type through as template_type). Context
+    alone is too loose: an encounter report and a discharge summary are both authored
+    against encounter_base, so without this the first row of either type would win.
+    """
     from care.emr.models.report.template import Template  # pyright: ignore[reportMissingImports]
 
-    template = (
-        Template.objects.filter(
-            context=ENCOUNTER_TEMPLATE_CONTEXT, status="active", facility=encounter.facility
-        ).first()
-        or Template.objects.filter(context=ENCOUNTER_TEMPLATE_CONTEXT, status="active", facility=None).first()
-    )
+    candidates = Template.objects.filter(context=ENCOUNTER_TEMPLATE_CONTEXT, template_type=report_type, status="active")
+    template = candidates.filter(facility=encounter.facility).first() or candidates.filter(facility=None).first()
     if template is None:
         raise DocumentUnavailableError(
-            f"No active '{ENCOUNTER_TEMPLATE_CONTEXT}' Template configured for "
-            f"facility={encounter.facility_id} or globally."
+            f"No active '{report_type}' Template configured for facility={encounter.facility_id} or globally."
         )
     return template
 
@@ -117,7 +103,7 @@ def _find_existing_encounter_report(encounter: Encounter, report_type: str) -> A
 def _generate_encounter_report(encounter: Encounter, report_type: str) -> Any:
     from care.emr.reports.report_utils import generate_and_upload_report  # pyright: ignore[reportMissingImports]
 
-    template = _resolve_encounter_template(encounter)
+    template = _resolve_encounter_template(encounter, report_type)
     try:
         return generate_and_upload_report(
             template=template,
@@ -217,19 +203,17 @@ def _locate_or_generate_document_link(
     provider: str,
 ) -> DocumentLink:
     if document_request.diagnostic_report is not None:
-        # A lab report is the file uploaded against it and nothing else: no encounter
-        # report fallback, which would deliver a document about a different subject.
-        file_upload = _find_uploaded_diagnostic_file(document_request.diagnostic_report)
-        if file_upload is None:
-            raise DocumentUnavailableError(
-                f"No uploaded document for diagnostic report {document_request.diagnostic_report.external_id}."
-            )
-        # An uploaded diagnostic file, not a generated report: core has no report authorizer
-        # for it, so the identity/view scope is the applicable check.
+        # The link addresses the report itself, not any file: the public page renders it
+        # the way care_fe's print view does, with uploaded files shown as attachments
+        # inside it. So a report with no attachment is still deliverable, and one with
+        # several no longer loses all but the newest. There is no encounter-report
+        # fallback -- that delivered a document about a different subject entirely.
+        # Core has no report authorizer for a diagnostic report, so the patient view
+        # scope is the applicable check.
         if actor is not None:
             authorize_patient_access(actor, patient)
-        object_kind = DocumentLinkObjectKind.FILE_UPLOAD
-        object_external_id = file_upload.external_id
+        object_kind = DocumentLinkObjectKind.DIAGNOSTIC_REPORT
+        object_external_id = document_request.diagnostic_report.external_id
     else:
         # actor is None only on the system push path, which mints for the patient the record
         # already belongs to and has no user to authorize.
@@ -258,8 +242,8 @@ def get_or_create_document_link(
     document_request: DocumentRequest,
     provider: str,
 ) -> DocumentLink:
-    """Pull path: a lab report's uploaded file, or encounter-scoped generation, then issue
-    or reuse a patient-scoped DocumentLink. Authorization is per-branch (see
+    """Pull path: a lab report addressed for rendering, or encounter-scoped generation,
+    then issue or reuse a patient-scoped DocumentLink. Authorization is per-branch (see
     _locate_or_generate_document_link): a referenced uploaded file uses the patient view
     scope, a generated report matches core's report-generation authorizer.
 
@@ -282,16 +266,27 @@ def get_system_document_link(
     return _locate_or_generate_document_link(None, patient, document_request, provider)
 
 
-def build_document_url(link: DocumentLink) -> str:
-    """Absolute public URL for the token redirect route.
-
-    DOCUMENT_LINK_BASE_URL is the public origin only; the path comes from the URLconf.
-    Falls back to BACKEND_DOMAIN rather than emitting a bare path -- this URL goes straight
-    to a messaging provider, where a relative one is unusable. Never a presigned URL.
-    """
-    origin = str(plugin_settings.DOCUMENT_LINK_BASE_URL).strip() or str(settings.BACKEND_DOMAIN)
+def _absolute_origin(configured: str, fallback: str) -> str:
+    """A scheme-qualified origin. These URLs go straight to a messaging provider, where a
+    relative one is unusable, so never emit a bare path."""
+    origin = str(configured).strip() or str(fallback)
     if "://" not in origin:
-        # BACKEND_DOMAIN carries no scheme, and loopback is only ever served over http.
+        # The CARE domain settings carry no scheme, and loopback is only ever served over http.
         host = origin.split(":", 1)[0]
         origin = f"{'http' if host in ('localhost', '127.0.0.1') else 'https'}://{origin}"
-    return f"{origin.rstrip('/')}{reverse('im-wrapper-document-redirect', args=[link.token])}"
+    return origin.rstrip("/")
+
+
+def build_document_url(link: DocumentLink) -> str:
+    """The URL to send the patient, for any kind of document.
+
+    Always the care_fe page: one address to configure in a provider's message template
+    and one to get wrong, and a document type added later needs no change here. The page
+    reads the record through the public payload endpoint and either draws CARE's print
+    view or hands the browser the stored file.
+
+    Never a presigned URL itself -- the token is the durable capability, and presigns are
+    minted per request behind it.
+    """
+    origin = _absolute_origin(plugin_settings.DOCUMENT_PAGE_BASE_URL, settings.CURRENT_DOMAIN)
+    return f"{origin}/public/documents/{link.token}"

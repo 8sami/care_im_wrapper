@@ -16,6 +16,12 @@ TOKEN_BYTES = 32
 class DocumentLinkObjectKind(models.TextChoices):
     REPORT_UPLOAD = "report_upload", "Report Upload"  # pyright: ignore[reportAssignmentType]
     FILE_UPLOAD = "file_upload", "File Upload"  # pyright: ignore[reportAssignmentType]
+    # A clinical record rendered from its own data rather than a stored artifact; there is
+    # no file behind it, so mint_read_url() does not apply.
+    DIAGNOSTIC_REPORT = "diagnostic_report", "Diagnostic Report"  # pyright: ignore[reportAssignmentType]
+
+
+STORED_FILE_OBJECT_KINDS = frozenset({DocumentLinkObjectKind.REPORT_UPLOAD, DocumentLinkObjectKind.FILE_UPLOAD})
 
 
 class DocumentLink(BaseModel):
@@ -52,6 +58,10 @@ class DocumentLink(BaseModel):
         return not self.deleted and timezone.now() < self.expires_at  # pyright: ignore[reportOperatorIssue]
 
     def resolve_file_object(self) -> Any:
+        if self.object_kind not in STORED_FILE_OBJECT_KINDS:
+            msg = f"DocumentLink of kind '{self.object_kind}' has no stored file behind it."
+            raise ValueError(msg)
+
         if self.object_kind == DocumentLinkObjectKind.REPORT_UPLOAD:
             from care.emr.models.report.report_upload import ReportUpload  # pyright: ignore[reportMissingImports]
 

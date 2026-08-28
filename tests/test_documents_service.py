@@ -40,7 +40,8 @@ class DocumentServiceTests(CareAPITestBase):
             "name": "Encounter Base",
             "status": "active",
             "template_data": "<html></html>",
-            "template_type": "encounter_report",
+            # Matches the report_type the encounter path asks for; resolution filters on it.
+            "template_type": DISCHARGE_SUMMARY_REPORT_TYPE,
             "default_format": "pdf",
             "context": "encounter_base",
             "facility": None,
@@ -136,9 +137,35 @@ class DocumentServiceTests(CareAPITestBase):
         self.assertEqual(link.object_kind, DocumentLinkObjectKind.REPORT_UPLOAD)
         self.assertEqual(link.object_external_id, fake_report_upload.external_id)
 
-    def test_lab_report_links_to_its_uploaded_file(self):
+    def test_lab_report_link_addresses_the_report_not_a_file(self):
+        """The public page renders the report and shows uploads as attachments inside it,
+        so the link must carry the report -- not one of its files."""
         report = self._create_diagnostic_report()
-        file_upload = self._create_diagnostic_file(report)
+        self._create_diagnostic_file(report)
+
+        link = get_or_create_document_link(
+            self._patient_actor(), self.patient, self._lab_report_request(report), provider="whatsapp"
+        )
+
+        self.assertEqual(link.object_kind, DocumentLinkObjectKind.DIAGNOSTIC_REPORT)
+        self.assertEqual(link.object_external_id, report.external_id)
+
+    def test_lab_report_without_an_uploaded_file_is_still_deliverable(self):
+        """An attachment is supporting material, not the report. A report with none still
+        has patient details, observations and a conclusion to render."""
+        report = self._create_diagnostic_report()
+
+        link = get_or_create_document_link(
+            self._patient_actor(), self.patient, self._lab_report_request(report), provider="whatsapp"
+        )
+
+        self.assertEqual(link.object_external_id, report.external_id)
+
+    def test_lab_report_never_generates_an_encounter_report(self):
+        # An encounter Template exists and would render, but a lab report must never fall
+        # back to an encounter/discharge document (issue #21).
+        self._create_template()
+        report = self._create_diagnostic_report()
 
         with patch("care.emr.reports.report_utils.generate_and_upload_report") as mock_generate:
             link = get_or_create_document_link(
@@ -146,23 +173,27 @@ class DocumentServiceTests(CareAPITestBase):
             )
 
         mock_generate.assert_not_called()
-        self.assertEqual(link.object_kind, DocumentLinkObjectKind.FILE_UPLOAD)
-        self.assertEqual(link.object_external_id, file_upload.external_id)
+        self.assertEqual(link.object_kind, DocumentLinkObjectKind.DIAGNOSTIC_REPORT)
 
-    def test_lab_report_without_an_uploaded_file_is_unavailable_and_never_generates(self):
-        # An encounter Template exists and would render, but a lab report must not fall
-        # back to an encounter/discharge document (issue #21).
-        self._create_template()
+    def test_lab_report_does_not_depend_on_an_encounter_template(self):
+        # No Template configured anywhere: the lab report still resolves (issue #16).
         report = self._create_diagnostic_report()
 
-        with patch("care.emr.reports.report_utils.generate_and_upload_report") as mock_generate:
-            with self.assertRaises(DocumentUnavailableError):
-                get_or_create_document_link(
-                    self._patient_actor(), self.patient, self._lab_report_request(report), provider="whatsapp"
-                )
+        link = get_or_create_document_link(
+            self._patient_actor(), self.patient, self._lab_report_request(report), provider="whatsapp"
+        )
 
-        mock_generate.assert_not_called()
-        self.assertFalse(DocumentLink.objects.exists())
+        self.assertEqual(link.object_external_id, report.external_id)
+
+    def test_a_template_of_another_type_is_not_used(self):
+        """Encounter reports and discharge summaries share the encounter_base context, so
+        context alone would let either stand in for the other."""
+        self._create_template(template_type="encounter_report")
+
+        with self.assertRaises(DocumentUnavailableError):
+            get_or_create_document_link(
+                self._patient_actor(), self.patient, self._encounter_request(), provider="whatsapp"
+            )
 
     def test_no_active_template_raises_document_unavailable_error(self):
         document_request = DocumentRequest(document_type="patient_summary", encounter=self.encounter)
@@ -188,10 +219,9 @@ class DocumentServiceTests(CareAPITestBase):
 
     def test_expired_existing_link_is_not_reused(self):
         report = self._create_diagnostic_report()
-        file_upload = self._create_diagnostic_file(report)
         DocumentLink.objects.create(
-            object_kind=DocumentLinkObjectKind.FILE_UPLOAD,
-            object_external_id=file_upload.external_id,
+            object_kind=DocumentLinkObjectKind.DIAGNOSTIC_REPORT,
+            object_external_id=report.external_id,
             document_type="diagnostic_report",
             patient_external_id=self.patient.external_id,
             provider="whatsapp",
@@ -202,65 +232,69 @@ class DocumentServiceTests(CareAPITestBase):
             self._patient_actor(), self.patient, self._lab_report_request(report), provider="whatsapp"
         )
 
-        self.assertEqual(DocumentLink.objects.filter(object_external_id=file_upload.external_id).count(), 2)
+        self.assertEqual(DocumentLink.objects.filter(object_external_id=report.external_id).count(), 2)
         self.assertTrue(link.is_valid())
 
-    def _link(self):
+    def _link(self, document_type="discharge_summary", object_kind=DocumentLinkObjectKind.REPORT_UPLOAD):
         return DocumentLink.objects.create(
-            object_kind=DocumentLinkObjectKind.FILE_UPLOAD,
+            object_kind=object_kind,
             object_external_id=uuid.uuid4(),
-            document_type="diagnostic_report",
+            document_type=document_type,
             patient_external_id=self.patient.external_id,
             provider="whatsapp",
             expires_at=timezone.now() + timedelta(hours=1),
         )
 
-    def test_build_document_url_uses_base_url_setting(self):
-        link = self._link()
+    def test_document_url_is_the_care_fe_page_for_every_kind(self):
+        """One address for every document type: the page decides what to do with the
+        token, so a provider template needs no per-type base url."""
+        rendered = self._link(
+            document_type="diagnostic_report",
+            object_kind=DocumentLinkObjectKind.DIAGNOSTIC_REPORT,
+        )
+        stored = self._link()
 
         with patch(
-            "care_im_wrapper.documents.service.plugin_settings.DOCUMENT_LINK_BASE_URL", "https://care.example.org"
+            "care_im_wrapper.documents.service.plugin_settings.DOCUMENT_PAGE_BASE_URL",
+            "https://care.example.org",
         ):
-            url = build_document_url(link)
+            self.assertEqual(
+                build_document_url(rendered),
+                f"https://care.example.org/public/documents/{rendered.token}",
+            )
+            self.assertEqual(
+                build_document_url(stored),
+                f"https://care.example.org/public/documents/{stored.token}",
+            )
 
-        self.assertEqual(url, f"https://care.example.org/api/care_im_wrapper/documents/{link.token}/")
-
-    def test_build_document_url_falls_back_to_backend_domain_when_unset(self):
-        """An unset base URL must never yield a bare path -- the link goes straight out over
-        a messaging provider, where a relative URL is unusable."""
+    def test_document_url_falls_back_to_current_domain(self):
+        """An unset base must never yield a bare path -- the link goes straight out over a
+        messaging provider, where a relative url is unusable."""
         link = self._link()
 
         with (
-            patch("care_im_wrapper.documents.service.plugin_settings.DOCUMENT_LINK_BASE_URL", ""),
-            self.settings(BACKEND_DOMAIN="care.example.org"),
+            patch("care_im_wrapper.documents.service.plugin_settings.DOCUMENT_PAGE_BASE_URL", ""),
+            self.settings(CURRENT_DOMAIN="care.example.org"),
         ):
             url = build_document_url(link)
 
-        self.assertEqual(url, f"https://care.example.org/api/care_im_wrapper/documents/{link.token}/")
+        self.assertEqual(url, f"https://care.example.org/public/documents/{link.token}")
 
-    def test_build_document_url_keeps_an_explicit_scheme(self):
+    def test_document_url_keeps_an_explicit_scheme(self):
         link = self._link()
 
         with patch(
-            "care_im_wrapper.documents.service.plugin_settings.DOCUMENT_LINK_BASE_URL", "http://localhost:9000/"
+            "care_im_wrapper.documents.service.plugin_settings.DOCUMENT_PAGE_BASE_URL",
+            "http://localhost:4000/",
         ):
             url = build_document_url(link)
 
-        self.assertEqual(url, f"http://localhost:9000/api/care_im_wrapper/documents/{link.token}/")
+        self.assertEqual(url, f"http://localhost:4000/public/documents/{link.token}")
 
     def test_system_document_link_does_not_require_actor(self):
         report = self._create_diagnostic_report()
-        file_upload = self._create_diagnostic_file(report)
 
         link = get_system_document_link(self.patient, self._lab_report_request(report), provider="whatsapp")
 
-        self.assertEqual(link.object_kind, DocumentLinkObjectKind.FILE_UPLOAD)
-        self.assertEqual(link.object_external_id, file_upload.external_id)
-
-    def test_system_document_link_for_a_lab_report_without_an_upload_is_unavailable(self):
-        # The push path must not notify about a report it cannot deliver.
-        self._create_template()
-        report = self._create_diagnostic_report()
-
-        with self.assertRaises(DocumentUnavailableError):
-            get_system_document_link(self.patient, self._lab_report_request(report), provider="whatsapp")
+        self.assertEqual(link.object_kind, DocumentLinkObjectKind.DIAGNOSTIC_REPORT)
+        self.assertEqual(link.object_external_id, report.external_id)
