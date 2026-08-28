@@ -136,9 +136,35 @@ class DocumentServiceTests(CareAPITestBase):
         self.assertEqual(link.object_kind, DocumentLinkObjectKind.REPORT_UPLOAD)
         self.assertEqual(link.object_external_id, fake_report_upload.external_id)
 
-    def test_lab_report_links_to_its_uploaded_file(self):
+    def test_lab_report_link_addresses_the_report_not_a_file(self):
+        """The public page renders the report and shows uploads as attachments inside it,
+        so the link must carry the report -- not one of its files."""
         report = self._create_diagnostic_report()
-        file_upload = self._create_diagnostic_file(report)
+        self._create_diagnostic_file(report)
+
+        link = get_or_create_document_link(
+            self._patient_actor(), self.patient, self._lab_report_request(report), provider="whatsapp"
+        )
+
+        self.assertEqual(link.object_kind, DocumentLinkObjectKind.DIAGNOSTIC_REPORT)
+        self.assertEqual(link.object_external_id, report.external_id)
+
+    def test_lab_report_without_an_uploaded_file_is_still_deliverable(self):
+        """An attachment is supporting material, not the report. A report with none still
+        has patient details, observations and a conclusion to render."""
+        report = self._create_diagnostic_report()
+
+        link = get_or_create_document_link(
+            self._patient_actor(), self.patient, self._lab_report_request(report), provider="whatsapp"
+        )
+
+        self.assertEqual(link.object_external_id, report.external_id)
+
+    def test_lab_report_never_generates_an_encounter_report(self):
+        # An encounter Template exists and would render, but a lab report must never fall
+        # back to an encounter/discharge document (issue #21).
+        self._create_template()
+        report = self._create_diagnostic_report()
 
         with patch("care.emr.reports.report_utils.generate_and_upload_report") as mock_generate:
             link = get_or_create_document_link(
@@ -146,23 +172,17 @@ class DocumentServiceTests(CareAPITestBase):
             )
 
         mock_generate.assert_not_called()
-        self.assertEqual(link.object_kind, DocumentLinkObjectKind.FILE_UPLOAD)
-        self.assertEqual(link.object_external_id, file_upload.external_id)
+        self.assertEqual(link.object_kind, DocumentLinkObjectKind.DIAGNOSTIC_REPORT)
 
-    def test_lab_report_without_an_uploaded_file_is_unavailable_and_never_generates(self):
-        # An encounter Template exists and would render, but a lab report must not fall
-        # back to an encounter/discharge document (issue #21).
-        self._create_template()
+    def test_lab_report_does_not_depend_on_an_encounter_template(self):
+        # No Template configured anywhere: the lab report still resolves (issue #16).
         report = self._create_diagnostic_report()
 
-        with patch("care.emr.reports.report_utils.generate_and_upload_report") as mock_generate:
-            with self.assertRaises(DocumentUnavailableError):
-                get_or_create_document_link(
-                    self._patient_actor(), self.patient, self._lab_report_request(report), provider="whatsapp"
-                )
+        link = get_or_create_document_link(
+            self._patient_actor(), self.patient, self._lab_report_request(report), provider="whatsapp"
+        )
 
-        mock_generate.assert_not_called()
-        self.assertFalse(DocumentLink.objects.exists())
+        self.assertEqual(link.object_external_id, report.external_id)
 
     def test_no_active_template_raises_document_unavailable_error(self):
         document_request = DocumentRequest(document_type="patient_summary", encounter=self.encounter)
@@ -188,10 +208,9 @@ class DocumentServiceTests(CareAPITestBase):
 
     def test_expired_existing_link_is_not_reused(self):
         report = self._create_diagnostic_report()
-        file_upload = self._create_diagnostic_file(report)
         DocumentLink.objects.create(
-            object_kind=DocumentLinkObjectKind.FILE_UPLOAD,
-            object_external_id=file_upload.external_id,
+            object_kind=DocumentLinkObjectKind.DIAGNOSTIC_REPORT,
+            object_external_id=report.external_id,
             document_type="diagnostic_report",
             patient_external_id=self.patient.external_id,
             provider="whatsapp",
@@ -202,14 +221,14 @@ class DocumentServiceTests(CareAPITestBase):
             self._patient_actor(), self.patient, self._lab_report_request(report), provider="whatsapp"
         )
 
-        self.assertEqual(DocumentLink.objects.filter(object_external_id=file_upload.external_id).count(), 2)
+        self.assertEqual(DocumentLink.objects.filter(object_external_id=report.external_id).count(), 2)
         self.assertTrue(link.is_valid())
 
-    def _link(self):
+    def _link(self, document_type="discharge_summary", object_kind=DocumentLinkObjectKind.REPORT_UPLOAD):
         return DocumentLink.objects.create(
-            object_kind=DocumentLinkObjectKind.FILE_UPLOAD,
+            object_kind=object_kind,
             object_external_id=uuid.uuid4(),
-            document_type="diagnostic_report",
+            document_type=document_type,
             patient_external_id=self.patient.external_id,
             provider="whatsapp",
             expires_at=timezone.now() + timedelta(hours=1),
@@ -250,17 +269,31 @@ class DocumentServiceTests(CareAPITestBase):
 
     def test_system_document_link_does_not_require_actor(self):
         report = self._create_diagnostic_report()
-        file_upload = self._create_diagnostic_file(report)
 
         link = get_system_document_link(self.patient, self._lab_report_request(report), provider="whatsapp")
 
-        self.assertEqual(link.object_kind, DocumentLinkObjectKind.FILE_UPLOAD)
-        self.assertEqual(link.object_external_id, file_upload.external_id)
+        self.assertEqual(link.object_kind, DocumentLinkObjectKind.DIAGNOSTIC_REPORT)
+        self.assertEqual(link.object_external_id, report.external_id)
 
-    def test_system_document_link_for_a_lab_report_without_an_upload_is_unavailable(self):
-        # The push path must not notify about a report it cannot deliver.
-        self._create_template()
-        report = self._create_diagnostic_report()
+    def test_rendered_document_url_points_at_the_care_fe_page(self):
+        """A rendered document is drawn by care_fe, so its link must go to the frontend
+        page, not the backend redirect (which has no file to redirect to)."""
+        link = self._link(document_type="diagnostic_report", object_kind=DocumentLinkObjectKind.DIAGNOSTIC_REPORT)
 
-        with self.assertRaises(DocumentUnavailableError):
-            get_system_document_link(self.patient, self._lab_report_request(report), provider="whatsapp")
+        with patch(
+            "care_im_wrapper.documents.service.plugin_settings.DOCUMENT_PAGE_BASE_URL", "https://care.example.org"
+        ):
+            url = build_document_url(link)
+
+        self.assertEqual(url, f"https://care.example.org/public/documents/{link.token}")
+
+    def test_rendered_document_url_falls_back_to_current_domain(self):
+        link = self._link(document_type="diagnostic_report", object_kind=DocumentLinkObjectKind.DIAGNOSTIC_REPORT)
+
+        with (
+            patch("care_im_wrapper.documents.service.plugin_settings.DOCUMENT_PAGE_BASE_URL", ""),
+            self.settings(CURRENT_DOMAIN="care.example.org"),
+        ):
+            url = build_document_url(link)
+
+        self.assertEqual(url, f"https://care.example.org/public/documents/{link.token}")
