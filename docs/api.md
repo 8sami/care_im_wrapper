@@ -44,7 +44,7 @@ authenticated by CARE's session or JWT layers. Each carries its own proof instea
 | --- | --- | --- | --- |
 | `webhook/meta/` | GET | `hub.verify_token` matching `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | Meta's subscription handshake; echoes `hub.challenge`. |
 | `webhook/meta/` | POST | `X-Hub-Signature-256`, HMAC-SHA256 over the raw body with `WHATSAPP_APP_SECRET` | Inbound messages and delivery-status callbacks. |
-| `documents/<token>/` | GET | possession of the opaque token | Redirects to a freshly minted presigned URL for the document. |
+| `public/documents/<token>/` | GET | possession of the opaque token | Returns the document behind the token, for the patient-facing page. See [documents](documents.md). |
 
 The webhook URL registered with Meta is this path on your deployment:
 

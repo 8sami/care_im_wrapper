@@ -19,6 +19,7 @@ The plugin has two halves that share a provider layer:
 installation
 usage
 notification-triggers
+documents
 ```
 
 ```{toctree}
