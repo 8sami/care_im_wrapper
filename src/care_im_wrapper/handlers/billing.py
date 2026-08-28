@@ -1,4 +1,4 @@
-"""Billing notifications: an invoice being issued, and a payment being recorded against one."""
+"""Billing notifications: an invoice being issued or cancelled, and a payment being recorded."""
 
 from __future__ import annotations
 
@@ -8,7 +8,10 @@ from typing import Any
 
 from care.emr.models.invoice import Invoice  # pyright: ignore[reportMissingImports]
 from care.emr.models.payment_reconciliation import PaymentReconciliation  # pyright: ignore[reportMissingImports]
-from care.emr.resources.invoice.spec import InvoiceStatusOptions  # pyright: ignore[reportMissingImports]
+from care.emr.resources.invoice.spec import (  # pyright: ignore[reportMissingImports]
+    INVOICE_CANCELLED_STATUS,
+    InvoiceStatusOptions,
+)
 from care.emr.resources.payment_reconciliation.spec import (  # pyright: ignore[reportMissingImports]
     PaymentReconciliationOutcomeOptions,
 )
@@ -26,12 +29,19 @@ from care_im_wrapper.settings import plugin_settings
 
 logger = logging.getLogger(__name__)
 
-# Set on the invoice_issued / payment_recorded triggers' context_slug.
+# Set on the invoice_issued / invoice_cancelled / payment_recorded triggers' context_slug.
 INVOICE_CONTEXT_SLUG = "invoice"
 
 
 # Shown when a payment is against the account rather than a specific invoice.
 NO_INVOICE = "Not applicable"
+
+# Statuses a cancellation notifies from. `draft` is absent: nothing was ever sent to the
+# patient. CARE rejects draft -> balanced, so a balanced invoice was necessarily issued first.
+NOTIFIED_INVOICE_STATUS = (
+    InvoiceStatusOptions.issued.value,
+    InvoiceStatusOptions.balanced.value,
+)
 
 
 def _resolve_invoice_facility(invoice: Invoice) -> Any | None:
@@ -67,6 +77,7 @@ def _fire_billing_event(
     amount: Decimal | float | None,
     account: Any,
     invoice: Invoice | None,
+    title_noun: str = "Payment",
 ) -> None:
     """Patient and account are handler-supplied so a payment with no invoice can still
     send: PaymentReconciliation has an account but no patient, so the template cannot
@@ -75,7 +86,7 @@ def _fire_billing_event(
     invoice_number = describe_invoice_number(invoice) if invoice is not None else NO_INVOICE
     fire_notification_event(
         trigger_slug=trigger_slug,
-        title=f"Payment {status} — {invoice_number}",
+        title=f"{title_noun} {status} — {invoice_number}",
         related_object=related_object,
         recipient=NotificationRecipientSpec(content_object=patient, phone_number=patient.phone_number),
         variable_values={
@@ -94,21 +105,35 @@ pre_save.connect(track_previous_field("status"), sender=Invoice, weak=False)
 
 @receiver(post_save, sender=Invoice)
 def on_invoice_post_save(sender: type[Invoice], instance: Invoice, created: bool, **kwargs: Any) -> None:
-    """Fires when an invoice reaches `issued`. Drafts stay silent."""
-    if instance.status != InvoiceStatusOptions.issued.value:
+    """Fires when an invoice reaches `issued`, and when one already sent to the patient is
+    cancelled. Drafts stay silent: CARE's cancel endpoint accepts a draft, so cancellation
+    checks the status being left, not just the one being entered."""
+    previous_status = None if created else getattr(instance, "_previous_status", None)
+    if previous_status == instance.status:
         return
 
-    if not created and getattr(instance, "_previous_status", None) == instance.status:
+    if instance.status == InvoiceStatusOptions.issued.value:
+        _fire_billing_event(
+            instance,
+            trigger_slug=plugin_settings.BILLING_TRIGGER_SLUGS["invoice_issued"],
+            status="issued",
+            amount=instance.total_gross,
+            account=instance.account,
+            invoice=instance,
+        )
         return
 
-    _fire_billing_event(
-        instance,
-        trigger_slug=plugin_settings.BILLING_TRIGGER_SLUGS["invoice_issued"],
-        status="issued",
-        amount=instance.total_gross,
-        account=instance.account,
-        invoice=instance,
-    )
+    # `entered_in_error` is an internal distinction: both read as "cancelled" to the patient.
+    if instance.status in INVOICE_CANCELLED_STATUS and previous_status in NOTIFIED_INVOICE_STATUS:
+        _fire_billing_event(
+            instance,
+            trigger_slug=plugin_settings.BILLING_TRIGGER_SLUGS["invoice_cancelled"],
+            status="cancelled",
+            amount=instance.total_gross,
+            account=instance.account,
+            invoice=instance,
+            title_noun="Invoice",
+        )
 
 
 pre_save.connect(track_previous_field("outcome"), sender=PaymentReconciliation, weak=False)

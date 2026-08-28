@@ -233,6 +233,12 @@ For each: the action creates a `NotificationEvent` and `NotificationRecipient`, 
 - [ ] `appointment_confirmed` — book
 - [ ] `appointment_cancelled` — cancel
 - [ ] `appointment_rescheduled` — reschedule
+- [ ] `appointment_no_show` — mark a booking as no-show
+- [ ] `appointment_checked_in` — check a booking in
+- [ ] `appointment_in_consultation` — start the consultation
+- [ ] `appointment_fulfilled` — complete the appointment
+- [ ] each of the four reads correctly in the body: "... has been marked as a no-show / checked in / marked as in consultation / fulfilled."
+- [ ] a booking moved to `arrived` fires nothing
 - [ ] re-saving a booking with no status change does not re-fire
 - [ ] `appointment_reminder` — book within 24h, run the sweep
 - [ ] a booking beyond `[APPOINTMENT_REMINDER_LEAD_SECONDS = 24 h]` is not reminded
@@ -249,6 +255,11 @@ For each: the action creates a `NotificationEvent` and `NotificationRecipient`, 
 - [ ] `invoice_issued` — move an invoice to `issued`
 - [ ] a draft invoice stays silent
 - [ ] re-saving an issued invoice does not re-fire
+- [ ] `invoice_cancelled` — cancel an issued invoice
+- [ ] cancelling a `balanced` (fully paid) invoice also fires
+- [ ] marking an issued invoice `entered_in_error` sends "cancelled", never "entered in error"
+- [ ] cancelling a **draft** invoice stays silent
+- [ ] cancelling a pharmacy delivery order (refund invoice) fires — confirm this is wanted
 - [ ] an invoice with a blank number still sends, using the external id
 - [ ] `payment_recorded` — complete a payment against an invoice
 - [ ] a partial payment stays silent

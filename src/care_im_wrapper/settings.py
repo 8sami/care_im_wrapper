@@ -163,6 +163,10 @@ DEFAULTS = {
         "booked": "appointment_confirmed",
         "cancelled": "appointment_cancelled",
         "rescheduled": "appointment_rescheduled",
+        "noshow": "appointment_no_show",
+        "checked_in": "appointment_checked_in",
+        "in_consultation": "appointment_in_consultation",
+        "fulfilled": "appointment_fulfilled",
     },
     "PATIENT_TRIGGER_SLUGS": {
         "registered": "patient_registered",
@@ -170,6 +174,7 @@ DEFAULTS = {
     },
     "BILLING_TRIGGER_SLUGS": {
         "invoice_issued": "invoice_issued",
+        "invoice_cancelled": "invoice_cancelled",
         "payment_recorded": "payment_recorded",
     },
     "APPOINTMENT_REMINDER_TRIGGER_SLUG": "appointment_reminder",

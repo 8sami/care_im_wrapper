@@ -69,8 +69,9 @@ class TokenSlotContext(_NestedContext):
 
 
 class TokenBookingContext(SingleObjectContextBuilder):
-    """Context for the ``related_object`` of the appointment_confirmed / appointment_cancelled
-    / appointment_rescheduled triggers."""
+    """Context for the ``related_object`` of every appointment trigger: appointment_confirmed
+    / appointment_cancelled / appointment_rescheduled / appointment_no_show /
+    appointment_checked_in / appointment_in_consultation / appointment_fulfilled."""
 
     __display_name__ = "Appointment booking"
     __description__ = "The appointment booking that triggered the notification"
@@ -209,7 +210,8 @@ class PatientNotificationContext(SingleObjectContextBuilder):
 
 
 class InvoiceContext(SingleObjectContextBuilder):
-    """Context for the ``related_object`` of the invoice_issued / payment_recorded triggers."""
+    """Context for the ``related_object`` of the invoice_issued / invoice_cancelled /
+    payment_recorded triggers."""
 
     __display_name__ = "Invoice"
     __description__ = "The invoice the billing notification is about"

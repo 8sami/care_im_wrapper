@@ -142,6 +142,157 @@ class InvoiceIssuedSignalTests(BillingSignalTestBase):
         mock_fire.assert_not_called()
 
 
+class InvoiceCancelledSignalTests(BillingSignalTestBase):
+    """Cancelling an issued invoice notifies the patient. Both of CARE's cancellation
+    statuses read as "cancelled" to them, and a draft invoice never notifies at all."""
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_issued_invoice_cancelled_fires(self, mock_fire):
+        invoice = self._create_invoice(status="issued")
+        mock_fire.reset_mock()
+
+        invoice.status = "cancelled"
+        invoice.save()
+
+        mock_fire.assert_called_once()
+        kwargs = mock_fire.call_args.kwargs
+        self.assertEqual(kwargs["trigger_slug"], "invoice_cancelled")
+        self.assertEqual(kwargs["related_object"], invoice)
+        self.assertEqual(kwargs["recipient"].phone_number, PATIENT_PHONE)
+        self.assertEqual(kwargs["variable_values"]["status"], "cancelled")
+        self.assertEqual(kwargs["variable_values"]["header_status"], "Cancelled")
+        self.assertEqual(kwargs["variable_values"]["amount"], "14,000.00")
+        self.assertEqual(kwargs["variable_values"]["invoice_number"], "#1322")
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_issued_invoice_entered_in_error_reads_as_cancelled(self, mock_fire):
+        """`entered_in_error` is an internal distinction and must not reach the patient."""
+        invoice = self._create_invoice(status="issued")
+        mock_fire.reset_mock()
+
+        invoice.status = "entered_in_error"
+        invoice.save()
+
+        mock_fire.assert_called_once()
+        values = mock_fire.call_args.kwargs["variable_values"]
+        self.assertEqual(mock_fire.call_args.kwargs["trigger_slug"], "invoice_cancelled")
+        self.assertEqual(values["status"], "cancelled")
+        self.assertEqual(values["header_status"], "Cancelled")
+        self.assertNotIn("error", str(values).lower())
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_event_title_names_the_invoice_not_a_payment(self, mock_fire):
+        invoice = self._create_invoice(status="issued")
+        mock_fire.reset_mock()
+
+        invoice.status = "cancelled"
+        invoice.save()
+
+        self.assertEqual(mock_fire.call_args.kwargs["title"], "Invoice cancelled — #1322")
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_balanced_invoice_cancelled_fires(self, mock_fire):
+        """CARE rejects draft -> balanced, so a balanced invoice was necessarily issued
+        first and the patient has already been told about it."""
+        invoice = self._create_invoice(status="issued")
+        invoice.status = "balanced"
+        invoice.save()
+        mock_fire.reset_mock()
+
+        invoice.status = "cancelled"
+        invoice.save()
+
+        mock_fire.assert_called_once()
+        self.assertEqual(mock_fire.call_args.kwargs["trigger_slug"], "invoice_cancelled")
+        self.assertEqual(mock_fire.call_args.kwargs["variable_values"]["status"], "cancelled")
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_balanced_invoice_entered_in_error_reads_as_cancelled(self, mock_fire):
+        invoice = self._create_invoice(status="issued")
+        invoice.status = "balanced"
+        invoice.save()
+        mock_fire.reset_mock()
+
+        invoice.status = "entered_in_error"
+        invoice.save()
+
+        mock_fire.assert_called_once()
+        self.assertEqual(mock_fire.call_args.kwargs["variable_values"]["status"], "cancelled")
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_reaching_balanced_does_not_itself_notify(self, mock_fire):
+        """Only issue and cancellation notify; being paid off is not its own message."""
+        invoice = self._create_invoice(status="issued")
+        mock_fire.reset_mock()
+
+        invoice.status = "balanced"
+        invoice.save()
+
+        mock_fire.assert_not_called()
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_draft_invoice_cancelled_stays_silent(self, mock_fire):
+        """CARE's cancel endpoint accepts a draft, but the patient never saw it."""
+        invoice = self._create_invoice(status="draft")
+        mock_fire.reset_mock()
+
+        invoice.status = "cancelled"
+        invoice.save()
+
+        mock_fire.assert_not_called()
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_draft_invoice_entered_in_error_stays_silent(self, mock_fire):
+        invoice = self._create_invoice(status="draft")
+        mock_fire.reset_mock()
+
+        invoice.status = "entered_in_error"
+        invoice.save()
+
+        mock_fire.assert_not_called()
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_other_updates_to_a_draft_invoice_stay_silent(self, mock_fire):
+        invoice = self._create_invoice(status="draft")
+        mock_fire.reset_mock()
+
+        invoice.note = "edited while still a draft"
+        invoice.save()
+
+        mock_fire.assert_not_called()
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_invoice_created_already_cancelled_stays_silent(self, mock_fire):
+        """Nothing was ever issued to the patient, so there is nothing to retract."""
+        self._create_invoice(status="cancelled")
+
+        mock_fire.assert_not_called()
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_resaving_a_cancelled_invoice_does_not_re_fire(self, mock_fire):
+        invoice = self._create_invoice(status="issued")
+        invoice.status = "cancelled"
+        invoice.save()
+        mock_fire.reset_mock()
+
+        invoice.note = "edited after cancellation"
+        invoice.save()
+
+        mock_fire.assert_not_called()
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_no_variable_value_is_blank(self, mock_fire):
+        """A blank parameter makes Meta reject the whole send."""
+        invoice = self._create_invoice(status="issued")
+        mock_fire.reset_mock()
+
+        invoice.status = "cancelled"
+        invoice.save()
+
+        values = mock_fire.call_args.kwargs["variable_values"]
+        self.assertEqual([k for k, v in values.items() if not str(v).strip()], [])
+
+
 class PaymentRecordedSignalTests(BillingSignalTestBase):
     @patch("care_im_wrapper.handlers.billing.fire_notification_event")
     def test_transition_to_complete_fires_against_the_target_invoice(self, mock_fire):

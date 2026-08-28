@@ -1,6 +1,6 @@
 # Notification triggers
 
-Ten triggers. Each fires from a `post_save` signal, so doing the action through the UI,
+Fifteen triggers. Each fires from a `post_save` signal, so doing the action through the UI,
 the API or the Django shell all work the same way.
 
 | Trigger | Template | Fires when |
@@ -10,9 +10,14 @@ the API or the Django shell all work the same way.
 | `appointment_confirmed` | `appointment_update` | a TokenBooking is created as `booked` |
 | `appointment_cancelled` | `appointment_update` | a booking moves to `cancelled` |
 | `appointment_rescheduled` | `appointment_update` | a booking moves to `rescheduled` |
+| `appointment_no_show` | `appointment_update` | a booking moves to `noshow` |
+| `appointment_checked_in` | `appointment_update` | a booking moves to `checked_in` |
+| `appointment_in_consultation` | `appointment_update` | a booking moves to `in_consultation` |
+| `appointment_fulfilled` | `appointment_update` | a booking moves to `fulfilled` |
 | `appointment_reminder` | `event_reminder` | the sweep finds a `booked` slot starting within 24h |
 | `wait_time_update` | `wait_time_update` | a queue Token is issued to a patient |
 | `invoice_issued` | `payment_status` | an Invoice moves to `issued` |
+| `invoice_cancelled` | `payment_status` | an `issued` or `balanced` Invoice moves to `cancelled` or `entered_in_error` |
 | `payment_recorded` | `payment_status` | a PaymentReconciliation reaches `complete` |
 | `document_ready_update` | `document_ready_update` | a ServiceRequest completes with a final DiagnosticReport |
 
@@ -28,9 +33,16 @@ A patient with no phone number is skipped without creating a failed recipient.
 
 ## Notes per trigger
 
-**Transitions, not saves.** Discharge, cancel, reschedule, invoice and payment all fire on
-the move into that state. Creating a record already in it does not fire (except an invoice
-created as `issued`, which does), and re-saving one that is already there does not re-fire.
+**Transitions, not saves.** Discharge, cancel, reschedule, no-show, check-in,
+in-consultation, fulfil, invoice and payment all fire on the move into that state. Creating a
+record already in it does not fire (except an invoice created as `issued`, which does, and a
+booking created as `booked`, which fires `appointment_confirmed`), and re-saving one that is
+already there does not re-fire.
+
+**The seven appointment triggers share one template.** `appointment_update`'s body reads
+"... has been {{status}}.", and each trigger supplies only that word through its
+`default_variable_values` — so adding a status needs no new template approval from Meta. CARE
+also has an `arrived` status, distinct from `checked_in`; nothing is wired to it.
 
 **`appointment_reminder`** is the only time-driven one. It sweeps every 15 minutes; to run
 it now:
@@ -46,6 +58,11 @@ it is safe to re-run.
 
 **`wait_time_update`** counts down to the booking's slot when the token has one, and falls
 back to queue position for a walk-in. A token with no patient is skipped.
+
+**`invoice_cancelled`** fires from `issued` or `balanced` only. Cancelling a draft stays
+silent, even though CARE's cancel endpoint and the billing UI both accept one — the patient
+never saw it. Both `cancelled` and `entered_in_error` send the same message, reading
+"cancelled"; the distinction between them does not reach the patient.
 
 **`payment_recorded`** needs a `target_invoice`. A payment against the account only is
 skipped, since the template quotes an invoice number.

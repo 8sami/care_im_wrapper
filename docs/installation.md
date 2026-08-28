@@ -153,5 +153,5 @@ from care_im_wrapper.models.notification import NotificationTrigger
 print(NotificationTrigger.objects.count(), 'triggers')"
 ```
 
-Ten triggers are seeded by migration. See [](notification-triggers.md) for what each one
+Fifteen triggers are seeded by migration. See [](notification-triggers.md) for what each one
 fires on, and [](usage.md) for driving the chat side.

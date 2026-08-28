@@ -54,6 +54,17 @@ def _create_event_and_recipient(booking: TokenBooking, trigger_slug: str, title:
     )
 
 
+# Booking status -> (APPOINTMENT_TRIGGER_SLUGS key, phrase the event title reads with).
+STATUS_NOTIFICATIONS: dict[str, tuple[str, str]] = {
+    BookingStatusChoices.cancelled.value: ("cancelled", "cancelled"),
+    BookingStatusChoices.rescheduled.value: ("rescheduled", "rescheduled"),
+    BookingStatusChoices.noshow.value: ("noshow", "marked no-show"),
+    BookingStatusChoices.checked_in.value: ("checked_in", "checked in"),
+    BookingStatusChoices.in_consultation.value: ("in_consultation", "in consultation"),
+    BookingStatusChoices.fulfilled.value: ("fulfilled", "fulfilled"),
+}
+
+
 pre_save.connect(track_previous_field("status"), sender=TokenBooking, weak=False)
 
 
@@ -72,11 +83,11 @@ def on_booking_post_save(sender: type[TokenBooking], instance: TokenBooking, cre
     if previous_status == instance.status:
         return
 
-    if instance.status == BookingStatusChoices.cancelled:
-        _create_event_and_recipient(
-            instance, trigger_slugs["cancelled"], f"Appointment cancelled — {instance.external_id}"
-        )
-    elif instance.status == BookingStatusChoices.rescheduled:
-        _create_event_and_recipient(
-            instance, trigger_slugs["rescheduled"], f"Appointment rescheduled — {instance.external_id}"
-        )
+    notification = STATUS_NOTIFICATIONS.get(instance.status)
+    if notification is None:
+        return
+
+    slug_key, title_phrase = notification
+    _create_event_and_recipient(
+        instance, trigger_slugs[slug_key], f"Appointment {title_phrase} — {instance.external_id}"
+    )
