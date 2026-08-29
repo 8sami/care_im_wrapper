@@ -192,7 +192,7 @@ DEFAULTS = {
             "location_or_link": "{{ object.token_slot.resource.facility.name }}",
             "status": "{{ status }}",
         },
-        "document_ready_update": {
+        "document_ready": {
             "header_document_type": "{{ document_type|replace('_', ' ')|title }}",
             "patient_name": "{{ object.patient.name }}",
             "document_type": "{{ document_type|replace('_', ' ')|title }}",
