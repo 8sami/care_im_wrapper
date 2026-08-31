@@ -188,9 +188,11 @@ Selection
 - [ ] over `[WHATSAPP_INTERACTIVE_BODY_CHAR_LIMIT = 1024]` it falls back to the short prompt and keeps the rows
 
 Links
-- [ ] an encounter report generates on first request
-- [ ] within `[ENCOUNTER_REPORT_REUSE_SECONDS = 15 min]` it is reused
-- [ ] after that window it regenerates
+- [ ] a discharge summary staff already generated (Care's Reports tab) is served directly,
+      however long ago it was generated
+- [ ] the *latest* generated discharge summary is the one served, when more than one exists
+- [ ] an encounter with no discharge summary generated yet → document-unavailable, and no
+      report is generated on the patient's behalf
 - [ ] an already-uploaded diagnostic file is served directly
 - [ ] an unexpired `DocumentLink` for the same object is reused
 

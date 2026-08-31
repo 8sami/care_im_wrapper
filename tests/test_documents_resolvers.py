@@ -63,14 +63,97 @@ class DocumentResolversTests(CareAPITestBase):
 
         self.assertIsNone(result)
 
-    def test_encounter_document_resolves_to_a_discharge_summary_request(self):
+    def _create_template(self, **kwargs):
+        import uuid
+
+        from care.emr.models.report.template import Template
+
+        data = {
+            "slug": f"discharge-summary-{uuid.uuid4().hex[:8]}",
+            "name": "Discharge Summary",
+            "status": "active",
+            "template_data": "<html></html>",
+            "template_type": "discharge_summary",
+            "default_format": "pdf",
+            "context": "encounter_base",
+            "facility": None,
+        }
+        data.update(kwargs)
+        return Template.objects.create(**data)
+
+    def _create_discharge_summary_report(self, **kwargs):
+        from care.emr.models.report.report_upload import ReportUpload
+
+        data = {
+            "template": self._create_template(),
+            "name": "discharge-summary",
+            "associating_id": str(self.encounter.external_id),
+            "report_type": "discharge_summary",
+            "upload_completed": True,
+        }
+        data.update(kwargs)
+        return ReportUpload.objects.create(**data)
+
+    def test_encounter_document_resolves_to_the_generated_discharge_summary(self):
+        report_upload = self._create_discharge_summary_report()
+
         result = resolve_encounter_document(self.patient, str(self.encounter.external_id))
 
         self.assertIsNotNone(result)
         self.assertEqual(result.encounter, self.encounter)
-        self.assertEqual(result.report_type, "discharge_summary")
         self.assertEqual(result.document_type, "discharge_summary")
+        self.assertEqual(result.report_upload, report_upload)
         self.assertIsNone(result.diagnostic_report)
+
+    def test_encounter_with_no_generated_discharge_summary_returns_none(self):
+        """Issue #27: no staff-generated discharge summary must never trigger generation --
+        the resolver must hand back nothing rather than a request that would render one."""
+        result = resolve_encounter_document(self.patient, str(self.encounter.external_id))
+
+        self.assertIsNone(result)
+
+    def test_encounter_document_resolves_to_the_latest_generated_report(self):
+        self._create_discharge_summary_report(name="older")
+        latest = self._create_discharge_summary_report(name="latest")
+
+        result = resolve_encounter_document(self.patient, str(self.encounter.external_id))
+
+        self.assertEqual(result.report_upload, latest)
+
+    def test_a_report_generated_long_ago_is_still_served(self):
+        """No age cutoff: staff may have generated this days or weeks before the request."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        old = self._create_discharge_summary_report()
+        old.created_date = timezone.now() - timedelta(days=30)
+        old.save(update_fields=["created_date"])
+
+        result = resolve_encounter_document(self.patient, str(self.encounter.external_id))
+
+        self.assertEqual(result.report_upload, old)
+
+    def test_archived_discharge_summary_report_is_ignored(self):
+        self._create_discharge_summary_report(is_archived=True)
+
+        result = resolve_encounter_document(self.patient, str(self.encounter.external_id))
+
+        self.assertIsNone(result)
+
+    def test_incomplete_discharge_summary_report_is_ignored(self):
+        self._create_discharge_summary_report(upload_completed=False)
+
+        result = resolve_encounter_document(self.patient, str(self.encounter.external_id))
+
+        self.assertIsNone(result)
+
+    def test_a_report_of_another_type_is_not_treated_as_a_discharge_summary(self):
+        self._create_discharge_summary_report(report_type="encounter_report")
+
+        result = resolve_encounter_document(self.patient, str(self.encounter.external_id))
+
+        self.assertIsNone(result)
 
     def test_encounter_document_unknown_id_returns_none(self):
         result = resolve_encounter_document(self.patient, "00000000-0000-0000-0000-000000000000")
@@ -78,6 +161,7 @@ class DocumentResolversTests(CareAPITestBase):
 
     def test_another_patients_encounter_is_not_reachable_by_id(self):
         other_patient = self.create_patient()
+        self._create_discharge_summary_report()
 
         result = resolve_encounter_document(other_patient, str(self.encounter.external_id))
 

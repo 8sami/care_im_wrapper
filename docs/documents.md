@@ -49,7 +49,7 @@ and so no slug.
 | Kind | Mode | Subject | Notes |
 | --- | --- | --- | --- |
 | `diagnostic_report` | `render` | `DiagnosticReport` | Drawn as care_fe's diagnostic report print view. Uploaded files are attachments *inside* it — all of them, not the newest — so a report with no attachment is still deliverable. |
-| `discharge_summary` | `file` | `ReportUpload` | Generated from the facility's `discharge_summary` template, resolved by `template_type` as care_fe's picker does. |
+| `discharge_summary` | `file` | `ReportUpload` | The latest report staff already generated for the encounter via Care's Reports tab (`report_type=discharge_summary`). Never generated on request: an encounter with none generated yet has no document to serve. |
 
 ## Adding a document type
 

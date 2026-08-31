@@ -248,7 +248,6 @@ DEFAULTS = {
             "waiting_time": "{{ waiting_time }}",
         },
     },
-    "ENCOUNTER_REPORT_REUSE_SECONDS": 15 * 60,
     "DOCUMENT_LINK_RATE_LIMIT_WINDOW_SECONDS": 60,
     "DOCUMENT_LINK_RATE_LIMIT_MAX": 30,
     # Validity window for a DocumentLink token.
