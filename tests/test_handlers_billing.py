@@ -354,3 +354,110 @@ class PaymentRecordedSignalTests(BillingSignalTestBase):
         payment.save()
 
         mock_fire.assert_not_called()
+
+
+class PaymentCancelledSignalTests(BillingSignalTestBase):
+    """Cancelling a confirmed payment notifies the patient. Both of CARE's cancellation
+    statuses read as "cancelled" to them, exactly like invoice_cancelled."""
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_active_payment_cancelled_fires_against_the_target_invoice(self, mock_fire):
+        invoice = self._create_invoice(status="issued")
+        payment = self._create_payment(outcome="complete", target_invoice=invoice, status="active")
+        mock_fire.reset_mock()
+
+        payment.status = "cancelled"
+        payment.save()
+
+        mock_fire.assert_called_once()
+        kwargs = mock_fire.call_args.kwargs
+        self.assertEqual(kwargs["trigger_slug"], "payment_cancelled")
+        self.assertEqual(kwargs["related_object"], invoice)
+        self.assertEqual(kwargs["recipient"].phone_number, PATIENT_PHONE)
+        self.assertEqual(kwargs["variable_values"]["status"], "cancelled")
+        self.assertEqual(kwargs["variable_values"]["header_status"], "Cancelled")
+        self.assertEqual(kwargs["variable_values"]["amount"], "5,000.00")
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_active_payment_entered_in_error_reads_as_cancelled(self, mock_fire):
+        """`entered_in_error` is an internal distinction and must not reach the patient."""
+        payment = self._create_payment(outcome="complete", target_invoice=None, status="active")
+        mock_fire.reset_mock()
+
+        payment.status = "entered_in_error"
+        payment.save()
+
+        mock_fire.assert_called_once()
+        values = mock_fire.call_args.kwargs["variable_values"]
+        self.assertEqual(mock_fire.call_args.kwargs["trigger_slug"], "payment_cancelled")
+        self.assertEqual(values["status"], "cancelled")
+        self.assertEqual(values["header_status"], "Cancelled")
+        self.assertNotIn("error", str(values).lower())
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_cancelling_a_payment_without_a_target_invoice_still_notifies(self, mock_fire):
+        payment = self._create_payment(outcome="complete", target_invoice=None, status="active")
+        mock_fire.reset_mock()
+
+        payment.status = "cancelled"
+        payment.save()
+
+        kwargs = mock_fire.call_args.kwargs
+        self.assertEqual(kwargs["related_object"], payment)
+        values = kwargs["variable_values"]
+        self.assertEqual(values["invoice_number"], "Not applicable")
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_never_confirmed_payment_cancelled_stays_silent(self, mock_fire):
+        """A payment that never reached `active` was never confirmed to the patient."""
+        payment = self._create_payment(outcome="queued", target_invoice=None, status="draft")
+        mock_fire.reset_mock()
+
+        payment.status = "cancelled"
+        payment.save()
+
+        mock_fire.assert_not_called()
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_active_payment_whose_outcome_never_completed_stays_silent(self, mock_fire):
+        """`status='active'` alone is not enough -- payment_recorded only fires once
+        `outcome` reaches 'complete', so cancelling a payment that never got there must not
+        claim one was already confirmed to the patient."""
+        payment = self._create_payment(outcome="partial", target_invoice=None, status="active")
+        mock_fire.reset_mock()
+
+        payment.status = "cancelled"
+        payment.save()
+
+        mock_fire.assert_not_called()
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_payment_created_already_cancelled_stays_silent(self, mock_fire):
+        """Nothing was ever confirmed to the patient, so there is nothing to retract."""
+        self._create_payment(outcome="queued", target_invoice=None, status="cancelled")
+
+        mock_fire.assert_not_called()
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_resaving_a_cancelled_payment_does_not_re_fire(self, mock_fire):
+        payment = self._create_payment(outcome="complete", target_invoice=None, status="active")
+        payment.status = "cancelled"
+        payment.save()
+        mock_fire.reset_mock()
+
+        payment.note = "edited after cancellation"
+        payment.save()
+
+        mock_fire.assert_not_called()
+
+    @patch("care_im_wrapper.handlers.billing.fire_notification_event")
+    def test_no_variable_value_is_blank(self, mock_fire):
+        """A blank parameter makes Meta reject the whole send."""
+        payment = self._create_payment(outcome="complete", target_invoice=None, status="active")
+        mock_fire.reset_mock()
+
+        payment.status = "cancelled"
+        payment.save()
+
+        values = mock_fire.call_args.kwargs["variable_values"]
+        self.assertEqual([k for k, v in values.items() if not str(v).strip()], [])

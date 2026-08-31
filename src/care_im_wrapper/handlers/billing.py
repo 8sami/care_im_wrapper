@@ -14,6 +14,7 @@ from care.emr.resources.invoice.spec import (  # pyright: ignore[reportMissingIm
 )
 from care.emr.resources.payment_reconciliation.spec import (  # pyright: ignore[reportMissingImports]
     PaymentReconciliationOutcomeOptions,
+    PaymentReconciliationStatusOptions,
 )
 from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
@@ -41,6 +42,16 @@ NO_INVOICE = "Not applicable"
 NOTIFIED_INVOICE_STATUS = (
     InvoiceStatusOptions.issued.value,
     InvoiceStatusOptions.balanced.value,
+)
+
+# Status a payment cancellation notifies from. `draft` is absent: never confirmed to the patient.
+NOTIFIED_PAYMENT_STATUS = (PaymentReconciliationStatusOptions.active.value,)
+
+# `entered_in_error` is an internal distinction: both read as "cancelled" to the patient,
+# mirroring INVOICE_CANCELLED_STATUS.
+PAYMENT_CANCELLED_STATUS = (
+    PaymentReconciliationStatusOptions.cancelled.value,
+    PaymentReconciliationStatusOptions.entered_in_error.value,
 )
 
 
@@ -138,27 +149,45 @@ def on_invoice_post_save(sender: type[Invoice], instance: Invoice, created: bool
 
 
 pre_save.connect(track_previous_field("outcome"), sender=PaymentReconciliation, weak=False)
+pre_save.connect(track_previous_field("status"), sender=PaymentReconciliation, weak=False)
 
 
 @receiver(post_save, sender=PaymentReconciliation)
 def on_payment_post_save(
     sender: type[PaymentReconciliation], instance: PaymentReconciliation, created: bool, **kwargs: Any
 ) -> None:
-    """Fires when a payment completes. `outcome`, not `status`, says the money moved."""
-    if instance.outcome != PaymentReconciliationOutcomeOptions.complete.value:
-        return
-
-    if not created and getattr(instance, "_previous_outcome", None) == instance.outcome:
-        return
+    """Fires when a payment completes (`outcome`, not `status`, says the money moved), and
+    again when a payment already confirmed to the patient is cancelled or entered in error."""
+    previous_outcome = None if created else getattr(instance, "_previous_outcome", None)
+    previous_status = None if created else getattr(instance, "_previous_status", None)
 
     # A payment against the account rather than an invoice still notifies; it fires with
     # itself as the related object and quotes no invoice number.
     invoice = instance.target_invoice
-    _fire_billing_event(
-        invoice if invoice is not None else instance,
-        trigger_slug=plugin_settings.BILLING_TRIGGER_SLUGS["payment_recorded"],
-        status="confirmed",
-        amount=instance.amount,
-        account=instance.account,
-        invoice=invoice,
-    )
+    related_object = invoice if invoice is not None else instance
+
+    if instance.outcome == PaymentReconciliationOutcomeOptions.complete.value and previous_outcome != instance.outcome:
+        _fire_billing_event(
+            related_object,
+            trigger_slug=plugin_settings.BILLING_TRIGGER_SLUGS["payment_recorded"],
+            status="confirmed",
+            amount=instance.amount,
+            account=instance.account,
+            invoice=invoice,
+        )
+
+    # Also requires outcome 'complete': a payment that never completed was never confirmed,
+    # so there's nothing to retract.
+    if (
+        instance.status in PAYMENT_CANCELLED_STATUS
+        and previous_status in NOTIFIED_PAYMENT_STATUS
+        and previous_outcome == PaymentReconciliationOutcomeOptions.complete.value
+    ):
+        _fire_billing_event(
+            related_object,
+            trigger_slug=plugin_settings.BILLING_TRIGGER_SLUGS["payment_cancelled"],
+            status="cancelled",
+            amount=instance.amount,
+            account=instance.account,
+            invoice=invoice,
+        )
