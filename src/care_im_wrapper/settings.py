@@ -176,6 +176,7 @@ DEFAULTS = {
         "invoice_issued": "invoice_issued",
         "invoice_cancelled": "invoice_cancelled",
         "payment_recorded": "payment_recorded",
+        "payment_cancelled": "payment_cancelled",
     },
     "APPOINTMENT_REMINDER_TRIGGER_SLUG": "appointment_reminder",
     "WAIT_TIME_TRIGGER_SLUG": "wait_time_update",
